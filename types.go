@@ -14,14 +14,15 @@ const Version = "0.1.0"
 
 // AbsfsNFS represents an NFS server that exports an absfs filesystem
 type AbsfsNFS struct {
-	fs        absfs.FileSystem // The wrapped absfs filesystem
-	root      *NFSNode         // Root directory node
-	logger    *log.Logger      // Optional logging
-	fileMap   *FileHandleMap   // Maps file handles to absfs files
-	mountPath string           // Export path
-	options   ExportOptions    // NFS export options
-	attrCache *AttrCache       // Cache for file attributes
-	readBuf   *ReadAheadBuffer // Read-ahead buffer
+	fs            absfs.FileSystem // The wrapped absfs filesystem
+	root          *NFSNode         // Root directory node
+	logger        *log.Logger      // Optional logging
+	fileMap       *FileHandleMap   // Maps file handles to absfs files
+	mountPath     string           // Export path
+	options       ExportOptions    // NFS export options
+	attrCache     *AttrCache       // Cache for file attributes
+	readBuf       *ReadAheadBuffer // Read-ahead buffer
+	memoryMonitor *MemoryMonitor   // Monitors system memory usage (optional)
 }
 
 // ExportOptions defines the configuration for an NFS export
@@ -67,6 +68,31 @@ type ExportOptions struct {
 	// Larger values improve performance but consume more memory
 	// Default: 10000 entries
 	AttrCacheSize int
+	
+	// AdaptToMemoryPressure enables automatic cache reduction when system memory is under pressure
+	// When enabled, the server will periodically check system memory usage and reduce cache sizes
+	// when memory usage exceeds MemoryHighWatermark, until usage falls below MemoryLowWatermark
+	// Default: false (disabled)
+	AdaptToMemoryPressure bool
+	
+	// MemoryHighWatermark defines the threshold (as a fraction of total memory) at which 
+	// memory pressure reduction actions will be triggered
+	// Only applicable when AdaptToMemoryPressure is true
+	// Valid range: 0.0 to 1.0 (0% to 100% of total memory)
+	// Default: 0.8 (80% of total memory)
+	MemoryHighWatermark float64
+	
+	// MemoryLowWatermark defines the target memory usage (as a fraction of total memory)
+	// that the server will try to achieve when reducing cache sizes in response to memory pressure
+	// Only applicable when AdaptToMemoryPressure is true
+	// Valid range: 0.0 to MemoryHighWatermark
+	// Default: 0.6 (60% of total memory)
+	MemoryLowWatermark float64
+	
+	// MemoryCheckInterval defines how frequently memory usage is checked for pressure detection
+	// Only applicable when AdaptToMemoryPressure is true
+	// Default: 30 * time.Second
+	MemoryCheckInterval time.Duration
 }
 
 // FileHandleMap manages the mapping between NFS file handles and absfs files
@@ -143,6 +169,19 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	if options.AttrCacheSize <= 0 {
 		options.AttrCacheSize = 10000
 	}
+	
+	// Set memory pressure detection defaults
+	if options.MemoryHighWatermark <= 0 || options.MemoryHighWatermark > 1.0 {
+		options.MemoryHighWatermark = 0.8 // Default: 80% of total memory
+	}
+	
+	if options.MemoryLowWatermark <= 0 || options.MemoryLowWatermark >= options.MemoryHighWatermark {
+		options.MemoryLowWatermark = 0.6 // Default: 60% of total memory
+	}
+	
+	if options.MemoryCheckInterval <= 0 {
+		options.MemoryCheckInterval = 30 * time.Second // Check every 30 seconds by default
+	}
 
 	// Create server object with configured caches
 	server := &AbsfsNFS{
@@ -158,6 +197,11 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	
 	// Configure read-ahead buffer with size limits
 	server.readBuf.Configure(options.ReadAheadMaxFiles, options.ReadAheadMaxMemory)
+	
+	// Start memory pressure monitoring if enabled
+	if options.AdaptToMemoryPressure {
+		server.startMemoryMonitoring()
+	}
 
 	// Initialize root node
 	root := &NFSNode{
@@ -183,4 +227,39 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 
 	server.root = root
 	return server, nil
+}
+
+// startMemoryMonitoring initializes and starts the memory monitor
+func (n *AbsfsNFS) startMemoryMonitoring() {
+	n.memoryMonitor = NewMemoryMonitor(n)
+	n.memoryMonitor.Start(n.options.MemoryCheckInterval)
+	n.logger.Printf("Memory pressure monitoring enabled (check interval: %v, high watermark: %.1f%%, low watermark: %.1f%%)",
+		n.options.MemoryCheckInterval, 
+		n.options.MemoryHighWatermark*100,
+		n.options.MemoryLowWatermark*100)
+}
+
+// stopMemoryMonitoring stops the memory monitor if it's running
+func (n *AbsfsNFS) stopMemoryMonitoring() {
+	if n.memoryMonitor != nil && n.memoryMonitor.IsActive() {
+		n.memoryMonitor.Stop()
+		n.logger.Printf("Memory pressure monitoring stopped")
+	}
+}
+
+// Close releases resources and stops any background processes
+func (n *AbsfsNFS) Close() error {
+	// Stop memory monitoring if active
+	n.stopMemoryMonitoring()
+	
+	// Clear caches to free memory
+	if n.attrCache != nil {
+		n.attrCache.Clear()
+	}
+	
+	if n.readBuf != nil {
+		n.readBuf.Clear()
+	}
+	
+	return nil
 }

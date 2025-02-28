@@ -49,11 +49,12 @@ Each feature will be implemented in a separate branch to maintain clean developm
   - Implement cache eviction strategies
   - Add validation in New() function
 
-- [ ] **Memory Pressure Detection**
+- [x] **Memory Pressure Detection**
   - Add `AdaptToMemoryPressure bool` to ExportOptions
   - Add `MemoryHighWatermark float64` to ExportOptions
   - Add `MemoryLowWatermark float64` to ExportOptions
-  - Default: false, 0.8, 0.6
+  - Add `MemoryCheckInterval time.Duration` to ExportOptions
+  - Default: false, 0.8, 0.6, 30s
   - Implement memory usage monitoring
   - Add cache reduction logic based on memory pressure
   - Add validation in New() function
@@ -127,7 +128,7 @@ Each feature will be implemented in a separate branch to maintain clean developm
 | Read-Ahead Configuration | Completed | feature-read-ahead | 2025-02-28 | Added EnableReadAhead and ReadAheadSize options with tests |
 | Attribute Cache Configuration | Completed | feature-attr-cache | 2025-02-28 | Added AttrCacheTimeout and AttrCacheSize with tests |
 | Cache Size Control | Completed | feature-cache-size-control | 2025-02-28 | Added ReadAheadMaxFiles and ReadAheadMaxMemory options with tests |
-| Memory Pressure Detection | Not Started | - | - | - |
+| Memory Pressure Detection | Completed | feature-memory-pressure | 2025-02-28 | Added memory monitoring and automatic cache reduction with tests |
 | Worker Pool Management | Not Started | - | - | - |
 | Operation Batching | Not Started | - | - | - |
 | TCP Configuration | Not Started | - | - | - |
