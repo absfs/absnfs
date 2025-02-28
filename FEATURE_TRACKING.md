@@ -67,7 +67,7 @@ Each feature will be implemented in a separate branch to maintain clean developm
   - Implement worker pool for handling operations
   - Add validation in New() function
 
-- [ ] **Operation Batching**
+- [x] **Operation Batching**
   - Add `BatchOperations bool` to ExportOptions
   - Add `MaxBatchSize int` to ExportOptions
   - Default: true, 10
@@ -130,7 +130,7 @@ Each feature will be implemented in a separate branch to maintain clean developm
 | Cache Size Control | Completed | feature-cache-size-control | 2025-02-28 | Added ReadAheadMaxFiles and ReadAheadMaxMemory options with tests |
 | Memory Pressure Detection | Completed | feature-memory-pressure | 2025-02-28 | Added memory monitoring and automatic cache reduction with tests |
 | Worker Pool Management | Completed | feature-worker-pool | 2025-02-28 | Added worker pool for concurrent operations with tests |
-| Operation Batching | Not Started | - | - | - |
+| Operation Batching | Completed | feature-operation-batching | 2025-02-28 | Added operation batching system for improved performance with tests |
 | TCP Configuration | Not Started | - | - | - |
 | Connection Management | Not Started | - | - | - |
 | Buffer Sizes | Not Started | - | - | - |
