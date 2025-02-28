@@ -181,7 +181,7 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 		count = int64(s.options.TransferSize)
 	}
 
-	// Try read-ahead buffer first
+	// Try read-ahead buffer first if enabled
 	if data, ok := s.readBuf.Read(node.path, offset, int(count)); ok {
 		return data, nil
 	}
@@ -214,9 +214,9 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 		return nil, err
 	}
 
-	// Only attempt read-ahead if we got all requested data and there's more to read
-	if err != io.EOF && n == int(count) && offset+count < info.Size() {
-		readAheadSize := int64(1024 * 1024) // 1MB read-ahead
+	// Only attempt read-ahead if enabled and we got all requested data and there's more to read
+	if s.options.EnableReadAhead && err != io.EOF && n == int(count) && offset+count < info.Size() {
+		readAheadSize := int64(s.options.ReadAheadSize)
 		readAheadRemaining := info.Size() - (offset + count)
 		if readAheadSize > readAheadRemaining {
 			readAheadSize = readAheadRemaining

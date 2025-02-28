@@ -37,6 +37,16 @@ type ExportOptions struct {
 	// Larger values may improve performance but require more memory
 	// Default: 65536 (64KB)
 	TransferSize int
+	
+	// EnableReadAhead enables read-ahead buffering for improved sequential read performance
+	// When a client reads a file sequentially, the server prefetches additional data
+	// Default: true
+	EnableReadAhead bool
+	
+	// ReadAheadSize controls the size in bytes of the read-ahead buffer
+	// Only applicable when EnableReadAhead is true
+	// Default: 262144 (256KB)
+	ReadAheadSize int
 }
 
 // FileHandleMap manages the mapping between NFS file handles and absfs files
@@ -91,6 +101,11 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	if options.TransferSize <= 0 {
 		options.TransferSize = 65536 // Default: 64KB
 	}
+	
+	// Set read-ahead defaults
+	if options.ReadAheadSize <= 0 {
+		options.ReadAheadSize = 262144 // Default: 256KB
+	}
 
 	server := &AbsfsNFS{
 		fs:      fs,
@@ -99,8 +114,8 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 			handles: make(map[uint64]absfs.File),
 		},
 		logger:    log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
-		attrCache: NewAttrCache(30 * time.Second),  // 30 second TTL for attributes
-		readBuf:   NewReadAheadBuffer(1024 * 1024), // 1MB read-ahead buffer
+		attrCache: NewAttrCache(30 * time.Second), // 30 second TTL for attributes
+		readBuf:   NewReadAheadBuffer(options.ReadAheadSize),
 	}
 
 	// Initialize root node
