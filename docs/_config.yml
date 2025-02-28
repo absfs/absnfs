@@ -1,0 +1,27 @@
+theme: jekyll-theme-cayman
+title: ABSNFS
+description: NFS Server Adapter for ABSFS Filesystems
+show_downloads: true
+github:
+  repository_url: https://github.com/absfs/absnfs
+  zip_url: https://github.com/absfs/absnfs/zipball/main
+  tar_url: https://github.com/absfs/absnfs/tarball/main
+
+# Navigation
+nav:
+  - title: Home
+    url: /
+  - title: API Reference
+    url: /api/
+  - title: Guides
+    url: /guides/
+  - title: Tutorials
+    url: /tutorials/
+  - title: Examples
+    url: /examples/
+  - title: Internals
+    url: /internals/
+  - title: Testing
+    url: /testing/
+  - title: GitHub
+    url: https://github.com/absfs/absnfs
