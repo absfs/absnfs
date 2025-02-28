@@ -7,9 +7,11 @@ import (
 
 // AttrCache provides caching for file attributes
 type AttrCache struct {
-	mu    sync.RWMutex
-	cache map[string]*CachedAttrs
-	ttl   time.Duration
+	mu        sync.RWMutex
+	cache     map[string]*CachedAttrs
+	ttl       time.Duration
+	maxSize   int           // Maximum number of entries in the cache
+	accessLog []string      // Keep track of least recently used entries
 }
 
 // CachedAttrs represents cached file attributes with expiration
@@ -18,11 +20,17 @@ type CachedAttrs struct {
 	expireAt time.Time
 }
 
-// NewAttrCache creates a new attribute cache with the specified TTL
-func NewAttrCache(ttl time.Duration) *AttrCache {
+// NewAttrCache creates a new attribute cache with the specified TTL and maximum size
+func NewAttrCache(ttl time.Duration, maxSize int) *AttrCache {
+	if maxSize <= 0 {
+		maxSize = 10000 // Default size if invalid
+	}
+	
 	return &AttrCache{
-		cache: make(map[string]*CachedAttrs),
-		ttl:   ttl,
+		cache:     make(map[string]*CachedAttrs),
+		ttl:       ttl,
+		maxSize:   maxSize,
+		accessLog: make([]string, 0, maxSize),
 	}
 }
 
@@ -31,6 +39,13 @@ func (c *AttrCache) Get(path string) *NFSAttrs {
 	c.mu.RLock()
 	cached, ok := c.cache[path]
 	if ok && time.Now().Before(cached.expireAt) {
+		c.mu.RUnlock()
+		
+		// Update access log (LRU tracking)
+		c.mu.Lock()
+		c.updateAccessLog(path)
+		c.mu.Unlock()
+		
 		// Return a copy to prevent modification of cached data
 		attrs := &NFSAttrs{
 			Mode:  cached.attrs.Mode,
@@ -40,7 +55,6 @@ func (c *AttrCache) Get(path string) *NFSAttrs {
 			Uid:   cached.attrs.Uid,
 			Gid:   cached.attrs.Gid,
 		}
-		c.mu.RUnlock()
 		return attrs
 	}
 	c.mu.RUnlock()
@@ -49,15 +63,46 @@ func (c *AttrCache) Get(path string) *NFSAttrs {
 		// Expired entry, remove it
 		c.mu.Lock()
 		delete(c.cache, path)
+		c.removeFromAccessLog(path)
 		c.mu.Unlock()
 	}
 	return nil
+}
+
+// updateAccessLog moves the path to the front of the access log (most recently used)
+func (c *AttrCache) updateAccessLog(path string) {
+	// Remove from current position if it exists
+	c.removeFromAccessLog(path)
+	
+	// Add to the front (most recently used)
+	c.accessLog = append([]string{path}, c.accessLog...)
+}
+
+// removeFromAccessLog removes a path from the access log
+func (c *AttrCache) removeFromAccessLog(path string) {
+	for i, p := range c.accessLog {
+		if p == path {
+			// Remove the item from the slice
+			c.accessLog = append(c.accessLog[:i], c.accessLog[i+1:]...)
+			break
+		}
+	}
 }
 
 // Put adds or updates cached attributes
 func (c *AttrCache) Put(path string, attrs *NFSAttrs) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Check if we need to evict entries to make room
+	if len(c.cache) >= c.maxSize && c.cache[path] == nil {
+		// Need to evict the least recently used entry
+		if len(c.accessLog) > 0 {
+			lruPath := c.accessLog[len(c.accessLog)-1]
+			delete(c.cache, lruPath)
+			c.accessLog = c.accessLog[:len(c.accessLog)-1]
+		}
+	}
 
 	// Deep copy the attributes to prevent modification
 	attrsCopy := &NFSAttrs{
@@ -72,6 +117,9 @@ func (c *AttrCache) Put(path string, attrs *NFSAttrs) {
 		attrs:    attrsCopy,
 		expireAt: time.Now().Add(c.ttl),
 	}
+	
+	// Update access log to mark this as most recently used
+	c.updateAccessLog(path)
 }
 
 // Invalidate removes an entry from the cache
@@ -80,6 +128,7 @@ func (c *AttrCache) Invalidate(path string) {
 	defer c.mu.Unlock()
 
 	delete(c.cache, path)
+	c.removeFromAccessLog(path)
 }
 
 // Clear removes all entries from the cache
@@ -88,6 +137,23 @@ func (c *AttrCache) Clear() {
 	defer c.mu.Unlock()
 
 	c.cache = make(map[string]*CachedAttrs)
+	c.accessLog = make([]string, 0, c.maxSize)
+}
+
+// Size returns the current number of entries in the cache
+func (c *AttrCache) Size() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	return len(c.cache)
+}
+
+// MaxSize returns the maximum size of the cache
+func (c *AttrCache) MaxSize() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	return c.maxSize
 }
 
 // ReadAheadBuffer implements a simple read-ahead buffer

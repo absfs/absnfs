@@ -47,6 +47,16 @@ type ExportOptions struct {
 	// Only applicable when EnableReadAhead is true
 	// Default: 262144 (256KB)
 	ReadAheadSize int
+	
+	// AttrCacheTimeout controls how long file attributes are cached
+	// Longer timeouts improve performance but may cause clients to see stale data
+	// Default: 5 * time.Second
+	AttrCacheTimeout time.Duration
+	
+	// AttrCacheSize controls the maximum number of entries in the attribute cache
+	// Larger values improve performance but consume more memory
+	// Default: 10000 entries
+	AttrCacheSize int
 }
 
 // FileHandleMap manages the mapping between NFS file handles and absfs files
@@ -106,6 +116,15 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	if options.ReadAheadSize <= 0 {
 		options.ReadAheadSize = 262144 // Default: 256KB
 	}
+	
+	// Set attribute cache defaults
+	if options.AttrCacheTimeout <= 0 {
+		options.AttrCacheTimeout = 5 * time.Second
+	}
+	
+	if options.AttrCacheSize <= 0 {
+		options.AttrCacheSize = 10000
+	}
 
 	server := &AbsfsNFS{
 		fs:      fs,
@@ -114,7 +133,7 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 			handles: make(map[uint64]absfs.File),
 		},
 		logger:    log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
-		attrCache: NewAttrCache(30 * time.Second), // 30 second TTL for attributes
+		attrCache: NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
 		readBuf:   NewReadAheadBuffer(options.ReadAheadSize),
 	}
 

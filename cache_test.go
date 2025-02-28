@@ -11,7 +11,7 @@ import (
 
 func TestAttrCache(t *testing.T) {
 	t.Run("basic operations", func(t *testing.T) {
-		cache := NewAttrCache(2 * time.Second)
+		cache := NewAttrCache(2 * time.Second, 1000)
 
 		// Test initial state
 		if attrs := cache.Get("/test.txt"); attrs != nil {
@@ -70,7 +70,7 @@ func TestAttrCache(t *testing.T) {
 	})
 
 	t.Run("concurrent access", func(t *testing.T) {
-		cache := NewAttrCache(2 * time.Second)
+		cache := NewAttrCache(2 * time.Second, 1000)
 		var wg sync.WaitGroup
 		const goroutines = 10
 		errChan := make(chan error, goroutines*2) // For both readers and writers
