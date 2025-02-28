@@ -3,6 +3,7 @@ package absnfs
 import (
 	"log"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -23,6 +24,7 @@ type AbsfsNFS struct {
 	attrCache     *AttrCache       // Cache for file attributes
 	readBuf       *ReadAheadBuffer // Read-ahead buffer
 	memoryMonitor *MemoryMonitor   // Monitors system memory usage (optional)
+	workerPool    *WorkerPool      // Worker pool for concurrent operations
 }
 
 // ExportOptions defines the configuration for an NFS export
@@ -93,6 +95,11 @@ type ExportOptions struct {
 	// Only applicable when AdaptToMemoryPressure is true
 	// Default: 30 * time.Second
 	MemoryCheckInterval time.Duration
+	
+	// MaxWorkers controls the maximum number of goroutines used for handling concurrent operations
+	// More workers can improve performance for concurrent workloads but consume more CPU resources
+	// Default: runtime.NumCPU() * 4 (number of logical CPUs multiplied by 4)
+	MaxWorkers int
 }
 
 // FileHandleMap manages the mapping between NFS file handles and absfs files
@@ -182,6 +189,11 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	if options.MemoryCheckInterval <= 0 {
 		options.MemoryCheckInterval = 30 * time.Second // Check every 30 seconds by default
 	}
+	
+	// Set worker pool defaults
+	if options.MaxWorkers <= 0 {
+		options.MaxWorkers = runtime.NumCPU() * 4 // Default: number of logical CPUs * 4
+	}
 
 	// Create server object with configured caches
 	server := &AbsfsNFS{
@@ -197,6 +209,10 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	
 	// Configure read-ahead buffer with size limits
 	server.readBuf.Configure(options.ReadAheadMaxFiles, options.ReadAheadMaxMemory)
+	
+	// Initialize and start worker pool
+	server.workerPool = NewWorkerPool(options.MaxWorkers, server)
+	server.workerPool.Start()
 	
 	// Start memory pressure monitoring if enabled
 	if options.AdaptToMemoryPressure {
@@ -247,10 +263,33 @@ func (n *AbsfsNFS) stopMemoryMonitoring() {
 	}
 }
 
+// ExecuteWithWorker runs a task in the worker pool
+// If the worker pool is not available (disabled or full), it executes the task directly
+func (n *AbsfsNFS) ExecuteWithWorker(task func() interface{}) interface{} {
+	// If worker pool is not initialized, execute directly
+	if n.workerPool == nil {
+		return task()
+	}
+	
+	// Try to submit to worker pool with immediate result wait
+	result, ok := n.workerPool.SubmitWait(task)
+	if ok {
+		return result
+	}
+	
+	// If submission failed (pool full or stopped), execute directly
+	return task()
+}
+
 // Close releases resources and stops any background processes
 func (n *AbsfsNFS) Close() error {
 	// Stop memory monitoring if active
 	n.stopMemoryMonitoring()
+	
+	// Stop worker pool
+	if n.workerPool != nil {
+		n.workerPool.Stop()
+	}
 	
 	// Clear caches to free memory
 	if n.attrCache != nil {

@@ -183,19 +183,41 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 			}
 
 			// Read RPC call
-			call, body, err := s.readRPCCall(conn)
-			if err != nil {
+			call, body, readErr := s.readRPCCall(conn)
+			if readErr != nil {
 				// Don't log common expected errors in tests
-				if err != io.EOF && !isTimeoutError(err) && !isConnectionResetError(err) {
-					s.logger.Printf("read error: %v", err)
+				if readErr != io.EOF && !isTimeoutError(readErr) && !isConnectionResetError(readErr) {
+					s.logger.Printf("read error: %v", readErr)
 				}
 				return
 			}
 
-			// Handle the call
-			reply, err := procHandler.HandleCall(call, body)
-			if err != nil {
-				s.logger.Printf("handle error: %v", err)
+			// Use worker pool to handle the call if available
+			var reply *RPCReply
+			var handleErr error
+			
+			if s.handler != nil && s.handler.workerPool != nil {
+				// Process with worker pool
+				result := s.handler.ExecuteWithWorker(func() interface{} {
+					r, e := procHandler.HandleCall(call, body)
+					return struct {
+						Reply *RPCReply
+						Err   error
+					}{r, e}
+				})
+				
+				// Extract result
+				typedResult := result.(struct {
+					Reply *RPCReply
+					Err   error
+				})
+				reply, handleErr = typedResult.Reply, typedResult.Err
+			} else {
+				// Process directly
+				reply, handleErr = procHandler.HandleCall(call, body)
+			}
+			if handleErr != nil {
+				s.logger.Printf("handle error: %v", handleErr)
 				continue
 			}
 
@@ -205,10 +227,10 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 			}
 
 			// Send reply
-			if err := s.writeRPCReply(conn, reply); err != nil {
+			if writeErr := s.writeRPCReply(conn, reply); writeErr != nil {
 				// Don't log common expected errors in tests
-				if !isTimeoutError(err) && !isConnectionResetError(err) {
-					s.logger.Printf("write error: %v", err)
+				if !isTimeoutError(writeErr) && !isConnectionResetError(writeErr) {
+					s.logger.Printf("write error: %v", writeErr)
 				}
 				return
 			}
