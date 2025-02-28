@@ -176,6 +176,11 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 		return nil, fmt.Errorf("negative count")
 	}
 
+	// Limit the read size to TransferSize if it exceeds the configured limit
+	if count > int64(s.options.TransferSize) {
+		count = int64(s.options.TransferSize)
+	}
+
 	// Try read-ahead buffer first
 	if data, ok := s.readBuf.Read(node.path, offset, int(count)); ok {
 		return data, nil
@@ -249,6 +254,12 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 
 	if s.options.ReadOnly {
 		return 0, os.ErrPermission
+	}
+
+	// Limit the write size to TransferSize if it exceeds the configured limit
+	dataLength := len(data)
+	if dataLength > s.options.TransferSize {
+		data = data[:s.options.TransferSize]
 	}
 
 	f, err := s.fs.OpenFile(node.path, os.O_WRONLY, 0)

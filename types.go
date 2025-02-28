@@ -32,6 +32,11 @@ type ExportOptions struct {
 	Squash      string   // User mapping (root/all/none)
 	Async       bool     // Allow async writes
 	MaxFileSize int64    // Maximum file size
+	
+	// TransferSize controls the maximum size in bytes of read/write transfers
+	// Larger values may improve performance but require more memory
+	// Default: 65536 (64KB)
+	TransferSize int
 }
 
 // FileHandleMap manages the mapping between NFS file handles and absfs files
@@ -80,6 +85,11 @@ func (a *NFSAttrs) Invalidate() {
 func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	if fs == nil {
 		return nil, os.ErrInvalid
+	}
+
+	// Set default values if not specified
+	if options.TransferSize <= 0 {
+		options.TransferSize = 65536 // Default: 64KB
 	}
 
 	server := &AbsfsNFS{
