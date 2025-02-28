@@ -156,77 +156,218 @@ func (c *AttrCache) MaxSize() int {
 	return c.maxSize
 }
 
-// ReadAheadBuffer implements a simple read-ahead buffer
-type ReadAheadBuffer struct {
-	mu      sync.RWMutex
+// FileBuffer represents a read-ahead buffer for a specific file
+type FileBuffer struct {
 	data    []byte
 	dataLen int
 	offset  int64
 	path    string
+	lastUse time.Time
 }
 
-// NewReadAheadBuffer creates a new read-ahead buffer
+// ReadAheadBuffer implements a multi-file read-ahead buffer with memory management
+type ReadAheadBuffer struct {
+	mu           sync.RWMutex
+	buffers      map[string]*FileBuffer
+	bufferSize   int
+	accessOrder  []string        // LRU tracking
+	maxFiles     int             // Maximum number of files that can have buffers
+	maxMemory    int64           // Maximum total memory for all buffers
+	currentUsage int64           // Current memory usage
+}
+
+// NewReadAheadBuffer creates a new read-ahead buffer with specified size and limits
 func NewReadAheadBuffer(size int) *ReadAheadBuffer {
 	return &ReadAheadBuffer{
-		data: make([]byte, size),
+		buffers:    make(map[string]*FileBuffer),
+		bufferSize: size,
+		maxFiles:   100,          // Default, will be updated in Configure
+		maxMemory:  104857600,    // Default 100MB, will be updated in Configure
+		accessOrder: make([]string, 0, 100),
 	}
 }
 
-// Fill fills the buffer with data from the given offset
+// Configure sets the configuration options for the read-ahead buffer
+func (b *ReadAheadBuffer) Configure(maxFiles int, maxMemory int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	
+	b.maxFiles = maxFiles
+	b.maxMemory = maxMemory
+	
+	// If current usage exceeds new limits, evict buffers
+	b.enforceMemoryLimits()
+}
+
+// enforceMemoryLimits ensures that memory usage stays within configured limits
+// Must be called with lock held
+func (b *ReadAheadBuffer) enforceMemoryLimits() {
+	// We need to free up at least one slot for a new buffer
+	// Enforce file count limit
+	for (len(b.buffers) >= b.maxFiles || b.currentUsage+int64(b.bufferSize) > b.maxMemory) && len(b.accessOrder) > 0 {
+		// If we're at or above limits, we need to evict the LRU buffer
+		if len(b.accessOrder) == 0 {
+			break // No buffers to evict
+		}
+		
+		// Remove least recently used buffer
+		lruPath := b.accessOrder[len(b.accessOrder)-1]
+		b.evictBuffer(lruPath)
+	}
+}
+
+// evictBuffer removes a buffer for the specified path
+// Must be called with lock held
+func (b *ReadAheadBuffer) evictBuffer(path string) {
+	buffer, exists := b.buffers[path]
+	if !exists {
+		return
+	}
+	
+	// Update memory usage
+	b.currentUsage -= int64(cap(buffer.data))
+	
+	// Remove from buffers map
+	delete(b.buffers, path)
+	
+	// Remove from access order
+	for i, p := range b.accessOrder {
+		if p == path {
+			b.accessOrder = append(b.accessOrder[:i], b.accessOrder[i+1:]...)
+			break
+		}
+	}
+}
+
+// updateAccessOrder moves a path to the front of the access order list
+// Must be called with lock held
+func (b *ReadAheadBuffer) updateAccessOrder(path string) {
+	// Remove from current position if exists
+	for i, p := range b.accessOrder {
+		if p == path {
+			b.accessOrder = append(b.accessOrder[:i], b.accessOrder[i+1:]...)
+			break
+		}
+	}
+	
+	// Add to front (most recently used)
+	b.accessOrder = append([]string{path}, b.accessOrder...)
+}
+
+// Fill fills the buffer for a file with data from the given offset
 func (b *ReadAheadBuffer) Fill(path string, data []byte, offset int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.path = path
-	b.offset = offset
-	// Only copy up to buffer capacity
-	b.dataLen = len(data)
-	if b.dataLen > len(b.data) {
-		b.dataLen = len(b.data)
+	buffer, exists := b.buffers[path]
+	if !exists {
+		// Make sure we have room by enforcing limits before adding a new buffer
+		// This ensures we never exceed our maximum limits
+		if len(b.buffers) >= b.maxFiles || b.currentUsage+int64(b.bufferSize) > b.maxMemory {
+			// Need to evict at least one buffer
+			b.enforceMemoryLimits()
+		}
+		
+		// Create new buffer
+		buffer = &FileBuffer{
+			data: make([]byte, b.bufferSize),
+			path: path,
+		}
+		b.buffers[path] = buffer
+		b.currentUsage += int64(b.bufferSize)
 	}
-	copy(b.data[:b.dataLen], data)
+
+	buffer.offset = offset
+	buffer.lastUse = time.Now()
+	
+	// Only copy up to buffer capacity
+	buffer.dataLen = len(data)
+	if buffer.dataLen > len(buffer.data) {
+		buffer.dataLen = len(buffer.data)
+	}
+	copy(buffer.data[:buffer.dataLen], data)
+	
+	// Update access order
+	b.updateAccessOrder(path)
 }
 
-// Read attempts to read from the buffer
+// Read attempts to read from the buffer for a file
 func (b *ReadAheadBuffer) Read(path string, offset int64, count int) ([]byte, bool) {
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	if path != b.path {
+	buffer, exists := b.buffers[path]
+	if !exists {
+		b.mu.RUnlock()
 		return nil, false
 	}
-
-	// Return empty slice for reads beyond EOF
-	if offset >= b.offset+int64(b.dataLen) {
-		return []byte{}, true
+	
+	// Check if buffer has the requested data
+	// Special case: handle reads that are exactly at the end of the buffer
+	if offset == buffer.offset+int64(buffer.dataLen) {
+		b.mu.RUnlock()
+		return []byte{}, true // Empty result indicates EOF
 	}
-
-	// Return nil for reads before buffer start
-	if offset < b.offset {
+	
+	if offset < buffer.offset || offset > buffer.offset+int64(buffer.dataLen) {
+		b.mu.RUnlock()
 		return nil, false
 	}
-
-	start := int(offset - b.offset)
-	if start >= b.dataLen {
+	
+	// Calculate start and end positions in buffer
+	start := int(offset - buffer.offset)
+	if start >= buffer.dataLen {
+		b.mu.RUnlock()
 		return []byte{}, true
 	}
-
+	
 	end := start + count
-	if end > b.dataLen {
-		end = b.dataLen
+	if end > buffer.dataLen {
+		end = buffer.dataLen
 	}
-
-	// Return exact number of bytes available
+	
+	// Copy data from buffer
 	result := make([]byte, end-start)
-	copy(result, b.data[start:end])
+	copy(result, buffer.data[start:end])
+	b.mu.RUnlock()
+	
+	// Update access time and order (requires write lock)
+	b.mu.Lock()
+	if buff, ok := b.buffers[path]; ok {
+		buff.lastUse = time.Now()
+		b.updateAccessOrder(path)
+	}
+	b.mu.Unlock()
+	
 	return result, true
 }
 
-// Clear clears the buffer
+// Clear clears all buffers
 func (b *ReadAheadBuffer) Clear() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.path = ""
-	b.offset = 0
+	b.buffers = make(map[string]*FileBuffer)
+	b.accessOrder = make([]string, 0, b.maxFiles)
+	b.currentUsage = 0
+}
+
+// ClearPath clears the buffer for a specific path
+func (b *ReadAheadBuffer) ClearPath(path string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	
+	b.evictBuffer(path)
+}
+
+// Stats returns statistics about the read-ahead buffers
+func (b *ReadAheadBuffer) Stats() (fileCount int, memoryUsage int64, capacityPct float64) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	
+	fileCount = len(b.buffers)
+	memoryUsage = b.currentUsage
+	if b.maxMemory > 0 {
+		capacityPct = float64(b.currentUsage) / float64(b.maxMemory) * 100
+	}
+	
+	return
 }

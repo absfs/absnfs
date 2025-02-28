@@ -272,7 +272,8 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 	if err == nil {
 		// Invalidate cache after successful write
 		s.attrCache.Invalidate(node.path)
-		s.readBuf.Clear()
+		// Clear only the specific file's buffer, not all buffers
+		s.readBuf.ClearPath(node.path)
 
 		// Update modification time explicitly
 		now := time.Now()

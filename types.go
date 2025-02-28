@@ -48,6 +48,16 @@ type ExportOptions struct {
 	// Default: 262144 (256KB)
 	ReadAheadSize int
 	
+	// ReadAheadMaxFiles controls the maximum number of files that can have active read-ahead buffers
+	// Helps limit memory usage by read-ahead buffering
+	// Default: 100 files
+	ReadAheadMaxFiles int
+	
+	// ReadAheadMaxMemory controls the maximum amount of memory in bytes that can be used for read-ahead buffers
+	// Once this limit is reached, least recently used buffers will be evicted
+	// Default: 104857600 (100MB)
+	ReadAheadMaxMemory int64
+	
 	// AttrCacheTimeout controls how long file attributes are cached
 	// Longer timeouts improve performance but may cause clients to see stale data
 	// Default: 5 * time.Second
@@ -117,6 +127,14 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		options.ReadAheadSize = 262144 // Default: 256KB
 	}
 	
+	if options.ReadAheadMaxFiles <= 0 {
+		options.ReadAheadMaxFiles = 100 // Default: 100 files
+	}
+	
+	if options.ReadAheadMaxMemory <= 0 {
+		options.ReadAheadMaxMemory = 104857600 // Default: 100MB
+	}
+	
 	// Set attribute cache defaults
 	if options.AttrCacheTimeout <= 0 {
 		options.AttrCacheTimeout = 5 * time.Second
@@ -126,6 +144,7 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		options.AttrCacheSize = 10000
 	}
 
+	// Create server object with configured caches
 	server := &AbsfsNFS{
 		fs:      fs,
 		options: options,
@@ -136,6 +155,9 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		attrCache: NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
 		readBuf:   NewReadAheadBuffer(options.ReadAheadSize),
 	}
+	
+	// Configure read-ahead buffer with size limits
+	server.readBuf.Configure(options.ReadAheadMaxFiles, options.ReadAheadMaxMemory)
 
 	// Initialize root node
 	root := &NFSNode{
