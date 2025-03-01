@@ -26,6 +26,7 @@ type AbsfsNFS struct {
 	memoryMonitor *MemoryMonitor    // Monitors system memory usage (optional)
 	workerPool    *WorkerPool       // Worker pool for concurrent operations
 	batchProc     *BatchProcessor   // Processor for batched operations
+	metrics       *MetricsCollector // Metrics collection and reporting
 }
 
 // ExportOptions defines the configuration for an NFS export
@@ -300,6 +301,9 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	if options.AdaptToMemoryPressure {
 		server.startMemoryMonitoring()
 	}
+	
+	// Initialize metrics collection
+	server.initMetrics()
 
 	// Initialize root node
 	root := &NFSNode{

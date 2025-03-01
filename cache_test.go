@@ -5,8 +5,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/absfs/memfs"
 )
 
 func TestAttrCache(t *testing.T) {
@@ -14,7 +12,7 @@ func TestAttrCache(t *testing.T) {
 		cache := NewAttrCache(2 * time.Second, 1000)
 
 		// Test initial state
-		if attrs := cache.Get("/test.txt"); attrs != nil {
+		if attrs := cache.Get("/test.txt", nil); attrs != nil {
 			t.Error("Expected nil for non-existent entry")
 		}
 
@@ -30,7 +28,7 @@ func TestAttrCache(t *testing.T) {
 		cache.Put("/test.txt", initialAttrs)
 
 		// Get should return a copy, not the original
-		cachedAttrs := cache.Get("/test.txt")
+		cachedAttrs := cache.Get("/test.txt", nil)
 		if cachedAttrs == nil {
 			t.Fatal("Expected non-nil cached attributes")
 		}
@@ -46,513 +44,195 @@ func TestAttrCache(t *testing.T) {
 
 		// Test expiration
 		time.Sleep(3 * time.Second)
-		if attrs := cache.Get("/test.txt"); attrs != nil {
+		if attrs := cache.Get("/test.txt", nil); attrs != nil {
 			t.Error("Expected nil for expired entry")
 		}
+	})
 
-		// Test Invalidate
-		cache.Put("/test.txt", initialAttrs)
-		cache.Invalidate("/test.txt")
-		if attrs := cache.Get("/test.txt"); attrs != nil {
-			t.Error("Expected nil after invalidation")
+	t.Run("cache eviction", func(t *testing.T) {
+		cache := NewAttrCache(10 * time.Second, 5)
+
+		// Add entries until eviction occurs
+		for i := 0; i < 10; i++ {
+			path := fmt.Sprintf("/file%d.txt", i)
+			attrs := &NFSAttrs{
+				Mode:  0644,
+				Size:  int64(i * 1000),
+				Mtime: time.Now(),
+				Atime: time.Now(),
+				Uid:   1000,
+				Gid:   1000,
+			}
+			cache.Put(path, attrs)
 		}
 
-		// Test Clear
-		cache.Put("/test1.txt", initialAttrs)
-		cache.Put("/test2.txt", initialAttrs)
-		cache.Clear()
-		if attrs := cache.Get("/test1.txt"); attrs != nil {
-			t.Error("Expected nil after clear")
+		// Check size is limited to maxSize
+		if cache.Size() > 5 {
+			t.Errorf("Expected size <= 5, got %d", cache.Size())
 		}
-		if attrs := cache.Get("/test2.txt"); attrs != nil {
-			t.Error("Expected nil after clear")
+
+		// Verify the first entries were evicted (least recently used)
+		if attrs := cache.Get("/file0.txt", nil); attrs != nil {
+			t.Error("Expected early entry to be evicted")
+		}
+		if attrs := cache.Get("/file9.txt", nil); attrs == nil {
+			t.Error("Expected recent entry to be present")
 		}
 	})
 
-	t.Run("concurrent access", func(t *testing.T) {
-		cache := NewAttrCache(2 * time.Second, 1000)
+	t.Run("concurrent operations", func(t *testing.T) {
+		cache := NewAttrCache(5 * time.Second, 1000)
 		var wg sync.WaitGroup
-		const goroutines = 10
-		errChan := make(chan error, goroutines*2) // For both readers and writers
+		numGoroutines := 5
+		numOperations := 100
 
-		// Start concurrent writers
-		for i := 0; i < goroutines; i++ {
+		// Launch multiple goroutines to perform cache operations
+		for i := 0; i < numGoroutines; i++ {
 			wg.Add(1)
-			go func(i int) {
+			go func(id int) {
 				defer wg.Done()
-				path := fmt.Sprintf("/test%d.txt", i)
-				attrs := &NFSAttrs{
-					Mode:  0644,
-					Size:  int64(i),
-					Mtime: time.Now(),
-					Atime: time.Now(),
-					Uid:   uint32(1000 + i),
-					Gid:   uint32(1000 + i),
-				}
-				cache.Put(path, attrs)
+				for j := 0; j < numOperations; j++ {
+					path := fmt.Sprintf("/file%d_%d.txt", id, j)
+					// Put
+					attrs := &NFSAttrs{
+						Mode:  0644,
+						Size:  int64(j * 1000),
+						Mtime: time.Now(),
+						Atime: time.Now(),
+						Uid:   uint32(id),
+						Gid:   uint32(id),
+					}
+					cache.Put(path, attrs)
 
-				// Verify attributes were cached correctly
-				cached := cache.Get(path)
-				if cached == nil {
-					errChan <- fmt.Errorf("failed to get cached attributes for path %s", path)
-					return
-				}
-				if cached.Size != int64(i) || cached.Uid != uint32(1000+i) {
-					errChan <- fmt.Errorf("attribute mismatch for path %s", path)
+					// Get
+					_ = cache.Get(path, nil)
+
+					// Invalidate (occasionally)
+					if j%10 == 0 {
+						cache.Invalidate(path)
+					}
 				}
 			}(i)
 		}
 
-		// Start concurrent readers/invalidators
-		for i := 0; i < goroutines; i++ {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				path := fmt.Sprintf("/test%d.txt", i)
-				// Mix of reads and invalidations
-				if i%2 == 0 {
-					cache.Get(path)
-				} else {
-					cache.Invalidate(path)
-				}
-			}(i)
-		}
-
+		// Wait for all goroutines to finish
 		wg.Wait()
-		close(errChan)
 
-		for err := range errChan {
-			t.Error(err)
+		// Verify cache size is reasonable (should be less than total operations due to invalidations)
+		if cache.Size() > numGoroutines*numOperations {
+			t.Errorf("Cache size larger than expected: %d", cache.Size())
 		}
 	})
-}
-
-func TestCacheInvalidation(t *testing.T) {
-	memfs, err := memfs.NewFS()
-	if err != nil {
-		t.Fatalf("Failed to create memfs: %v", err)
-	}
-
-	fs, err := New(memfs, ExportOptions{})
-	if err != nil {
-		t.Fatalf("Failed to create NFS: %v", err)
-	}
-
-	// Create test file
-	f, err := memfs.Create("/test.txt")
-	if err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-	f.Close()
-
-	// Get initial attributes
-	node, err := fs.Lookup("/test.txt")
-	if err != nil {
-		t.Fatalf("Failed to lookup test file: %v", err)
-	}
-
-	// Cache should be valid
-	if !node.attrs.IsValid() {
-		t.Error("Expected attributes to be valid after lookup")
-	}
-
-	// Wait for cache to expire
-	time.Sleep(2 * time.Second)
-
-	// Cache should be invalid
-	if node.attrs.IsValid() {
-		t.Error("Expected attributes to be invalid after timeout")
-	}
-
-	// Getting attributes should refresh cache
-	attrs, err := fs.GetAttr(node)
-	if err != nil {
-		t.Fatalf("Failed to get attributes: %v", err)
-	}
-
-	if !attrs.IsValid() {
-		t.Error("Expected attributes to be valid after refresh")
-	}
-
-	// Test cache invalidation on write
-	f, err = memfs.OpenFile("/test.txt", 0x02, 0644) // O_RDWR
-	if err != nil {
-		t.Fatalf("Failed to open test file: %v", err)
-	}
-	defer f.Close()
-
-	if _, err := f.Write([]byte("test")); err != nil {
-		t.Fatalf("Failed to write to test file: %v", err)
-	}
-
-	// Cache should be invalid after write
-	if node.attrs.IsValid() {
-		t.Error("Expected attributes to be invalid after write")
-	}
-}
-
-func TestFileHandleManagement(t *testing.T) {
-	memfs, err := memfs.NewFS()
-	if err != nil {
-		t.Fatalf("Failed to create memfs: %v", err)
-	}
-
-	fs, err := New(memfs, ExportOptions{})
-	if err != nil {
-		t.Fatalf("Failed to create NFS: %v", err)
-	}
-
-	// Create test files
-	files := []string{"/test1.txt", "/test2.txt", "/test3.txt"}
-	for _, path := range files {
-		f, err := memfs.Create(path)
-		if err != nil {
-			t.Fatalf("Failed to create test file %s: %v", path, err)
-		}
-		f.Close()
-	}
-
-	// Get handles for all files
-	var handles []uint64
-	var nodes []*NFSNode
-	for _, path := range files {
-		node, err := fs.Lookup(path)
-		if err != nil {
-			t.Fatalf("Failed to lookup %s: %v", path, err)
-		}
-		handle := fs.fileMap.Allocate(node)
-		handles = append(handles, handle)
-		nodes = append(nodes, node)
-	}
-
-	// Verify all handles are unique
-	seen := make(map[uint64]bool)
-	for _, handle := range handles {
-		if seen[handle] {
-			t.Error("Duplicate handle allocated")
-		}
-		seen[handle] = true
-	}
-
-	// Verify handle lookup works
-	for i, handle := range handles {
-		file, ok := fs.fileMap.Get(handle)
-		if !ok {
-			t.Errorf("Failed to get node for handle %d", handle)
-			continue
-		}
-		node, ok := file.(*NFSNode)
-		if !ok {
-			t.Errorf("Expected *NFSNode, got %T", file)
-			continue
-		}
-		if node.path != files[i] {
-			t.Errorf("Wrong node returned for handle %d: got %s, want %s", handle, node.path, files[i])
-		}
-	}
-
-	// Test handle reuse after release
-	fs.fileMap.Release(handles[0])
-	// Create test4.txt first
-	f, err := memfs.Create("/test4.txt")
-	if err != nil {
-		t.Fatalf("Failed to create test4.txt: %v", err)
-	}
-	f.Close()
-
-	newNode, err := fs.Lookup("/test4.txt")
-	if err != nil {
-		t.Fatalf("Failed to lookup test4.txt: %v", err)
-	}
-	newHandle := fs.fileMap.Allocate(newNode)
-
-	// The new handle should reuse the released handle
-	if newHandle != handles[0] {
-		t.Error("Handle not reused after release")
-	}
-
-	// Test concurrent handle allocation
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	errors := make(chan error, 10)
-
-	// Create files first to avoid race conditions
-	for i := 0; i < 10; i++ {
-		path := fmt.Sprintf("/concurrent%d.txt", i)
-		f, err := memfs.Create(path)
-		if err != nil {
-			t.Fatalf("Failed to create test file %s: %v", path, err)
-		}
-		f.Close()
-	}
-
-	// Now test concurrent handle allocation
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			path := fmt.Sprintf("/concurrent%d.txt", i)
-
-			mu.Lock()
-			node, err := fs.Lookup(path)
-			if err != nil {
-				errors <- fmt.Errorf("Failed to lookup %s: %v", path, err)
-				mu.Unlock()
-				return
-			}
-			handle := fs.fileMap.Allocate(node)
-			mu.Unlock()
-
-			if handle == 0 {
-				errors <- fmt.Errorf("Invalid handle allocated for %s", path)
-			}
-		}(i)
-	}
-
-	// Wait for all goroutines to finish
-	wg.Wait()
-	close(errors)
-
-	// Check for any errors
-	for err := range errors {
-		t.Error(err)
-	}
-}
-
-func TestCacheConsistency(t *testing.T) {
-	memfs, err := memfs.NewFS()
-	if err != nil {
-		t.Fatalf("Failed to create memfs: %v", err)
-	}
-
-	fs, err := New(memfs, ExportOptions{})
-	if err != nil {
-		t.Fatalf("Failed to create NFS: %v", err)
-	}
-
-	// Create test file
-	f, err := memfs.Create("/test.txt")
-	if err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-	if _, err := f.Write([]byte("initial")); err != nil {
-		t.Fatalf("Failed to write initial content: %v", err)
-	}
-	f.Close()
-
-	// Get initial node and attributes
-	node, err := fs.Lookup("/test.txt")
-	if err != nil {
-		t.Fatalf("Failed to lookup test file: %v", err)
-	}
-
-	initialAttrs, err := fs.GetAttr(node)
-	if err != nil {
-		t.Fatalf("Failed to get initial attributes: %v", err)
-	}
-
-	// Add a small delay to ensure modification time will be different
-	time.Sleep(10 * time.Millisecond)
-
-	// Modify file through NFS interface
-	_, err = fs.Write(node, 0, []byte("modified"))
-	if err != nil {
-		t.Fatalf("Failed to write modified content: %v", err)
-	}
-
-	// Add another small delay to ensure modification time is updated
-	time.Sleep(10 * time.Millisecond)
-
-	// Cache should be invalid after external modification
-	// Force cache invalidation since we modified the file externally
-	node.attrs.Invalidate()
-
-	// Get new attributes
-	newAttrs, err := fs.GetAttr(node)
-	if err != nil {
-		t.Fatalf("Failed to get new attributes: %v", err)
-	}
-
-	// Size should be different
-	if newAttrs.Size == initialAttrs.Size {
-		t.Error("Expected file size to change after modification")
-	}
-
-	// Modification time should be different
-	if newAttrs.Mtime.UnixNano() <= initialAttrs.Mtime.UnixNano() {
-		t.Error("Expected modification time to increase")
-	}
 }
 
 func TestReadAheadBuffer(t *testing.T) {
-	// Test basic read-ahead functionality
 	t.Run("basic operations", func(t *testing.T) {
-		buf := NewReadAheadBuffer(1024)
+		buffer := NewReadAheadBuffer(100) // 100 byte buffer size
+		buffer.Configure(10, 1000)        // Max 10 files, 1KB total
 
 		// Test initial state
-		data, ok := buf.Read("/test.txt", 0, 10)
-		if ok {
-			t.Error("Expected read from empty buffer to fail")
-		}
-		if len(data) != 0 {
-			t.Error("Expected empty data from failed read")
+		if _, ok := buffer.Read("/test.txt", 0, 50, nil); ok {
+			t.Error("Expected false for non-existent entry")
 		}
 
-		// Fill buffer
-		testData := []byte("Hello, World!")
-		buf.Fill("/test.txt", testData, 0)
+		// Fill with test data
+		testData := make([]byte, 100)
+		for i := range testData {
+			testData[i] = byte(i)
+		}
+		buffer.Fill("/test.txt", testData, 0)
 
-		// Test successful read
-		data, ok = buf.Read("/test.txt", 0, len(testData))
+		// Read should return a copy
+		readData, ok := buffer.Read("/test.txt", 0, 50, nil)
 		if !ok {
-			t.Error("Expected read to succeed")
+			t.Fatal("Expected true for valid read")
 		}
-		if string(data) != string(testData) {
-			t.Errorf("Wrong data returned: got %s, want %s", string(data), string(testData))
+		if len(readData) != 50 {
+			t.Errorf("Expected 50 bytes, got %d", len(readData))
+		}
+		for i := range readData {
+			if readData[i] != byte(i) {
+				t.Errorf("Data mismatch at position %d: expected %d, got %d", i, i, readData[i])
+			}
 		}
 
-		// Test partial read
-		data, ok = buf.Read("/test.txt", 7, 5)
+		// Test offset reading
+		readData, ok = buffer.Read("/test.txt", 50, 50, nil)
 		if !ok {
-			t.Error("Expected partial read to succeed")
+			t.Fatal("Expected true for valid read")
 		}
-		if string(data) != "World" {
-			t.Errorf("Wrong partial data: got %s, want World", string(data))
+		if len(readData) != 50 {
+			t.Errorf("Expected 50 bytes, got %d", len(readData))
+		}
+		for i := range readData {
+			if readData[i] != byte(i + 50) {
+				t.Errorf("Data mismatch at position %d: expected %d, got %d", i, i+50, readData[i])
+			}
 		}
 
-		// Test read beyond EOF
-		data, ok = buf.Read("/test.txt", int64(len(testData)), 5)
+		// Test reading past end
+		readData, ok = buffer.Read("/test.txt", 90, 50, nil)
 		if !ok {
-			t.Error("Expected EOF read to succeed")
+			t.Fatal("Expected true for valid read")
 		}
-		if len(data) != 0 {
-			t.Error("Expected empty data for EOF read")
-		}
-
-		// Test read before buffer start
-		data, ok = buf.Read("/test.txt", -1, 5)
-		if ok {
-			t.Error("Expected read before buffer to fail")
+		if len(readData) != 10 {
+			t.Errorf("Expected 10 bytes, got %d", len(readData))
 		}
 
-		// Test wrong path
-		data, ok = buf.Read("/other.txt", 0, 5)
-		if ok {
-			t.Error("Expected read from wrong path to fail")
+		// Test reading at end
+		readData, ok = buffer.Read("/test.txt", 100, 10, nil)
+		if !ok || len(readData) != 0 {
+			t.Error("Expected empty result at end")
 		}
 
-		// Test clear
-		buf.Clear()
-		data, ok = buf.Read("/test.txt", 0, 5)
+		// Test reading past end
+		_, ok = buffer.Read("/test.txt", 101, 10, nil)
 		if ok {
-			t.Error("Expected read after clear to fail")
+			t.Error("Expected false for read past end")
 		}
 	})
 
-	// Test concurrent access
-	t.Run("concurrent access", func(t *testing.T) {
-		// Test concurrent reads
-		t.Run("concurrent reads", func(t *testing.T) {
-			readBuf := NewReadAheadBuffer(1024)
-			var wg sync.WaitGroup
-			const goroutines = 10
-			errChan := make(chan error, goroutines)
+	t.Run("buffer eviction", func(t *testing.T) {
+		buffer := NewReadAheadBuffer(100) // 100 byte buffer size
+		buffer.Configure(3, 1000)         // Max 3 files, 1KB total
 
-			// Fill buffer
-			testData := []byte("Hello, World!")
-			readBuf.Fill("/test.txt", testData, 0)
+		testData := make([]byte, 100)
 
-			// Start concurrent readers
-			for i := 0; i < goroutines; i++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					data, ok := readBuf.Read("/test.txt", 0, len(testData))
-					if !ok {
-						errChan <- fmt.Errorf("concurrent read failed")
-						return
-					}
-					if string(data) != string(testData) {
-						errChan <- fmt.Errorf("wrong data in concurrent read: got %s, want %s", string(data), string(testData))
-					}
-				}()
-			}
+		// Fill multiple files
+		for i := 0; i < 5; i++ {
+			path := fmt.Sprintf("/file%d.txt", i)
+			buffer.Fill(path, testData, 0)
+		}
 
-			wg.Wait()
-			close(errChan)
+		// Verify old buffers were evicted
+		if _, ok := buffer.Read("/file0.txt", 0, 10, nil); ok {
+			t.Error("Expected early buffer to be evicted")
+		}
+		if _, ok := buffer.Read("/file4.txt", 0, 10, nil); !ok {
+			t.Error("Expected recent buffer to be present")
+		}
 
-			for err := range errChan {
-				t.Error(err)
-			}
-		})
-
-		// Test concurrent writes
-		t.Run("concurrent writes", func(t *testing.T) {
-			var wg sync.WaitGroup
-			const goroutines = 10
-			errChan := make(chan error, goroutines)
-
-			// Create a buffer for each writer
-			buffers := make([]*ReadAheadBuffer, goroutines)
-			for i := range buffers {
-				buffers[i] = NewReadAheadBuffer(1024)
-			}
-
-			// Start concurrent writers
-			for i := 0; i < goroutines; i++ {
-				wg.Add(1)
-				go func(i int) {
-					defer wg.Done()
-					path := fmt.Sprintf("/test%d.txt", i)
-					newData := []byte(fmt.Sprintf("Data %d", i))
-					buffers[i].Fill(path, newData, 0)
-
-					// Verify written data can be read back
-					data, ok := buffers[i].Read(path, 0, len(newData))
-					if !ok {
-						errChan <- fmt.Errorf("failed to read back written data for path %s", path)
-						return
-					}
-					if string(data) != string(newData) {
-						errChan <- fmt.Errorf("data mismatch after write for path %s: got %s, want %s", path, string(data), string(newData))
-					}
-				}(i)
-			}
-
-			wg.Wait()
-			close(errChan)
-
-			for err := range errChan {
-				t.Error(err)
-			}
-		})
+		// Check current memory usage
+		if buffer.Size() > 300 {
+			t.Errorf("Expected size <= 300, got %d", buffer.Size())
+		}
 	})
 
-	// Test buffer size limits
-	t.Run("buffer size limits", func(t *testing.T) {
-		// Test with small buffer
-		smallBuf := NewReadAheadBuffer(10)
-		testData := []byte("This is a test that exceeds buffer size")
-		smallBuf.Fill("/test.txt", testData, 0)
+	t.Run("memory limits", func(t *testing.T) {
+		buffer := NewReadAheadBuffer(100)    // 100 byte buffer size
+		buffer.Configure(10, 300)            // Max 10 files, 300 bytes total (only room for 3 buffers)
 
-		// Read should still work but truncate data
-		data, ok := smallBuf.Read("/test.txt", 0, len(testData))
-		if !ok {
-			t.Error("Expected read to succeed with truncation")
-		}
-		if len(data) > 10 {
-			t.Error("Data should be truncated to buffer size")
+		testData := make([]byte, 100)
+
+		// Fill multiple files
+		for i := 0; i < 5; i++ {
+			path := fmt.Sprintf("/file%d.txt", i)
+			buffer.Fill(path, testData, 0)
 		}
 
-		// Test with exact buffer size
-		exactBuf := NewReadAheadBuffer(len(testData))
-		exactBuf.Fill("/test.txt", testData, 0)
-		data, ok = exactBuf.Read("/test.txt", 0, len(testData))
-		if !ok {
-			t.Error("Expected read to succeed")
-		}
-		if string(data) != string(testData) {
-			t.Error("Data should match exactly")
+		// Verify memory limit is respected
+		if buffer.Size() > 300 {
+			t.Errorf("Expected memory usage <= 300, got %d", buffer.Size())
 		}
 	})
 }

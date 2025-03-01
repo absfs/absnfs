@@ -154,7 +154,7 @@ func TestCacheReductionCalculation(t *testing.T) {
 	}
 
 	// Get current read-ahead buffer configuration
-	fileCount, memUsage, _ := server.readBuf.Stats()
+	fileCount, memUsage := server.readBuf.Stats()
 
 	// Verify file count limit was reduced
 	if fileCount > initialReadAheadMaxFiles {
