@@ -76,7 +76,7 @@ Each feature will be implemented in a separate branch to maintain clean developm
 
 ### Network Optimization
 
-- [ ] **TCP Configuration**
+- [x] **TCP Configuration**
   - Add `TCPKeepAlive bool` to ExportOptions
   - Add `TCPNoDelay bool` to ExportOptions
   - Default: true, true
@@ -90,7 +90,7 @@ Each feature will be implemented in a separate branch to maintain clean developm
   - Implement connection tracking and limits
   - Add validation in New() function
 
-- [ ] **Buffer Sizes**
+- [x] **Buffer Sizes**
   - Add `SendBufferSize int` to ExportOptions
   - Add `ReceiveBufferSize int` to ExportOptions
   - Default: 262144 (256KB), 262144 (256KB)
@@ -133,7 +133,7 @@ Each feature will be implemented in a separate branch to maintain clean developm
 | Operation Batching | Completed | feature-operation-batching | 2025-02-28 | Added operation batching system for improved performance with tests |
 | TCP Configuration | Completed | feature-tcp-config | 2025-02-28 | Added TCP socket configuration options (keep-alive and no-delay) with tests |
 | Connection Management | Completed | feature-connection-management | 2025-02-28 | Added connection limiting and idle connection management with tests |
-| Buffer Sizes | Not Started | - | - | - |
+| Buffer Sizes | Completed | feature-buffer-sizes | 2025-02-28 | Added TCP buffer size configuration options with tests |
 | Metrics Structure | Not Started | - | - | - |
 | Metrics Collection | Not Started | - | - | - |
 | GetMetrics Method | Not Started | - | - | - |

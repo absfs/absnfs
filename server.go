@@ -288,6 +288,37 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 				conn.Close()
 				continue
 			}
+			
+			// Configure TCP connection options if this is a TCP connection
+			if tcpConn, ok := conn.(*net.TCPConn); ok && s.handler != nil {
+				// Apply TCP keepalive setting
+				if s.handler.options.TCPKeepAlive {
+					tcpConn.SetKeepAlive(true)
+					tcpConn.SetKeepAlivePeriod(60 * time.Second) // Standard keepalive period
+				}
+				
+				// Apply TCP no delay setting (disable Nagle's algorithm)
+				if s.handler.options.TCPNoDelay {
+					tcpConn.SetNoDelay(true)
+				}
+				
+				// Apply buffer sizes
+				if s.handler.options.SendBufferSize > 0 {
+					tcpConn.SetWriteBuffer(s.handler.options.SendBufferSize)
+				}
+				
+				if s.handler.options.ReceiveBufferSize > 0 {
+					tcpConn.SetReadBuffer(s.handler.options.ReceiveBufferSize)
+				}
+				
+				if s.options.Debug {
+					s.logger.Printf("Configured TCP connection (keepalive: %v, nodelay: %v, sendbuf: %d, recvbuf: %d)",
+						s.handler.options.TCPKeepAlive,
+						s.handler.options.TCPNoDelay,
+						s.handler.options.SendBufferSize,
+						s.handler.options.ReceiveBufferSize)
+				}
+			}
 
 			s.wg.Add(1)
 			go func() {

@@ -123,6 +123,29 @@ type ExportOptions struct {
 	// This helps reclaim resources from abandoned connections
 	// Default: 5 * time.Minute
 	IdleTimeout time.Duration
+	
+	// TCPKeepAlive enables TCP keep-alive probes on NFS connections
+	// Keep-alive helps detect dead connections when clients disconnect improperly
+	// Default: true
+	TCPKeepAlive bool
+	
+	// TCPNoDelay disables Nagle's algorithm on TCP connections to reduce latency
+	// This may improve performance for small requests at the cost of increased bandwidth usage
+	// Default: true
+	TCPNoDelay bool
+	
+	// internal field to track if TCP settings have been explicitly set
+	hasExplicitTCPSettings bool
+	
+	// SendBufferSize controls the size of the TCP send buffer in bytes
+	// Larger buffers can improve throughput but consume more memory
+	// Default: 262144 (256KB)
+	SendBufferSize int
+	
+	// ReceiveBufferSize controls the size of the TCP receive buffer in bytes
+	// Larger buffers can improve throughput but consume more memory
+	// Default: 262144 (256KB)
+	ReceiveBufferSize int
 }
 
 // FileHandleMap manages the mapping between NFS file handles and absfs files
@@ -234,6 +257,21 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	
 	if options.IdleTimeout <= 0 {
 		options.IdleTimeout = 5 * time.Minute // Default: 5 minutes
+	}
+	
+	// Set TCP socket options defaults if they haven't been explicitly configured
+	// We're checking if the options struct was created with fields vs. default values
+	if !options.hasExplicitTCPSettings {
+		options.TCPKeepAlive = true // Default: enabled
+		options.TCPNoDelay = true   // Default: enabled
+	}
+	
+	if options.SendBufferSize <= 0 {
+		options.SendBufferSize = 262144 // Default: 256KB
+	}
+	
+	if options.ReceiveBufferSize <= 0 {
+		options.ReceiveBufferSize = 262144 // Default: 256KB
 	}
 
 	// Create server object with configured caches
