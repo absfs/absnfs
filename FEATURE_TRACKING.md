@@ -41,7 +41,7 @@ Each feature will be implemented in a separate branch to maintain clean developm
 
 ### Memory Optimization
 
-- [ ] **Cache Size Control**
+- [x] **Cache Size Control**
   - Add `AttrCacheSize int` to ExportOptions (if not already added)
   - Add `ReadAheadMaxFiles int` to ExportOptions
   - Add `ReadAheadMaxMemory int64` to ExportOptions
