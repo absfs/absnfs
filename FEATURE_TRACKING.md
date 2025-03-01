@@ -99,23 +99,23 @@ Each feature will be implemented in a separate branch to maintain clean developm
 
 ### Metrics and Monitoring
 
-- [ ] **Metrics Structure**
+- [x] **Metrics Structure**
   - Create NFSMetrics struct with all documented metrics
   - Implement counters for operations, errors, etc.
   - Implement gauges for cache hit rates, connections, etc.
   - Implement latency tracking
 
-- [ ] **Metrics Collection**
+- [x] **Metrics Collection**
   - Add instrumentation throughout the code
   - Implement thread-safe metrics updating
   - Add timestamps for rate calculations
 
-- [ ] **GetMetrics Method**
+- [x] **GetMetrics Method**
   - Implement GetMetrics() method on AbsfsNFS
   - Return a snapshot of current metrics
   - Ensure thread safety
 
-- [ ] **Health Checking**
+- [x] **Health Checking**
   - Add `IsHealthy()` method to AbsfsNFS
   - Implement health check logic
   - Consider resource usage in health determination
@@ -134,10 +134,10 @@ Each feature will be implemented in a separate branch to maintain clean developm
 | TCP Configuration | Completed | feature-tcp-config | 2025-02-28 | Added TCP socket configuration options (keep-alive and no-delay) with tests |
 | Connection Management | Completed | feature-connection-management | 2025-02-28 | Added connection limiting and idle connection management with tests |
 | Buffer Sizes | Completed | feature-buffer-sizes | 2025-02-28 | Added TCP buffer size configuration options with tests |
-| Metrics Structure | Not Started | - | - | - |
-| Metrics Collection | Not Started | - | - | - |
-| GetMetrics Method | Not Started | - | - | - |
-| Health Checking | Not Started | - | - | - |
+| Metrics Structure | Completed | feature-metrics | 2025-02-28 | Added metrics structure for all metrics types |
+| Metrics Collection | Completed | feature-metrics | 2025-02-28 | Added thread-safe metrics collection throughout code |
+| GetMetrics Method | Completed | feature-metrics | 2025-02-28 | Added GetMetrics() for API access to metrics |
+| Health Checking | Completed | feature-metrics | 2025-02-28 | Added IsHealthy() method with comprehensive health logic |
 
 ## Testing Strategy
 

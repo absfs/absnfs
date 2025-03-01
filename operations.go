@@ -51,7 +51,7 @@ func (s *AbsfsNFS) Lookup(path string) (*NFSNode, error) {
 	}
 
 	// Check cache first
-	if attrs := s.attrCache.Get(path); attrs != nil {
+	if attrs := s.attrCache.Get(path, s); attrs != nil {
 		node := &NFSNode{
 			FileSystem: s.fs,
 			path:       path,
@@ -183,7 +183,7 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 	}
 
 	// Try read-ahead buffer first if enabled
-	if data, ok := s.readBuf.Read(node.path, offset, int(count)); ok {
+	if data, ok := s.readBuf.Read(node.path, offset, int(count), s); ok {
 		return data, nil
 	}
 	

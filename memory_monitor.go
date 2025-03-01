@@ -143,7 +143,7 @@ func (m *MemoryMonitor) reduceCacheSizes(reductionFactor float64) {
 
 	// Get current cache settings
 	attrCacheSize := m.nfs.attrCache.MaxSize()
-	fileCount, memoryUsage, _ := m.nfs.readBuf.Stats()
+	fileCount, memoryUsage := m.nfs.readBuf.Stats()
 
 	// Calculate new reduced sizes
 	newAttrCacheSize := int(float64(attrCacheSize) * (1.0 - reductionFactor))

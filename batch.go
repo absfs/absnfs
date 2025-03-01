@@ -355,7 +355,7 @@ func (bp *BatchProcessor) processGetAttrBatch(batch *Batch) {
 		if node, ok := file.(*NFSNode); ok {
 			path = node.path
 			// Try to get attributes from cache first
-			attrs = bp.processor.attrCache.Get(path)
+			attrs = bp.processor.attrCache.Get(path, bp.processor)
 		}
 		
 		// If not in cache or not an NFSNode, get attributes directly

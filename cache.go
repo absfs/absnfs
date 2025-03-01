@@ -35,7 +35,12 @@ func NewAttrCache(ttl time.Duration, maxSize int) *AttrCache {
 }
 
 // Get retrieves cached attributes if they exist and are not expired
-func (c *AttrCache) Get(path string) *NFSAttrs {
+func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
+	var s *AbsfsNFS
+	if len(server) > 0 {
+		s = server[0]
+	}
+	
 	c.mu.RLock()
 	cached, ok := c.cache[path]
 	if ok && time.Now().Before(cached.expireAt) {
@@ -45,6 +50,11 @@ func (c *AttrCache) Get(path string) *NFSAttrs {
 		c.mu.Lock()
 		c.updateAccessLog(path)
 		c.mu.Unlock()
+		
+		// Record cache hit for metrics
+		if s != nil {
+			s.RecordAttrCacheHit()
+		}
 		
 		// Return a copy to prevent modification of cached data
 		attrs := &NFSAttrs{
@@ -58,6 +68,11 @@ func (c *AttrCache) Get(path string) *NFSAttrs {
 		return attrs
 	}
 	c.mu.RUnlock()
+
+	// Record cache miss for metrics
+	if s != nil {
+		s.RecordAttrCacheMiss()
+	}
 
 	if ok {
 		// Expired entry, remove it
@@ -156,6 +171,14 @@ func (c *AttrCache) MaxSize() int {
 	return c.maxSize
 }
 
+// Stats returns the current size and capacity of the cache
+func (c *AttrCache) Stats() (int, int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	return len(c.cache), c.maxSize
+}
+
 // FileBuffer represents a read-ahead buffer for a specific file
 type FileBuffer struct {
 	data    []byte
@@ -197,6 +220,22 @@ func (b *ReadAheadBuffer) Configure(maxFiles int, maxMemory int64) {
 	
 	// If current usage exceeds new limits, evict buffers
 	b.enforceMemoryLimits()
+}
+
+// Size returns the current memory usage of all read-ahead buffers
+func (b *ReadAheadBuffer) Size() int64 {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	
+	return b.currentUsage
+}
+
+// Stats returns the number of files and memory usage of the read-ahead buffer
+func (b *ReadAheadBuffer) Stats() (int, int64) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	
+	return len(b.buffers), b.currentUsage
 }
 
 // enforceMemoryLimits ensures that memory usage stays within configured limits
@@ -292,11 +331,22 @@ func (b *ReadAheadBuffer) Fill(path string, data []byte, offset int64) {
 }
 
 // Read attempts to read from the buffer for a file
-func (b *ReadAheadBuffer) Read(path string, offset int64, count int) ([]byte, bool) {
+func (b *ReadAheadBuffer) Read(path string, offset int64, count int, server ...*AbsfsNFS) ([]byte, bool) {
+	var s *AbsfsNFS
+	if len(server) > 0 {
+		s = server[0]
+	}
+	
 	b.mu.RLock()
 	buffer, exists := b.buffers[path]
 	if !exists {
 		b.mu.RUnlock()
+		
+		// Record cache miss in metrics
+		if s != nil {
+			s.RecordReadAheadMiss()
+		}
+		
 		return nil, false
 	}
 	
@@ -304,11 +354,23 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int) ([]byte, bo
 	// Special case: handle reads that are exactly at the end of the buffer
 	if offset == buffer.offset+int64(buffer.dataLen) {
 		b.mu.RUnlock()
+		
+		// Record cache hit in metrics
+		if s != nil {
+			s.RecordReadAheadHit()
+		}
+		
 		return []byte{}, true // Empty result indicates EOF
 	}
 	
 	if offset < buffer.offset || offset > buffer.offset+int64(buffer.dataLen) {
 		b.mu.RUnlock()
+		
+		// Record cache miss in metrics
+		if s != nil {
+			s.RecordReadAheadMiss()
+		}
+		
 		return nil, false
 	}
 	
@@ -316,6 +378,12 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int) ([]byte, bo
 	start := int(offset - buffer.offset)
 	if start >= buffer.dataLen {
 		b.mu.RUnlock()
+		
+		// Record cache hit in metrics
+		if s != nil {
+			s.RecordReadAheadHit()
+		}
+		
 		return []byte{}, true
 	}
 	
@@ -337,6 +405,11 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int) ([]byte, bo
 	}
 	b.mu.Unlock()
 	
+	// Record cache hit in metrics
+	if s != nil {
+		s.RecordReadAheadHit()
+	}
+	
 	return result, true
 }
 
@@ -356,18 +429,4 @@ func (b *ReadAheadBuffer) ClearPath(path string) {
 	defer b.mu.Unlock()
 	
 	b.evictBuffer(path)
-}
-
-// Stats returns statistics about the read-ahead buffers
-func (b *ReadAheadBuffer) Stats() (fileCount int, memoryUsage int64, capacityPct float64) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	
-	fileCount = len(b.buffers)
-	memoryUsage = b.currentUsage
-	if b.maxMemory > 0 {
-		capacityPct = float64(b.currentUsage) / float64(b.maxMemory) * 100
-	}
-	
-	return
 }
