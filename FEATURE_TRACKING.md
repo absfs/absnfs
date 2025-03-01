@@ -83,7 +83,7 @@ Each feature will be implemented in a separate branch to maintain clean developm
   - Apply these settings to network connections
   - Add validation in New() function
 
-- [ ] **Connection Management**
+- [x] **Connection Management**
   - Add `MaxConnections int` to ExportOptions
   - Add `IdleTimeout time.Duration` to ExportOptions
   - Default: 100, 5 * time.Minute
@@ -131,8 +131,8 @@ Each feature will be implemented in a separate branch to maintain clean developm
 | Memory Pressure Detection | Completed | feature-memory-pressure | 2025-02-28 | Added memory monitoring and automatic cache reduction with tests |
 | Worker Pool Management | Completed | feature-worker-pool | 2025-02-28 | Added worker pool for concurrent operations with tests |
 | Operation Batching | Completed | feature-operation-batching | 2025-02-28 | Added operation batching system for improved performance with tests |
-| TCP Configuration | Not Started | - | - | - |
-| Connection Management | Not Started | - | - | - |
+| TCP Configuration | Completed | feature-tcp-config | 2025-02-28 | Added TCP socket configuration options (keep-alive and no-delay) with tests |
+| Connection Management | Completed | feature-connection-management | 2025-02-28 | Added connection limiting and idle connection management with tests |
 | Buffer Sizes | Not Started | - | - | - |
 | Metrics Structure | Not Started | - | - | - |
 | Metrics Collection | Not Started | - | - | - |

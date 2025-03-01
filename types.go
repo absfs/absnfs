@@ -113,6 +113,16 @@ type ExportOptions struct {
 	// Only applicable when BatchOperations is true
 	// Default: 10 operations
 	MaxBatchSize int
+	
+	// MaxConnections limits the number of simultaneous client connections
+	// Setting to 0 means unlimited connections (limited only by system resources)
+	// Default: 100
+	MaxConnections int
+	
+	// IdleTimeout defines how long to keep inactive connections before closing them
+	// This helps reclaim resources from abandoned connections
+	// Default: 5 * time.Minute
+	IdleTimeout time.Duration
 }
 
 // FileHandleMap manages the mapping between NFS file handles and absfs files
@@ -215,6 +225,15 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	
 	if options.MaxBatchSize <= 0 {
 		options.MaxBatchSize = 10 // Default: 10 operations per batch
+	}
+	
+	// Connection management defaults
+	if options.MaxConnections <= 0 {
+		options.MaxConnections = 100 // Default: 100 concurrent connections
+	}
+	
+	if options.IdleTimeout <= 0 {
+		options.IdleTimeout = 5 * time.Minute // Default: 5 minutes
 	}
 
 	// Create server object with configured caches

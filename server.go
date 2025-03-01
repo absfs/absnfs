@@ -25,14 +25,19 @@ type ServerOptions struct {
 
 // Server represents an NFS server instance
 type Server struct {
-	options    ServerOptions
-	handler    *AbsfsNFS
-	listener   net.Listener
-	logger     *log.Logger
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	acceptErrs int // Counter for accept errors to prevent excessive logging
+	options        ServerOptions
+	handler        *AbsfsNFS
+	listener       net.Listener
+	logger         *log.Logger
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	acceptErrs     int // Counter for accept errors to prevent excessive logging
+	
+	// Connection management
+	connMutex      sync.Mutex
+	activeConns    map[net.Conn]time.Time  // Map of active connections and their last activity time
+	connCount      int                     // Current connection count
 }
 
 // NewServer creates a new NFS server
@@ -49,10 +54,11 @@ func NewServer(options ServerOptions) (*Server, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
-		options: options,
-		logger:  log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
-		ctx:     ctx,
-		cancel:  cancel,
+		options:     options,
+		logger:      log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
+		ctx:         ctx,
+		cancel:      cancel,
+		activeConns: make(map[net.Conn]time.Time),
 	}, nil
 }
 
@@ -62,9 +68,131 @@ func (s *Server) SetHandler(handler *AbsfsNFS) {
 }
 
 // Listen starts the NFS server
+// registerConnection adds a connection to the tracking map and increments the counter
+func (s *Server) registerConnection(conn net.Conn) bool {
+	if s.handler == nil {
+		return true // If no handler, always allow connections
+	}
+
+	s.connMutex.Lock()
+	defer s.connMutex.Unlock()
+
+	// Check if we're at the connection limit
+	if s.handler.options.MaxConnections > 0 && s.connCount >= s.handler.options.MaxConnections {
+		// We're at the limit, reject this connection
+		if s.options.Debug {
+			s.logger.Printf("Connection limit reached (%d), rejecting new connection", s.handler.options.MaxConnections)
+		}
+		return false
+	}
+
+	// Add to tracking map with current time
+	s.activeConns[conn] = time.Now()
+	s.connCount++
+
+	if s.options.Debug {
+		s.logger.Printf("New connection accepted (total: %d)", s.connCount)
+	}
+	return true
+}
+
+// unregisterConnection removes a connection from the tracking map and decrements the counter
+func (s *Server) unregisterConnection(conn net.Conn) {
+	s.connMutex.Lock()
+	defer s.connMutex.Unlock()
+
+	// Remove from tracking map
+	if _, exists := s.activeConns[conn]; exists {
+		delete(s.activeConns, conn)
+		s.connCount--
+		
+		if s.options.Debug {
+			s.logger.Printf("Connection closed (total: %d)", s.connCount)
+		}
+	}
+}
+
+// updateConnectionActivity updates the last activity time for a connection
+func (s *Server) updateConnectionActivity(conn net.Conn) {
+	s.connMutex.Lock()
+	defer s.connMutex.Unlock()
+
+	// Update last activity time
+	s.activeConns[conn] = time.Now()
+}
+
+// cleanupIdleConnections closes connections that have been idle for too long
+func (s *Server) cleanupIdleConnections() {
+	if s.handler == nil || s.handler.options.IdleTimeout <= 0 {
+		return // No handler or idle timeout not set
+	}
+
+	s.connMutex.Lock()
+	defer s.connMutex.Unlock()
+
+	now := time.Now()
+	idleTimeout := s.handler.options.IdleTimeout
+
+	// Check each connection
+	var idleCount int
+	for conn, lastActivity := range s.activeConns {
+		if now.Sub(lastActivity) > idleTimeout {
+			// This connection has been idle for too long
+			conn.Close() // Close the connection
+			delete(s.activeConns, conn)
+			s.connCount--
+			idleCount++
+		}
+	}
+
+	if idleCount > 0 && s.options.Debug {
+		s.logger.Printf("Closed %d idle connections (remaining: %d)", idleCount, s.connCount)
+	}
+}
+
+// idleConnectionCleanupLoop periodically checks for and closes idle connections
+func (s *Server) idleConnectionCleanupLoop() {
+	// Default check interval is 1 minute or IdleTimeout/2, whichever is shorter
+	checkInterval := 1 * time.Minute
+	
+	if s.handler != nil && s.handler.options.IdleTimeout > 0 {
+		// Use half the idle timeout as a reasonable check interval
+		halfTimeout := s.handler.options.IdleTimeout / 2
+		if halfTimeout < checkInterval {
+			checkInterval = halfTimeout
+		}
+	}
+	
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-s.ctx.Done():
+			return // Server is shutting down
+		case <-ticker.C:
+			s.cleanupIdleConnections()
+		}
+	}
+}
+
 func (s *Server) Listen() error {
 	if s.handler == nil {
 		return fmt.Errorf("no handler set")
+	}
+	
+	// Start periodic idle connection cleanup if needed
+	if s.handler.options.IdleTimeout > 0 {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.idleConnectionCleanupLoop()
+		}()
+		
+		if s.options.Debug {
+			s.logger.Printf("Connection management enabled (max connections: %d, idle timeout: %v)",
+				s.handler.options.MaxConnections, s.handler.options.IdleTimeout)
+		}
 	}
 
 	// Try to bind to the specified port
@@ -153,10 +281,18 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 				continue
 			}
 			s.acceptErrs = 0 // Reset error counter on successful accept
+			
+			// Check if we can accept this connection based on connection limits
+			if !s.registerConnection(conn) {
+				// Connection limit reached, reject this connection
+				conn.Close()
+				continue
+			}
 
 			s.wg.Add(1)
 			go func() {
 				defer s.wg.Done()
+				defer s.unregisterConnection(conn) // Ensure connection is unregistered when done
 				s.handleConnection(conn, procHandler)
 			}()
 		}
@@ -191,6 +327,9 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 				}
 				return
 			}
+			
+			// Update last activity time for this connection
+			s.updateConnectionActivity(conn)
 
 			// Use worker pool to handle the call if available
 			var reply *RPCReply
@@ -234,6 +373,9 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 				}
 				return
 			}
+			
+			// Update last activity time for this connection after successful write
+			s.updateConnectionActivity(conn)
 		}
 	}
 }
@@ -261,6 +403,9 @@ func (s *Server) Stop() error {
 	if s.listener != nil {
 		s.listener.Close()
 	}
+	
+	// Close all active connections
+	s.closeAllConnections()
 
 	// Wait for all goroutines to finish with timeout
 	done := make(chan struct{})
@@ -284,6 +429,24 @@ func isTimeoutError(err error) bool {
 	}
 	netErr, ok := err.(net.Error)
 	return ok && netErr.Timeout()
+}
+
+// closeAllConnections closes all active connections
+func (s *Server) closeAllConnections() {
+	s.connMutex.Lock()
+	defer s.connMutex.Unlock()
+
+	// Close all active connections
+	for conn := range s.activeConns {
+		conn.Close()
+	}
+	
+	// Clear the map
+	if len(s.activeConns) > 0 && s.options.Debug {
+		s.logger.Printf("Closed %d connections during shutdown", len(s.activeConns))
+	}
+	s.activeConns = make(map[net.Conn]time.Time)
+	s.connCount = 0
 }
 
 // isConnectionResetError checks if an error is due to connection reset
