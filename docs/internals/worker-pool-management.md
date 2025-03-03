@@ -1,6 +1,11 @@
-# Worker Pool Implementation
+---
+layout: default
+title: Worker Pool Management
+---
 
-This document summarizes the implementation of the Worker Pool Management feature for the ABSNFS project.
+# Worker Pool Management
+
+This document describes the implementation of the Worker Pool Management feature for the ABSNFS project.
 
 ## Overview
 

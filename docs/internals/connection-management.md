@@ -1,4 +1,9 @@
-# Connection Management Implementation
+---
+layout: default
+title: Connection Management
+---
+
+# Connection Management
 
 This document describes the implementation of connection management features in the ABSNFS server.
 

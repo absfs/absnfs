@@ -1,6 +1,9 @@
-# TCP Buffer Sizes Implementation
+---
+layout: default
+title: TCP Buffer Sizes
+---
 
-## Overview
+# TCP Buffer Sizes
 
 This document describes the implementation of the TCP Buffer Sizes feature for ABSNFS. This feature enhances network performance by allowing configuration of TCP socket options, including buffer sizes, TCP keepalive, and TCP_NODELAY (Nagle's algorithm).
 

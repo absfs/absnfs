@@ -11,6 +11,12 @@ This section provides detailed information about the internal architecture and d
 
 - [System Architecture](./architecture.md): Overview of the ABSNFS architecture
 - [Component Interactions](./component-interactions.md): How the different components interact
+- [Worker Pool Management](./worker-pool-management.md): How worker pools improve concurrency
+- [Operation Batching](./operation-batching.md): How operations are batched for improved performance
+- [Connection Management](./connection-management.md): How client connections are managed
+- [TCP Buffer Sizes](./tcp-buffer-sizes.md): How TCP buffer sizes are optimized for performance
+- [Cache Size Control](./cache-size-control.md): How memory usage is managed through adaptive cache sizing
+- [Metrics and Monitoring](./metrics-and-monitoring.md): How metrics are collected and exposed
 - [Request Flow](./request-flow.md): How requests flow through the system
 
 ## NFS Protocol Implementation

@@ -1,6 +1,9 @@
-# Metrics Implementation
+---
+layout: default
+title: Metrics and Monitoring
+---
 
-## Overview
+# Metrics and Monitoring
 
 This document describes the implementation of metrics collection and monitoring in the ABSNFS server. The metrics system provides comprehensive statistics about server performance, resource usage, and error conditions to help users monitor and optimize their NFS deployments.
 

@@ -1,6 +1,11 @@
-# Operation Batching Implementation
+---
+layout: default
+title: Operation Batching
+---
 
-This document summarizes the implementation of the Operation Batching feature for the ABSNFS project.
+# Operation Batching
+
+This document describes the implementation of the Operation Batching feature for the ABSNFS project.
 
 ## Overview
 
