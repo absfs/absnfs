@@ -227,7 +227,7 @@ func TestReadAheadBufferOperations(t *testing.T) {
 	if capacityPct != expectedCapacityPct {
 		t.Errorf("Wrong capacity percentage: got %.2f, want %.2f", capacityPct, expectedCapacityPct)
 	}
-	
+
 	// Test clear for specific path
 	buffer.ClearPath(testPath1)
 	readData, hit = buffer.Read(testPath1, testOffset, len(testData))

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/absfs/absfs"
@@ -42,6 +44,44 @@ func toFileAttribute(info os.FileInfo) FileAttribute {
 		Ctime:  uint32(mtime.Unix()),
 		Fileid: uint64(time.Now().UnixNano()), // Generate a unique file ID
 	}
+}
+
+// sanitizePath validates and sanitizes a path to prevent directory traversal attacks.
+// It ensures the resulting path is within the base directory and rejects paths containing ".." components.
+func sanitizePath(basePath, name string) (string, error) {
+	// Reject empty names
+	if name == "" {
+		return "", fmt.Errorf("empty name")
+	}
+
+	// Reject names containing path separators or parent directory references
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return "", fmt.Errorf("invalid name: contains path separator")
+	}
+
+	if name == ".." || name == "." {
+		return "", fmt.Errorf("invalid name: parent or current directory reference")
+	}
+
+	// Construct the path
+	path := filepath.Join(basePath, name)
+
+	// Clean the path to resolve any ".." or "." components
+	cleanPath := filepath.Clean(path)
+
+	// Ensure the cleaned path is still within the base directory
+	// by checking if it starts with the base path
+	cleanBase := filepath.Clean(basePath)
+	if !strings.HasPrefix(cleanPath, cleanBase) {
+		return "", fmt.Errorf("invalid path: traversal attempt detected")
+	}
+
+	// Additional check: ensure no ".." components remain after cleaning
+	if strings.Contains(cleanPath, "..") {
+		return "", fmt.Errorf("invalid path: contains parent directory reference")
+	}
+
+	return cleanPath, nil
 }
 
 // Lookup implements the LOOKUP operation
@@ -374,7 +414,12 @@ func (s *AbsfsNFS) Create(dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode,
 		return nil, os.ErrPermission
 	}
 
-	path := dir.path + "/" + name
+	// Sanitize the path to prevent directory traversal attacks
+	path, err := sanitizePath(dir.path, name)
+	if err != nil {
+		return nil, err
+	}
+
 	f, err := s.fs.Create(path)
 	if err != nil {
 		return nil, err
@@ -404,8 +449,13 @@ func (s *AbsfsNFS) Remove(dir *NFSNode, name string) error {
 		return os.ErrPermission
 	}
 
-	path := dir.path + "/" + name
-	err := s.fs.Remove(path)
+	// Sanitize the path to prevent directory traversal attacks
+	path, err := sanitizePath(dir.path, name)
+	if err != nil {
+		return err
+	}
+
+	err = s.fs.Remove(path)
 	if err == nil {
 		// Invalidate caches
 		s.attrCache.Invalidate(path)
@@ -427,10 +477,18 @@ func (s *AbsfsNFS) Rename(oldDir *NFSNode, oldName string, newDir *NFSNode, newN
 		return os.ErrPermission
 	}
 
-	oldPath := oldDir.path + "/" + oldName
-	newPath := newDir.path + "/" + newName
+	// Sanitize both paths to prevent directory traversal attacks
+	oldPath, err := sanitizePath(oldDir.path, oldName)
+	if err != nil {
+		return err
+	}
 
-	err := s.fs.Rename(oldPath, newPath)
+	newPath, err := sanitizePath(newDir.path, newName)
+	if err != nil {
+		return err
+	}
+
+	err = s.fs.Rename(oldPath, newPath)
 	if err == nil {
 		// Invalidate caches
 		s.attrCache.Invalidate(oldPath)
@@ -472,7 +530,12 @@ func (s *AbsfsNFS) ReadDir(dir *NFSNode) ([]*NFSNode, error) {
 		if name == "." || name == ".." {
 			continue
 		}
-		entryPath := dir.path + "/" + name
+		// Sanitize the path to prevent directory traversal attacks
+		entryPath, err := sanitizePath(dir.path, name)
+		if err != nil {
+			// Skip entries with invalid names
+			continue
+		}
 		node, err := s.Lookup(entryPath)
 		if err != nil {
 			continue
