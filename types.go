@@ -371,25 +371,30 @@ func (n *AbsfsNFS) ExecuteWithWorker(task func() interface{}) interface{} {
 func (n *AbsfsNFS) Close() error {
 	// Stop memory monitoring if active
 	n.stopMemoryMonitoring()
-	
+
 	// Stop worker pool
 	if n.workerPool != nil {
 		n.workerPool.Stop()
 	}
-	
+
 	// Stop batch processor
 	if n.batchProc != nil {
 		n.batchProc.Stop()
 	}
-	
+
+	// Release all file handles to prevent file descriptor leaks
+	if n.fileMap != nil {
+		n.fileMap.ReleaseAll()
+	}
+
 	// Clear caches to free memory
 	if n.attrCache != nil {
 		n.attrCache.Clear()
 	}
-	
+
 	if n.readBuf != nil {
 		n.readBuf.Clear()
 	}
-	
+
 	return nil
 }
