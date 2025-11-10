@@ -3,11 +3,11 @@ module github.com/absfs/absnfs
 go 1.21
 
 require (
-	github.com/absfs/absfs v0.0.0-20200602175035-e49edc9fef15
-	github.com/absfs/memfs v0.0.0-20230318170722-e8d59e67c8b1
+	github.com/absfs/absfs v0.0.0-20251109181304-77e2f9ac4448
+	github.com/absfs/memfs v0.0.0-20251109184305-4de1ff55a67e
 )
 
 require (
-	github.com/absfs/inode v0.0.0-20190804195220-b7cd14cdd0dc // indirect
+	github.com/absfs/inode v0.0.1 // indirect
 	golang.org/x/sys v0.16.0 // indirect
 )

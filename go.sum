@@ -1,11 +1,11 @@
-github.com/absfs/absfs v0.0.0-20200602175035-e49edc9fef15 h1:tcUuSvytlUEjm5D1qu7beKnaPf/uWtNXVutHxXqVJ6A=
-github.com/absfs/absfs v0.0.0-20200602175035-e49edc9fef15/go.mod h1:EcuvbVuyyWyu+g4ACjKzyUypG60qSvorqC/hjByBEqY=
+github.com/absfs/absfs v0.0.0-20251109181304-77e2f9ac4448 h1:uN3Q47kmtV6TIGHZbrCbCf68jWmYDWyTcqq5JuoyON4=
+github.com/absfs/absfs v0.0.0-20251109181304-77e2f9ac4448/go.mod h1:IvFD36FQcMxLLZNhs2Lms+Uosc0G3AJ2JHOJIz8E5d8=
 github.com/absfs/fstesting v0.0.0-20180810212821-8b575cdeb80d h1:EVkAQkoP/iYX7WpkSgaSkHr5AgDdzxR06Hmy+bu4YpU=
 github.com/absfs/fstesting v0.0.0-20180810212821-8b575cdeb80d/go.mod h1:Ib9xUBFJeggV+KCP6/90/ymnt4Siu6V1vBFJrrT1y/s=
-github.com/absfs/inode v0.0.0-20190804195220-b7cd14cdd0dc h1:KjciuTgBUzV6RfeVLd/Ijhy9Iq7z0JoJ44te3fZaaNE=
-github.com/absfs/inode v0.0.0-20190804195220-b7cd14cdd0dc/go.mod h1:lc9vQxyCSyrjclBTgazRvacmElJLj7VfpDmgDnL77o0=
-github.com/absfs/memfs v0.0.0-20230318170722-e8d59e67c8b1 h1:bivMPRSx6Tb1/Cm9P0GcTfFBO++9f0w3o0YfepmRaMQ=
-github.com/absfs/memfs v0.0.0-20230318170722-e8d59e67c8b1/go.mod h1:ITY8mYr6yHK7ZTNblu5zQk33tMIRaJhoa+YX8/talDk=
+github.com/absfs/inode v0.0.1 h1:xYufK8Zq/4MT0/ioqmrXIzjcAZisM4q+90FN62JlsbU=
+github.com/absfs/inode v0.0.1/go.mod h1:98Uz4QOknMBXXWwXUIs2TzSwuz+9mbSAKASbwF1eld8=
+github.com/absfs/memfs v0.0.0-20251109184305-4de1ff55a67e h1:+6/lyohhsHqfnh0PocaFXHemWMR6DyK6XxS/B/PwOtU=
+github.com/absfs/memfs v0.0.0-20251109184305-4de1ff55a67e/go.mod h1:ITY8mYr6yHK7ZTNblu5zQk33tMIRaJhoa+YX8/talDk=
 github.com/absfs/osfs v0.0.0-20220705103527-80b6215cf130 h1:kehuUUalOBgwPkBRRW7/hX7b6VeB4Ed0iKX2z2wwqQA=
 github.com/absfs/osfs v0.0.0-20220705103527-80b6215cf130/go.mod h1:IIzwVILCbb3j0VHjcAQ7Xwpdz1h57eUzZil7DCIel/c=
 github.com/fatih/color v1.12.0 h1:mRhaKNwANqRgUBGKmnI5ZxEk7QXmjQeCcuYFMX2bfcc=
