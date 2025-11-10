@@ -214,7 +214,7 @@ func TestReadAheadBufferOperations(t *testing.T) {
 	}
 	
 	// Test buffer stats
-	fileCount, memUsage, capacityPct := buffer.Stats()
+	fileCount, memUsage := buffer.Stats()
 	if fileCount != 1 {
 		t.Errorf("Wrong file count: got %d, want 1", fileCount)
 	}
@@ -222,11 +222,12 @@ func TestReadAheadBufferOperations(t *testing.T) {
 	if memUsage != expectedMemUsage {
 		t.Errorf("Wrong memory usage: got %d, want %d", memUsage, expectedMemUsage)
 	}
+	capacityPct := float64(memUsage) / float64(maxMemory) * 100
 	expectedCapacityPct := float64(memUsage) / float64(maxMemory) * 100
 	if capacityPct != expectedCapacityPct {
 		t.Errorf("Wrong capacity percentage: got %.2f, want %.2f", capacityPct, expectedCapacityPct)
 	}
-	
+
 	// Test clear for specific path
 	buffer.ClearPath(testPath1)
 	readData, hit = buffer.Read(testPath1, testOffset, len(testData))
@@ -241,7 +242,7 @@ func TestReadAheadBufferOperations(t *testing.T) {
 		buffer.Fill(path, testData, testOffset)
 		
 		// After each fill, check that we haven't exceeded limits
-		fc, mu, _ := buffer.Stats()
+		fc, mu := buffer.Stats()
 		if fc > maxFiles {
 			t.Errorf("After adding file %d, buffer exceeded max files limit: got %d, want <= %d", i, fc, maxFiles)
 		}
@@ -251,7 +252,7 @@ func TestReadAheadBufferOperations(t *testing.T) {
 	}
 	
 	// Final check that we've respected the maxFiles limit
-	fileCount, memUsage, _ = buffer.Stats()
+	fileCount, memUsage = buffer.Stats()
 	if fileCount != maxFiles {
 		t.Errorf("Buffer has wrong number of files: got %d, want %d", fileCount, maxFiles)
 	}
@@ -262,7 +263,7 @@ func TestReadAheadBufferOperations(t *testing.T) {
 	
 	// Test global clear
 	buffer.Clear()
-	fileCount, memUsage, _ = buffer.Stats()
+	fileCount, memUsage = buffer.Stats()
 	if fileCount != 0 {
 		t.Errorf("After clear, file count should be 0, got %d", fileCount)
 	}
@@ -374,8 +375,8 @@ func TestCacheSizeControlConfiguration(t *testing.T) {
 			}
 			
 			// Check cache statistics
-			fileCount, memUsage, _ := server.readBuf.Stats()
-			
+			fileCount, memUsage := server.readBuf.Stats()
+
 			// Verify correct number of files are cached
 			// For the memory-limited case, we just check we're within limits
 			if tc.name == "Limited by max memory" {
