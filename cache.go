@@ -44,19 +44,7 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
 	c.mu.RLock()
 	cached, ok := c.cache[path]
 	if ok && time.Now().Before(cached.expireAt) {
-		c.mu.RUnlock()
-		
-		// Update access log (LRU tracking)
-		c.mu.Lock()
-		c.updateAccessLog(path)
-		c.mu.Unlock()
-		
-		// Record cache hit for metrics
-		if s != nil {
-			s.RecordAttrCacheHit()
-		}
-		
-		// Return a copy to prevent modification of cached data
+		// Copy attributes while holding RLock to prevent data races
 		attrs := &NFSAttrs{
 			Mode:  cached.attrs.Mode,
 			Size:  cached.attrs.Size,
@@ -65,6 +53,22 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
 			Uid:   cached.attrs.Uid,
 			Gid:   cached.attrs.Gid,
 		}
+		c.mu.RUnlock()
+
+		// Update access log (LRU tracking)
+		c.mu.Lock()
+		// Revalidate that entry still exists before updating access log
+		// This prevents race condition where entry could be deleted between locks
+		if _, stillExists := c.cache[path]; stillExists {
+			c.updateAccessLog(path)
+		}
+		c.mu.Unlock()
+
+		// Record cache hit for metrics
+		if s != nil {
+			s.RecordAttrCacheHit()
+		}
+
 		return attrs
 	}
 	c.mu.RUnlock()
