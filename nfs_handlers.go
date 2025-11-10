@@ -49,6 +49,13 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader) (*RPCRep
 	replyChan := make(chan *RPCReply, 1)
 
 	go func() {
+		// Check if context is already cancelled before starting work
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		var result *RPCReply
 		var err error
 
@@ -59,7 +66,11 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader) (*RPCRep
 			result, err = h.handleNFSCall(call, body, reply)
 		default:
 			reply.Status = PROG_UNAVAIL
-			replyChan <- reply
+			// Use select to avoid blocking if context is cancelled
+			select {
+			case replyChan <- reply:
+			case <-ctx.Done():
+			}
 			return
 		}
 
@@ -77,10 +88,18 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader) (*RPCRep
 					reply.Status = GARBAGE_ARGS
 				}
 			}
-			replyChan <- reply
+			// Use select to avoid blocking if context is cancelled
+			select {
+			case replyChan <- reply:
+			case <-ctx.Done():
+			}
 			return
 		}
-		replyChan <- result
+		// Use select to avoid blocking if context is cancelled
+		select {
+		case replyChan <- result:
+		case <-ctx.Done():
+		}
 	}()
 
 	select {
