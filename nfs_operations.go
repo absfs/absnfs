@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"math"
 	"os"
 )
 
@@ -274,6 +275,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
+		// Check for integer overflow: offset + count must not overflow uint64
+		if offset > math.MaxUint64-uint64(count) {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_INVAL)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
 		// Find the node
 		file, ok := h.server.handler.fileMap.Get(handle.Handle)
 		if !ok {
@@ -356,6 +365,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		if err := binary.Read(body, binary.BigEndian, &stable); err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Check for integer overflow: offset + count must not overflow uint64
+		if offset > math.MaxUint64-uint64(count) {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_INVAL)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
