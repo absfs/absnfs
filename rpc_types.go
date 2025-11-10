@@ -12,6 +12,18 @@ const (
 	RPC_REPLY = 1
 )
 
+// Maximum sizes for XDR data structures to prevent DoS attacks
+const (
+	// MAX_XDR_STRING_LENGTH is the maximum allowed length for XDR strings (8KB)
+	// This prevents memory exhaustion attacks where malicious clients send
+	// extremely large length values
+	MAX_XDR_STRING_LENGTH = 8192
+
+	// MAX_RPC_AUTH_LENGTH is the maximum allowed length for RPC authentication
+	// credentials and verifiers (400 bytes as per RFC 1831)
+	MAX_RPC_AUTH_LENGTH = 400
+)
+
 // RPC reply status
 const (
 	MSG_ACCEPTED  = 0
@@ -96,6 +108,11 @@ func xdrDecodeString(r io.Reader) (string, error) {
 		return "", err
 	}
 
+	// Validate length to prevent DoS attacks via memory exhaustion
+	if length > MAX_XDR_STRING_LENGTH {
+		return "", fmt.Errorf("XDR string length %d exceeds maximum allowed length %d", length, MAX_XDR_STRING_LENGTH)
+	}
+
 	buf := make([]byte, length)
 	_, err = io.ReadFull(r, buf)
 	if err != nil {
@@ -174,6 +191,10 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode credential length: %v", err)
 	}
+	// Validate credential length to prevent DoS attacks via memory exhaustion
+	if credLen > MAX_RPC_AUTH_LENGTH {
+		return nil, fmt.Errorf("credential length %d exceeds maximum allowed length %d", credLen, MAX_RPC_AUTH_LENGTH)
+	}
 	call.Credential.Body = make([]byte, credLen)
 	if _, err = io.ReadFull(r, call.Credential.Body); err != nil {
 		return nil, fmt.Errorf("failed to read credential body: %v", err)
@@ -186,6 +207,10 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 	verLen, err := xdrDecodeUint32(r)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode verifier length: %v", err)
+	}
+	// Validate verifier length to prevent DoS attacks via memory exhaustion
+	if verLen > MAX_RPC_AUTH_LENGTH {
+		return nil, fmt.Errorf("verifier length %d exceeds maximum allowed length %d", verLen, MAX_RPC_AUTH_LENGTH)
 	}
 	call.Verifier.Body = make([]byte, verLen)
 	if _, err = io.ReadFull(r, call.Verifier.Body); err != nil {
