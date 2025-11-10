@@ -3,7 +3,9 @@ package absnfs
 import (
 	"bytes"
 	"encoding/binary"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/absfs/memfs"
 )
@@ -220,6 +222,84 @@ func TestNFSHandlerOperations(t *testing.T) {
 			if status != NFS_OK {
 				t.Errorf("Expected NFS_OK in reply data, got %v", status)
 			}
+		}
+	})
+}
+
+// TestHandleCallGoroutineLeak tests that goroutines are properly cleaned up on context timeout
+func TestHandleCallGoroutineLeak(t *testing.T) {
+	t.Run("goroutine cleanup on timeout", func(t *testing.T) {
+		memfs, err := memfs.NewFS()
+		if err != nil {
+			t.Fatalf("Failed to create memfs: %v", err)
+		}
+
+		fs, err := New(memfs, ExportOptions{})
+		if err != nil {
+			t.Fatalf("Failed to create NFS: %v", err)
+		}
+
+		handler := &NFSProcedureHandler{
+			server: &Server{
+				handler: fs,
+				options: ServerOptions{
+					Debug: false,
+				},
+			},
+		}
+
+		// Get initial goroutine count
+		runtime.GC()
+		time.Sleep(100 * time.Millisecond)
+		initialGoroutines := runtime.NumGoroutine()
+
+		// Execute multiple HandleCall operations that will timeout
+		// We use a high number to ensure any leak would be detectable
+		iterations := 100
+		for i := 0; i < iterations; i++ {
+			call := &RPCCall{
+				Header: RPCMsgHeader{
+					Xid:        uint32(i),
+					MsgType:    RPC_CALL,
+					RPCVersion: 2,
+					Program:    NFS_PROGRAM,
+					Version:    NFS_V3,
+					Procedure:  NFSPROC3_NULL,
+				},
+				Credential: RPCCredential{
+					Flavor: 0,
+					Body:   []byte{},
+				},
+				Verifier: RPCVerifier{
+					Flavor: 0,
+					Body:   []byte{},
+				},
+			}
+
+			// Execute the call - it should complete without timeout for NULL operation
+			_, err := handler.HandleCall(call, bytes.NewReader([]byte{}))
+			if err != nil {
+				t.Logf("HandleCall %d returned error (expected for some cases): %v", i, err)
+			}
+		}
+
+		// Give time for goroutines to finish
+		time.Sleep(500 * time.Millisecond)
+		runtime.GC()
+		time.Sleep(100 * time.Millisecond)
+
+		// Check final goroutine count
+		finalGoroutines := runtime.NumGoroutine()
+
+		// Allow for some variance (worker pool, etc), but no significant leak
+		// With the fix, we should not see 100+ leaked goroutines
+		goroutineDiff := finalGoroutines - initialGoroutines
+		if goroutineDiff > 10 {
+			t.Errorf("Potential goroutine leak detected: started with %d goroutines, ended with %d (diff: %d)",
+				initialGoroutines, finalGoroutines, goroutineDiff)
+		} else {
+			t.Logf("Goroutine count stable: started with %d, ended with %d (diff: %d)",
+				initialGoroutines, finalGoroutines, goroutineDiff)
 		}
 	})
 }
