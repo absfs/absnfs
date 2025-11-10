@@ -964,4 +964,252 @@ func TestOperationsAdvanced(t *testing.T) {
 			t.Error("min(4, 4) should return 4")
 		}
 	})
+
+	// Test path traversal security
+	t.Run("path traversal security", func(t *testing.T) {
+		// Test sanitizePath directly
+		t.Run("sanitizePath function", func(t *testing.T) {
+			// Test valid paths
+			validTests := []struct {
+				base string
+				name string
+				want string
+			}{
+				{"/export", "file.txt", "/export/file.txt"},
+				{"/export/dir", "subfile.txt", "/export/dir/subfile.txt"},
+				{"/mnt", "data", "/mnt/data"},
+			}
+
+			for _, tt := range validTests {
+				got, err := sanitizePath(tt.base, tt.name)
+				if err != nil {
+					t.Errorf("sanitizePath(%q, %q) unexpected error: %v", tt.base, tt.name, err)
+				}
+				if got != tt.want {
+					t.Errorf("sanitizePath(%q, %q) = %q, want %q", tt.base, tt.name, got, tt.want)
+				}
+			}
+
+			// Test path traversal attacks
+			traversalTests := []struct {
+				base string
+				name string
+			}{
+				{"/export", "../etc/passwd"},
+				{"/export", "../../etc/passwd"},
+				{"/export/dir", "../../../etc/passwd"},
+				{"/export", ".."},
+				{"/export", "."},
+				{"/export", "file/../../../etc/passwd"},
+				{"/export", "file/../../etc/passwd"},
+				{"/export", "foo/../bar"},
+			}
+
+			for _, tt := range traversalTests {
+				got, err := sanitizePath(tt.base, tt.name)
+				if err == nil {
+					t.Errorf("sanitizePath(%q, %q) expected error for path traversal, got path: %q", tt.base, tt.name, got)
+				}
+			}
+
+			// Test invalid paths with separators
+			separatorTests := []string{
+				"file/subfile",
+				"dir/file.txt",
+				"../file",
+				"./file",
+				"file\\subfile",
+				"dir\\file.txt",
+			}
+
+			for _, name := range separatorTests {
+				_, err := sanitizePath("/export", name)
+				if err == nil {
+					t.Errorf("sanitizePath(/export, %q) expected error for path with separators", name)
+				}
+			}
+
+			// Test empty name
+			if _, err := sanitizePath("/export", ""); err == nil {
+				t.Error("sanitizePath with empty name should return error")
+			}
+		})
+
+		// Test Create operation against path traversal
+		t.Run("Create path traversal protection", func(t *testing.T) {
+			fs, err := memfs.NewFS()
+			if err != nil {
+				t.Fatalf("Failed to create memfs: %v", err)
+			}
+
+			nfs, err := New(fs, ExportOptions{})
+			if err != nil {
+				t.Fatalf("Failed to create NFS: %v", err)
+			}
+
+			// Create test directories
+			if err := fs.Mkdir("/export", 0755); err != nil {
+				t.Fatalf("Failed to create export directory: %v", err)
+			}
+			if err := fs.Mkdir("/secret", 0755); err != nil {
+				t.Fatalf("Failed to create secret directory: %v", err)
+			}
+
+			dirNode, err := nfs.Lookup("/export")
+			if err != nil {
+				t.Fatalf("Failed to lookup export directory: %v", err)
+			}
+
+			attrs := &NFSAttrs{
+				Mode:  0644,
+				Uid:   1000,
+				Gid:   1000,
+				Size:  0,
+				Mtime: time.Now(),
+				Atime: time.Now(),
+			}
+
+			// Try to create file with path traversal
+			maliciousNames := []string{
+				"../secret/evil.txt",
+				"../../root/evil.txt",
+				"..",
+				".",
+				"file/../../../etc/passwd",
+			}
+
+			for _, name := range maliciousNames {
+				_, err := nfs.Create(dirNode, name, attrs)
+				if err == nil {
+					t.Errorf("Create with malicious name %q should have failed", name)
+					// Clean up if it somehow succeeded
+					nfs.Remove(dirNode, name)
+				}
+			}
+
+			// Verify no files were created outside export
+			secretNode, err := nfs.Lookup("/secret")
+			if err != nil {
+				t.Fatalf("Failed to lookup secret directory: %v", err)
+			}
+			entries, err := nfs.ReadDir(secretNode)
+			if err != nil {
+				t.Fatalf("Failed to read secret directory: %v", err)
+			}
+			if len(entries) > 0 {
+				t.Errorf("Files were created in secret directory: %v", entries)
+			}
+		})
+
+		// Test Remove operation against path traversal
+		t.Run("Remove path traversal protection", func(t *testing.T) {
+			fs, err := memfs.NewFS()
+			if err != nil {
+				t.Fatalf("Failed to create memfs: %v", err)
+			}
+
+			nfs, err := New(fs, ExportOptions{})
+			if err != nil {
+				t.Fatalf("Failed to create NFS: %v", err)
+			}
+
+			// Create test directories and files
+			if err := fs.Mkdir("/export", 0755); err != nil {
+				t.Fatalf("Failed to create export directory: %v", err)
+			}
+			if err := fs.Mkdir("/secret", 0755); err != nil {
+				t.Fatalf("Failed to create secret directory: %v", err)
+			}
+			f, err := fs.Create("/secret/important.txt")
+			if err != nil {
+				t.Fatalf("Failed to create secret file: %v", err)
+			}
+			f.Close()
+
+			dirNode, err := nfs.Lookup("/export")
+			if err != nil {
+				t.Fatalf("Failed to lookup export directory: %v", err)
+			}
+
+			// Try to remove file with path traversal
+			maliciousNames := []string{
+				"../secret/important.txt",
+				"../../secret/important.txt",
+				"..",
+			}
+
+			for _, name := range maliciousNames {
+				err := nfs.Remove(dirNode, name)
+				if err == nil {
+					t.Errorf("Remove with malicious name %q should have failed", name)
+				}
+			}
+
+			// Verify secret file still exists
+			if _, err := fs.Stat("/secret/important.txt"); err != nil {
+				t.Error("Secret file was removed by path traversal attack")
+			}
+		})
+
+		// Test Rename operation against path traversal
+		t.Run("Rename path traversal protection", func(t *testing.T) {
+			fs, err := memfs.NewFS()
+			if err != nil {
+				t.Fatalf("Failed to create memfs: %v", err)
+			}
+
+			nfs, err := New(fs, ExportOptions{})
+			if err != nil {
+				t.Fatalf("Failed to create NFS: %v", err)
+			}
+
+			// Create test directories and files
+			if err := fs.Mkdir("/export", 0755); err != nil {
+				t.Fatalf("Failed to create export directory: %v", err)
+			}
+			if err := fs.Mkdir("/secret", 0755); err != nil {
+				t.Fatalf("Failed to create secret directory: %v", err)
+			}
+			f, err := fs.Create("/export/testfile.txt")
+			if err != nil {
+				t.Fatalf("Failed to create test file: %v", err)
+			}
+			f.Close()
+
+			dirNode, err := nfs.Lookup("/export")
+			if err != nil {
+				t.Fatalf("Failed to lookup export directory: %v", err)
+			}
+
+			// Try to rename with path traversal in old name
+			err = nfs.Rename(dirNode, "../secret/important.txt", dirNode, "stolen.txt")
+			if err == nil {
+				t.Error("Rename with traversal in old name should have failed")
+			}
+
+			// Try to rename with path traversal in new name
+			err = nfs.Rename(dirNode, "testfile.txt", dirNode, "../secret/evil.txt")
+			if err == nil {
+				t.Error("Rename with traversal in new name should have failed")
+			}
+
+			// Verify no files were created in secret directory
+			secretNode, err := nfs.Lookup("/secret")
+			if err != nil {
+				t.Fatalf("Failed to lookup secret directory: %v", err)
+			}
+			entries, err := nfs.ReadDir(secretNode)
+			if err != nil {
+				t.Fatalf("Failed to read secret directory: %v", err)
+			}
+			if len(entries) > 0 {
+				t.Errorf("Files were created in secret directory: %v", entries)
+			}
+
+			// Verify original file still exists
+			if _, err := fs.Stat("/export/testfile.txt"); err != nil {
+				t.Error("Original file was affected by failed rename")
+			}
+		})
+	})
 }
