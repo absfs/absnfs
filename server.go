@@ -358,24 +358,46 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 				}
 				return
 			}
-			
+
 			// Update last activity time for this connection
 			s.updateConnectionActivity(conn)
+
+			// Extract client IP and port for authentication
+			authCtx := &AuthContext{
+				Credential: &call.Credential,
+			}
+			if remoteAddr := conn.RemoteAddr(); remoteAddr != nil {
+				if tcpAddr, ok := remoteAddr.(*net.TCPAddr); ok {
+					authCtx.ClientIP = tcpAddr.IP.String()
+					authCtx.ClientPort = tcpAddr.Port
+				} else {
+					// Fallback for non-TCP connections
+					addrStr := remoteAddr.String()
+					host, port, err := net.SplitHostPort(addrStr)
+					if err == nil {
+						authCtx.ClientIP = host
+						// Parse port as int
+						if p, err := net.LookupPort("tcp", port); err == nil {
+							authCtx.ClientPort = p
+						}
+					}
+				}
+			}
 
 			// Use worker pool to handle the call if available
 			var reply *RPCReply
 			var handleErr error
-			
+
 			if s.handler != nil && s.handler.workerPool != nil {
 				// Process with worker pool
 				result := s.handler.ExecuteWithWorker(func() interface{} {
-					r, e := procHandler.HandleCall(call, body)
+					r, e := procHandler.HandleCall(call, body, authCtx)
 					return struct {
 						Reply *RPCReply
 						Err   error
 					}{r, e}
 				})
-				
+
 				// Extract result
 				typedResult := result.(struct {
 					Reply *RPCReply
@@ -384,7 +406,7 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 				reply, handleErr = typedResult.Reply, typedResult.Err
 			} else {
 				// Process directly
-				reply, handleErr = procHandler.HandleCall(call, body)
+				reply, handleErr = procHandler.HandleCall(call, body, authCtx)
 			}
 			if handleErr != nil {
 				s.logger.Printf("handle error: %v", handleErr)

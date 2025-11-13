@@ -10,6 +10,18 @@ import (
 	"github.com/absfs/memfs"
 )
 
+// testAuthContext creates a default AuthContext for testing
+func testAuthContext() *AuthContext {
+	return &AuthContext{
+		ClientIP:   "127.0.0.1",
+		ClientPort: 1023, // Privileged port
+		Credential: &RPCCredential{
+			Flavor: AUTH_NONE,
+			Body:   []byte{},
+		},
+	}
+}
+
 func TestNFSHandlerErrors(t *testing.T) {
 	t.Run("error handling", func(t *testing.T) {
 		memfs, err := memfs.NewFS()
@@ -61,7 +73,9 @@ func TestNFSHandlerErrors(t *testing.T) {
 			},
 		}
 
-		reply, err := handler.HandleCall(call, bytes.NewReader([]byte{}))
+		authCtx := testAuthContext()
+		authCtx.Credential = &call.Credential
+		reply, err := handler.HandleCall(call, bytes.NewReader([]byte{}), authCtx)
 		if err != nil {
 			t.Fatalf("HandleCall failed: %v", err)
 		}
@@ -89,7 +103,9 @@ func TestNFSHandlerErrors(t *testing.T) {
 			},
 		}
 
-		reply, err = handler.HandleCall(call, bytes.NewReader([]byte{}))
+		authCtx = testAuthContext()
+		authCtx.Credential = &call.Credential
+		reply, err = handler.HandleCall(call, bytes.NewReader([]byte{}), authCtx)
 		if err != nil {
 			t.Fatalf("HandleCall failed: %v", err)
 		}
@@ -139,7 +155,9 @@ func TestNFSHandlerOperations(t *testing.T) {
 			},
 		}
 
-		reply, err := handler.HandleCall(call, bytes.NewReader([]byte{}))
+		authCtx := testAuthContext()
+		authCtx.Credential = &call.Credential
+		reply, err := handler.HandleCall(call, bytes.NewReader([]byte{}), authCtx)
 		if err != nil {
 			t.Fatalf("HandleCall failed: %v", err)
 		}
@@ -205,7 +223,9 @@ func TestNFSHandlerOperations(t *testing.T) {
 		var buf bytes.Buffer
 		binary.Write(&buf, binary.BigEndian, handle)
 
-		reply, err := handler.HandleCall(call, bytes.NewReader(buf.Bytes()))
+		authCtx := testAuthContext()
+		authCtx.Credential = &call.Credential
+		reply, err := handler.HandleCall(call, bytes.NewReader(buf.Bytes()), authCtx)
 		if err != nil {
 			t.Fatalf("HandleCall failed: %v", err)
 		}
@@ -277,7 +297,9 @@ func TestHandleCallGoroutineLeak(t *testing.T) {
 			}
 
 			// Execute the call - it should complete without timeout for NULL operation
-			_, err := handler.HandleCall(call, bytes.NewReader([]byte{}))
+			authCtx := testAuthContext()
+			authCtx.Credential = &call.Credential
+			_, err := handler.HandleCall(call, bytes.NewReader([]byte{}), authCtx)
 			if err != nil {
 				t.Logf("HandleCall %d returned error (expected for some cases): %v", i, err)
 			}
