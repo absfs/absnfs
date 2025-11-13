@@ -24,7 +24,7 @@ func (e *RPCError) Error() string {
 }
 
 // HandleCall processes an NFS RPC call and returns a reply
-func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader) (*RPCReply, error) {
+func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx *AuthContext) (*RPCReply, error) {
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -38,9 +38,18 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader) (*RPCRep
 		},
 	}
 
-	// Check authentication
-	if call.Credential.Flavor != 0 {
+	// Validate authentication
+	authResult := ValidateAuthentication(authCtx, h.server.handler.options)
+	if !authResult.Allowed {
 		reply.Status = MSG_DENIED
+		if h.server.options.Debug {
+			h.server.logger.Printf("Authentication denied: %s (client: %s:%d, flavor: %d)",
+				authResult.Reason, authCtx.ClientIP, authCtx.ClientPort, authCtx.Credential.Flavor)
+		}
+		// Increment auth failure metric if available
+		if h.server.handler.metrics != nil {
+			h.server.handler.metrics.RecordError("AUTH")
+		}
 		return reply, nil
 	}
 
