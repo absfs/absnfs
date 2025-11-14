@@ -7,7 +7,7 @@ import (
 )
 
 // handleMountCall handles mount protocol operations
-func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, reply *RPCReply) (*RPCReply, error) {
+func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	// Check version first
 	if call.Header.Version != MOUNT_V3 {
 		reply.Status = PROG_MISMATCH
@@ -19,6 +19,23 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 		return reply, nil
 
 	case 1: // MNT
+		// Apply rate limiting for mount operations
+		if h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
+			if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeMount) {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, NFSERR_DELAY) // Server is busy
+				reply.Data = buf.Bytes()
+				reply.Status = MSG_ACCEPTED
+
+				// Record rate limit exceeded
+				if h.server.handler.metrics != nil {
+					h.server.handler.metrics.RecordRateLimitExceeded()
+				}
+
+				return reply, nil
+			}
+		}
+
 		mountPath, err := xdrDecodeString(body)
 		if err != nil {
 			var buf bytes.Buffer

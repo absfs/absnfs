@@ -21,6 +21,7 @@ const (
 	NFSERR_DQUOT    = 69
 	NFSERR_STALE    = 70
 	NFSERR_WFLUSH   = 99
+	NFSERR_DELAY    = 10013 // Server is temporarily busy (rate limit exceeded)
 )
 
 // FileHandle represents an NFS file handle

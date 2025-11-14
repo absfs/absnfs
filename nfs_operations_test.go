@@ -90,7 +90,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 			Status: MSG_ACCEPTED,
 		}
 
-		result, err := handler.handleNFSCall(call, bytes.NewReader([]byte{}), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleNFSCall(call, bytes.NewReader([]byte{}), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
@@ -167,7 +168,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint64(0)) // offset
 		binary.Write(&buf, binary.BigEndian, uint32(4)) // count
 
-		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
@@ -192,7 +194,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint64(100)) // offset beyond EOF
 		binary.Write(&buf, binary.BigEndian, uint32(4))   // count
 
-		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx = &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
@@ -279,7 +282,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(4)) // data length
 		buf.Write([]byte("test"))
 
-		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
@@ -313,7 +317,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 			},
 		}
 
-		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx = &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
@@ -401,7 +406,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(1))    // Set gid
 		binary.Write(&buf, binary.BigEndian, uint32(1000)) // New gid
 
-		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
@@ -426,7 +432,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(1))      // Set mode
 		binary.Write(&buf, binary.BigEndian, uint32(0x8000)) // Invalid mode
 
-		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx = &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
@@ -500,7 +507,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(0)) // Create mode
 		binary.Write(&buf, binary.BigEndian, uint32(0644)) // Mode
 
-		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
@@ -546,7 +554,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(0)) // Create mode
 		binary.Write(&buf, binary.BigEndian, uint32(0x8000)) // Invalid mode
 
-		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx = &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
@@ -618,7 +627,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		// Mode
 		binary.Write(&buf, binary.BigEndian, uint32(0755)) // Directory mode
 
-		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
@@ -666,7 +676,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		// Invalid mode
 		binary.Write(&buf, binary.BigEndian, uint32(0x8000)) // Invalid mode
 
-		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx = &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
