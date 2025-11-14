@@ -9,7 +9,7 @@ import (
 )
 
 // handleNFSCall handles NFS protocol operations
-func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply *RPCReply) (*RPCReply, error) {
+func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	// Check version first
 	if call.Header.Version != NFS_V3 {
 		reply.Status = PROG_MISMATCH
@@ -283,6 +283,22 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
+		// Apply rate limiting for large reads (> 64KB)
+		if count > 65536 && h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
+			if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeReadLarge) {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, NFSERR_DELAY) // Server is busy
+				reply.Data = buf.Bytes()
+
+				// Record rate limit exceeded
+				if h.server.handler.metrics != nil {
+					h.server.handler.metrics.RecordRateLimitExceeded()
+				}
+
+				return reply, nil
+			}
+		}
+
 		// Find the node
 		file, ok := h.server.handler.fileMap.Get(handle.Handle)
 		if !ok {
@@ -375,6 +391,22 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			xdrEncodeUint32(&buf, NFSERR_INVAL)
 			reply.Data = buf.Bytes()
 			return reply, nil
+		}
+
+		// Apply rate limiting for large writes (> 64KB)
+		if count > 65536 && h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
+			if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeWriteLarge) {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, NFSERR_DELAY) // Server is busy
+				reply.Data = buf.Bytes()
+
+				// Record rate limit exceeded
+				if h.server.handler.metrics != nil {
+					h.server.handler.metrics.RecordRateLimitExceeded()
+				}
+
+				return reply, nil
+			}
 		}
 
 		// Read data length and data
@@ -605,6 +637,22 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		return reply, nil
 
 	case NFSPROC3_READDIR:
+		// Apply rate limiting for READDIR operations
+		if h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
+			if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeReaddir) {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, NFSERR_DELAY) // Server is busy
+				reply.Data = buf.Bytes()
+
+				// Record rate limit exceeded
+				if h.server.handler.metrics != nil {
+					h.server.handler.metrics.RecordRateLimitExceeded()
+				}
+
+				return reply, nil
+			}
+		}
+
 		// Decode arguments
 		handle := FileHandle{}
 		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {

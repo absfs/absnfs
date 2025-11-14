@@ -339,6 +339,15 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 		writeTimeout = 5 * time.Second
 	)
 
+	// Generate a unique connection ID for per-connection rate limiting
+	connID := fmt.Sprintf("%p", conn)
+	defer func() {
+		// Clean up connection-specific rate limiter on exit
+		if s.handler != nil && s.handler.rateLimiter != nil {
+			s.handler.rateLimiter.CleanupConnection(connID)
+		}
+	}()
+
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -381,6 +390,36 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 							authCtx.ClientPort = p
 						}
 					}
+				}
+			}
+
+			// Check rate limit before processing request
+			if s.handler != nil && s.handler.rateLimiter != nil && s.handler.options.EnableRateLimiting {
+				if !s.handler.rateLimiter.AllowRequest(authCtx.ClientIP, connID) {
+					// Rate limit exceeded - send error reply
+					reply := &RPCReply{
+						Header: call.Header,
+						Status: MSG_DENIED,
+						Verifier: RPCVerifier{
+							Flavor: 0,
+							Body:   []byte{},
+						},
+					}
+
+					if s.options.Debug {
+						s.logger.Printf("Rate limit exceeded for client %s", authCtx.ClientIP)
+					}
+
+					// Record rate limit rejection in metrics
+					if s.handler.metrics != nil {
+						s.handler.metrics.RecordRateLimitExceeded()
+					}
+
+					// Send rejection and continue to next request
+					if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err == nil {
+						s.writeRPCReply(conn, reply)
+					}
+					continue
 				}
 			}
 

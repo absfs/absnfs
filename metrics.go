@@ -49,6 +49,7 @@ type NFSMetrics struct {
 	AccessViolations uint64
 	StaleHandles     uint64
 	ResourceErrors   uint64
+	RateLimitExceeded uint64
 
 	// Internal metrics for calculating averages and percentiles
 	readLatencies  []time.Duration
@@ -247,7 +248,7 @@ func (m *MetricsCollector) RecordDirCacheMiss() {
 // RecordError records an error
 func (m *MetricsCollector) RecordError(errorType string) {
 	atomic.AddUint64(&m.metrics.ErrorCount, 1)
-	
+
 	switch errorType {
 	case "AUTH":
 		atomic.AddUint64(&m.metrics.AuthFailures, 1)
@@ -257,7 +258,14 @@ func (m *MetricsCollector) RecordError(errorType string) {
 		atomic.AddUint64(&m.metrics.StaleHandles, 1)
 	case "RESOURCE":
 		atomic.AddUint64(&m.metrics.ResourceErrors, 1)
+	case "RATELIMIT":
+		atomic.AddUint64(&m.metrics.RateLimitExceeded, 1)
 	}
+}
+
+// RecordRateLimitExceeded records a rate limit rejection
+func (m *MetricsCollector) RecordRateLimitExceeded() {
+	atomic.AddUint64(&m.metrics.RateLimitExceeded, 1)
 }
 
 // RecordConnection records a new connection

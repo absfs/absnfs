@@ -1,0 +1,205 @@
+================================================================================
+NFS SERVER RATE LIMITING - QUICK REFERENCE GUIDE
+================================================================================
+
+REQUEST FLOW:
+TCP Accept → Client IP Extract → [RATE LIMIT #1] → Auth Validate → 
+[RATE LIMIT #2] → Dispatch → [RATE LIMIT #3] → Operation Execute → Response
+
+================================================================================
+CURRENT SECURITY MECHANISMS
+================================================================================
+
+WORKING:
+  ✓ Connection limits (MaxConnections, default 100)
+  ✓ Idle connection cleanup (default 5 mins)
+  ✓ IP whitelist (CIDR support)
+  ✓ Secure port enforcement
+  ✓ Path traversal protection
+  ✓ Integer overflow validation
+  ✓ XDR string validation
+  ✓ TCP keepalive & no-delay options
+  ✓ Metrics collection
+  ✓ Health monitoring
+  ✓ Operation timeout (2 seconds)
+  ✓ Read/Write timeout (5 seconds)
+
+MISSING:
+  ✗ Per-IP request rate limiting
+  ✗ Per-connection rate limiting
+  ✗ Per-operation type rate limiting
+  ✗ File handle allocation limits
+  ✗ Mount operation rate limiting
+  ✗ DDoS attack detection
+  ✗ Backoff/exponential delay mechanisms
+
+================================================================================
+CRITICAL DDoS VECTORS (UNPROTECTED)
+================================================================================
+
+VECTOR 1 - Request Flooding (HIGH RISK)
+  Problem: Single connection can send requests as fast as network allows
+  Impact: CPU/Memory exhaustion, worker pool saturation
+  Location: server.go:333 handleConnection loop
+  Fix: Add per-connection rate limiter
+
+VECTOR 2 - Connection Concentration (MEDIUM RISK)
+  Problem: Single IP can grab all 100 connections
+  Impact: Blocks other clients
+  Location: server.go:72 registerConnection()
+  Fix: Add per-IP connection limit (e.g., max 10 per IP)
+
+VECTOR 3 - Expensive Operation Abuse (MEDIUM-HIGH RISK)
+  Problem: READDIR on huge directories, bulk LOOKUP operations
+  Impact: CPU spike, latency increase
+  Location: nfs_handlers.go and nfs_operations.go
+  Fix: Add operation-specific rate limits
+
+VECTOR 4 - Mount Table Exhaustion (MEDIUM RISK)
+  Problem: Rapid MNT/UMNT operations
+  Impact: File handle table grows unbounded
+  Location: mount_handlers.go:10
+  Fix: Rate limit mount operations
+
+VECTOR 5 - Handle Table Exhaustion (LOW RISK)
+  Problem: Unbounded file handle allocation
+  Impact: Memory exhaustion eventually
+  Location: types.go - FileHandleMap.Allocate()
+  Fix: Add handle allocation limits per IP
+
+================================================================================
+PRIORITY IMPLEMENTATION ORDER
+================================================================================
+
+PRIORITY 1: Per-IP Request Rate Limiting
+  Location: server.go:333 (handleConnection)
+  Point: After client IP extraction (line 369)
+  Type: Token bucket (1000 ops/sec per IP)
+  Impact: Highest - stops most flooding attacks
+  Effort: Medium
+
+PRIORITY 2: Per-Connection Rate Limiting  
+  Location: server.go:333 (handleConnection)
+  Point: In main request loop
+  Type: Sliding window (100 ops/sec per connection)
+  Impact: Medium - prevents single connection abuse
+  Effort: Low
+
+PRIORITY 3: Per-Operation Type Rate Limiting
+  Location: nfs_handlers.go:12 (handleNFSCall)
+  Point: Before operation dispatch
+  Type: Selective limits (READDIR: 20 ops/sec, READ>64KB: 100 ops/sec)
+  Impact: High - stops expensive operation abuse
+  Effort: Medium-High
+
+PRIORITY 4: File Handle Allocation Limits
+  Location: types.go - FileHandleMap.Allocate()
+  Point: Before allocating new handle
+  Type: Per-IP counter (10,000 max per IP)
+  Impact: Low - prevents eventual memory exhaustion
+  Effort: Low
+
+PRIORITY 5: Mount Operation Rate Limiting
+  Location: mount_handlers.go:10 (handleMountCall)
+  Point: At operation start
+  Type: Rate limit (10 ops/min per IP for MNT/UMNT)
+  Impact: Low - prevents mount table abuse
+  Effort: Low
+
+================================================================================
+INTEGRATION POINTS
+================================================================================
+
+Location A (Best for Global Limits): server.go:333
+  - After: conn.RemoteAddr() parsing (line 369-385)
+  - Affects: All requests
+  - Speed: Highest priority
+
+Location B (Good for Auth-Based Limits): nfs_handlers.go:27
+  - After: ValidateAuthentication (line 42)
+  - Affects: Post-auth operations
+  - Benefit: Can use user info in limits
+
+Location C (Alternative): worker_pool.go:107
+  - In: Submit() method
+  - Effect: Limits concurrent execution
+  - Existing: Already has 50ms timeout
+
+================================================================================
+METRICS TO ADD
+================================================================================
+
+New Counters:
+  - RateLimitedRequests (per IP)
+  - RateLimitExceededErrors
+  - SuspiciousPatterns (repeated limits from same IP)
+
+New Gauges:
+  - RequestsPerSecond (per IP)
+  - TokenBucketFillRate (per IP)
+  - ActiveRateLimiters
+
+Use Existing:
+  - MetricsCollector (metrics.go)
+  - Already tracking operation counts
+  - Can extend with IP-based bucketing
+
+================================================================================
+TIMEOUT DEFAULTS (ALREADY IN PLACE)
+================================================================================
+
+  Operation timeout:     2 seconds (nfs_handlers.go:29)
+  Read timeout:          5 seconds (server.go:338)
+  Write timeout:         5 seconds (server.go:417)
+  Worker pool timeout:   50 ms (worker_pool.go:127)
+  Idle connection:       5 minutes (configurable)
+
+================================================================================
+KEY FILES TO MODIFY
+================================================================================
+
+server.go (516 LOC)
+  - Add rate limiter to handleConnection()
+  - Add per-IP rate limiter state to Server struct
+  - Integrate into request handling loop
+
+types.go (401 LOC)  
+  - Add RateLimitOptions to ExportOptions
+  - Add rate limiter fields to AbsfsNFS
+
+nfs_handlers.go (125 LOC)
+  - Add operation-specific rate limiting checks
+  - Add per-op type dispatch check
+
+auth.go (142 LOC)
+  - Can reuse for per-IP tracking
+
+metrics.go (406 LOC)
+  - Extend to track per-IP metrics
+  - Add rate limit violation counters
+
+================================================================================
+ATTACK SCENARIO EXAMPLES
+================================================================================
+
+Scenario 1: Simple Request Flood
+  attacker: nc localhost 2049 | while true; do send_nfs_read; done
+  Without fix: Server saturates in < 1 second
+  With fix: Attacker limited to 1000 ops/sec globally
+
+Scenario 2: Multi-IP Flood
+  attacker: 50 IPs, each sending 100 requests
+  Without fix: All 5000 requests processed immediately
+  With fix: Each IP capped at 1000 ops/sec, total = 1000 (fair distributed)
+
+Scenario 3: Expensive Operation Attack
+  attacker: Large READDIR on million-file directory, repeated
+  Without fix: CPU spikes, other clients timeout
+  With fix: READDIR capped at 20 ops/sec, CPU stays stable
+
+Scenario 4: Mount Table Attack
+  attacker: Rapid MNT/UMNT operations
+  Without fix: File handles accumulate, memory grows
+  With fix: MNT capped at 10 ops/min, handles stable
+
+================================================================================

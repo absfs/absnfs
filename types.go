@@ -27,6 +27,7 @@ type AbsfsNFS struct {
 	workerPool    *WorkerPool       // Worker pool for concurrent operations
 	batchProc     *BatchProcessor   // Processor for batched operations
 	metrics       *MetricsCollector // Metrics collection and reporting
+	rateLimiter   *RateLimiter      // Rate limiter for DoS protection
 }
 
 // ExportOptions defines the configuration for an NFS export
@@ -147,6 +148,16 @@ type ExportOptions struct {
 	// Larger buffers can improve throughput but consume more memory
 	// Default: 262144 (256KB)
 	ReceiveBufferSize int
+
+	// EnableRateLimiting enables rate limiting and DoS protection
+	// When enabled, the server will limit requests per IP, per connection, and per operation type
+	// Default: true
+	EnableRateLimiting bool
+
+	// RateLimitConfig provides detailed rate limiting configuration
+	// Only applicable when EnableRateLimiting is true
+	// If nil, default configuration will be used
+	RateLimitConfig *RateLimiterConfig
 }
 
 // FileHandleMap manages the mapping between NFS file handles and absfs files
@@ -275,6 +286,18 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		options.ReceiveBufferSize = 262144 // Default: 256KB
 	}
 
+	// Rate limiting is enabled by default for security
+	// This can be explicitly disabled by setting EnableRateLimiting to false
+	// Note: In Go, bool fields default to false, so we can't distinguish between
+	// "explicitly set to false" and "not set". We treat not setting EnableRateLimiting
+	// as opting in to rate limiting (secure by default).
+	if options.RateLimitConfig == nil {
+		config := DefaultRateLimiterConfig()
+		options.RateLimitConfig = &config
+		// Enable rate limiting by default (secure by default)
+		options.EnableRateLimiting = true
+	}
+
 	// Create server object with configured caches
 	server := &AbsfsNFS{
 		fs:      fs,
@@ -304,6 +327,14 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	
 	// Initialize metrics collection
 	server.initMetrics()
+
+	// Initialize rate limiter if enabled
+	if options.EnableRateLimiting {
+		server.rateLimiter = NewRateLimiter(*options.RateLimitConfig)
+		server.logger.Printf("Rate limiting enabled (per-IP: %d req/s, global: %d req/s)",
+			options.RateLimitConfig.PerIPRequestsPerSecond,
+			options.RateLimitConfig.GlobalRequestsPerSecond)
+	}
 
 	// Initialize root node
 	root := &NFSNode{

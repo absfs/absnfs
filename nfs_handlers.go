@@ -70,9 +70,9 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 
 		switch call.Header.Program {
 		case MOUNT_PROGRAM:
-			result, err = h.handleMountCall(call, body, reply)
+			result, err = h.handleMountCall(call, body, reply, authCtx)
 		case NFS_PROGRAM:
-			result, err = h.handleNFSCall(call, body, reply)
+			result, err = h.handleNFSCall(call, body, reply, authCtx)
 		default:
 			reply.Status = PROG_UNAVAIL
 			// Check context before sending

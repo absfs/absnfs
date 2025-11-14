@@ -67,7 +67,8 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				}
 
 				reply := &RPCReply{}
-				result, err := handler.handleNFSCall(call, badReader, reply)
+				authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+				result, err := handler.handleNFSCall(call, badReader, reply, authCtx)
 				if err != nil {
 					t.Fatalf("handleNFSCall should not return error for bad reader: %v", err)
 				}
@@ -158,7 +159,8 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 
 				buf := tc.setupBuf()
 				reply := &RPCReply{}
-				result, err := handler.handleNFSCall(call, buf, reply)
+				authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+				result, err := handler.handleNFSCall(call, buf, reply, authCtx)
 				if err != nil {
 					t.Fatalf("handleNFSCall should not return error: %v", err)
 				}
@@ -193,7 +195,8 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 			xdrEncodeString(&buf, "some_name")
 
 			reply := &RPCReply{}
-			result, err := handler.handleNFSCall(call, &buf, reply)
+			authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+			result, err := handler.handleNFSCall(call, &buf, reply, authCtx)
 			if err != nil {
 				t.Fatalf("handleNFSCall failed: %v", err)
 			}
@@ -237,7 +240,8 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 			buf.Write([]byte("hello"))                         // data
 
 			reply := &RPCReply{}
-			result, err := readOnlyHandler.handleNFSCall(call, &buf, reply)
+			authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+			result, err := readOnlyHandler.handleNFSCall(call, &buf, reply, authCtx)
 			if err != nil {
 				t.Fatalf("handleNFSCall failed: %v", err)
 			}
@@ -276,7 +280,8 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 			binary.Write(&buf, binary.BigEndian, uint32(0))
 
 			reply := &RPCReply{}
-			result, err := handler.handleNFSCall(call, &buf, reply)
+			authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+			result, err := handler.handleNFSCall(call, &buf, reply, authCtx)
 			if err != nil {
 				t.Fatalf("handleNFSCall failed: %v", err)
 			}
@@ -304,7 +309,8 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 			}
 
 			reply := &RPCReply{}
-			result, err := handler.handleNFSCall(call, &bytes.Buffer{}, reply)
+			authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+			result, err := handler.handleNFSCall(call, &bytes.Buffer{}, reply, authCtx)
 			if err != nil {
 				t.Fatalf("handleNFSCall failed: %v", err)
 			}
@@ -332,7 +338,8 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 			buf.Write([]byte("hello"))                         // data
 
 			reply := &RPCReply{}
-			result, err := handler.handleNFSCall(call, &buf, reply)
+			authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+			result, err := handler.handleNFSCall(call, &buf, reply, authCtx)
 			if err != nil {
 				t.Fatalf("handleNFSCall failed: %v", err)
 			}
