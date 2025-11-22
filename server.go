@@ -67,6 +67,49 @@ func (s *Server) SetHandler(handler *AbsfsNFS) {
 	s.handler = handler
 }
 
+// isIPAllowed checks if the client IP is in the AllowedIPs list
+// It supports both individual IPs (e.g., "192.168.1.100") and CIDR notation (e.g., "192.168.1.0/24")
+func (s *Server) isIPAllowed(clientIP string) bool {
+	// If no handler or AllowedIPs is empty/nil, allow all IPs
+	if s.handler == nil || len(s.handler.options.AllowedIPs) == 0 {
+		return true
+	}
+
+	// Parse the client IP
+	ip := net.ParseIP(clientIP)
+	if ip == nil {
+		// Invalid IP, reject
+		return false
+	}
+
+	// Check against each allowed IP/subnet
+	for _, allowedIP := range s.handler.options.AllowedIPs {
+		// Check if it's a CIDR notation
+		if strings.Contains(allowedIP, "/") {
+			_, ipNet, err := net.ParseCIDR(allowedIP)
+			if err != nil {
+				// Invalid CIDR, skip this entry
+				if s.options.Debug {
+					s.logger.Printf("Invalid CIDR notation in AllowedIPs: %s", allowedIP)
+				}
+				continue
+			}
+			if ipNet.Contains(ip) {
+				return true
+			}
+		} else {
+			// Direct IP comparison
+			allowedIPParsed := net.ParseIP(allowedIP)
+			if allowedIPParsed != nil && ip.Equal(allowedIPParsed) {
+				return true
+			}
+		}
+	}
+
+	// IP not found in allowed list
+	return false
+}
+
 // Listen starts the NFS server
 // registerConnection adds a connection to the tracking map and increments the counter
 func (s *Server) registerConnection(conn net.Conn) bool {
@@ -282,6 +325,23 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 			}
 			s.acceptErrs = 0 // Reset error counter on successful accept
 			
+			// Extract client IP from connection
+			clientAddr := conn.RemoteAddr().String()
+			clientIP, _, err := net.SplitHostPort(clientAddr)
+			if err != nil {
+				// If we can't parse the address, assume it's already just an IP
+				clientIP = clientAddr
+			}
+
+			// Check if the client IP is allowed
+			if !s.isIPAllowed(clientIP) {
+				if s.options.Debug {
+					s.logger.Printf("Connection rejected: IP %s not in AllowedIPs list", clientIP)
+				}
+				conn.Close()
+				continue
+			}
+
 			// Check if we can accept this connection based on connection limits
 			if !s.registerConnection(conn) {
 				// Connection limit reached, reject this connection
