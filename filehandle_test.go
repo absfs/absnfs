@@ -29,8 +29,9 @@ func TestFileHandleMap(t *testing.T) {
 
 	// Create file handle map
 	fm := &FileHandleMap{
-		handles:    make(map[uint64]absfs.File),
-		lastHandle: 0,
+		handles:     make(map[uint64]absfs.File),
+		nextHandle:  1,
+		freeHandles: NewUint64MinHeap(),
 	}
 
 	// Test Allocate

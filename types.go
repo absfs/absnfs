@@ -163,8 +163,9 @@ type ExportOptions struct {
 // FileHandleMap manages the mapping between NFS file handles and absfs files
 type FileHandleMap struct {
 	sync.RWMutex
-	handles    map[uint64]absfs.File
-	lastHandle uint64
+	handles     map[uint64]absfs.File
+	nextHandle  uint64        // Counter for allocating new handles
+	freeHandles *uint64MinHeap // Min-heap of freed handles for reuse
 }
 
 // NFSNode represents a file or directory in the NFS tree
@@ -303,7 +304,9 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		fs:      fs,
 		options: options,
 		fileMap: &FileHandleMap{
-			handles: make(map[uint64]absfs.File),
+			handles:     make(map[uint64]absfs.File),
+			nextHandle:  1, // Start from 1, as 0 is typically reserved
+			freeHandles: NewUint64MinHeap(),
 		},
 		logger:    log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
 		attrCache: NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
