@@ -433,7 +433,11 @@ func TestServerPortBinding(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to get random port: %v", err)
 		}
-		port := listener.Addr().(*net.TCPAddr).Port
+		tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+		if !ok {
+			t.Fatalf("Failed to get TCP address from listener")
+		}
+		port := tcpAddr.Port
 		listener.Close()
 
 		// First server should bind successfully
@@ -527,7 +531,10 @@ func TestServerPortBinding(t *testing.T) {
 		}
 
 		// Force connection reset
-		tcpConn := conn.(*net.TCPConn)
+		tcpConn, ok := conn.(*net.TCPConn)
+		if !ok {
+			t.Fatalf("Failed to get TCP connection")
+		}
 		tcpConn.SetLinger(0)
 		tcpConn.Close()
 
