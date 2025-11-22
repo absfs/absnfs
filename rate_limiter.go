@@ -398,7 +398,16 @@ func (rl *RateLimiter) AllowRequest(ip string, connID string) bool {
 			)
 			rl.perConnectionLimiter.Store(connID, limiter)
 		} else {
-			limiter = limiterInterface.(*TokenBucket)
+			var ok bool
+			limiter, ok = limiterInterface.(*TokenBucket)
+			if !ok {
+				// Type assertion failed, create a new limiter
+				limiter = NewTokenBucket(
+					float64(rl.config.PerConnectionRequestsPerSecond),
+					rl.config.PerConnectionBurstSize,
+				)
+				rl.perConnectionLimiter.Store(connID, limiter)
+			}
 		}
 
 		if !limiter.Allow() {
