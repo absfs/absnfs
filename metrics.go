@@ -1,6 +1,7 @@
 package absnfs
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -160,11 +161,10 @@ func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) 
 			m.metrics.AvgReadLatency = sum / time.Duration(len(m.readLatencies))
 			
 			// Calculate 95th percentile
-			// This is a simple implementation - for production, consider using a more efficient algorithm
 			if len(m.readLatencies) >= 20 { // Need enough samples for meaningful percentile
 				sorted := make([]time.Duration, len(m.readLatencies))
 				copy(sorted, m.readLatencies)
-				sort(sorted)
+				sortDurations(sorted)
 				idx := int(float64(len(sorted)) * 0.95)
 				m.metrics.P95ReadLatency = sorted[idx]
 			}
@@ -201,7 +201,7 @@ func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) 
 			if len(m.writeLatencies) >= 20 { // Need enough samples for meaningful percentile
 				sorted := make([]time.Duration, len(m.writeLatencies))
 				copy(sorted, m.writeLatencies)
-				sort(sorted)
+				sortDurations(sorted)
 				idx := int(float64(len(sorted)) * 0.95)
 				m.metrics.P95WriteLatency = sorted[idx]
 			}
@@ -376,17 +376,14 @@ func (m *MetricsCollector) GetMetrics() NFSMetrics {
 	return metricsCopy
 }
 
-// sort is a helper function to sort duration slices
-func sort(durations []time.Duration) {
-	// Simple bubble sort implementation
-	n := len(durations)
-	for i := 0; i < n-1; i++ {
-		for j := 0; j < n-i-1; j++ {
-			if durations[j] > durations[j+1] {
-				durations[j], durations[j+1] = durations[j+1], durations[j]
-			}
-		}
-	}
+// sortDurations is a helper function to sort duration slices using efficient O(n log n) algorithm
+func sortDurations(durations []time.Duration) {
+	// Use Go's built-in sort.Slice which uses an optimized O(n log n) algorithm
+	// This is significantly faster than bubble sort, especially for large datasets
+	// For 1000 samples: O(n log n) ≈ 10,000 operations vs O(n²) ≈ 1,000,000 operations
+	sort.Slice(durations, func(i, j int) bool {
+		return durations[i] < durations[j]
+	})
 }
 
 // IsHealthy checks if the server is in a healthy state
