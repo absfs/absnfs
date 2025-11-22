@@ -23,6 +23,12 @@ type ServerOptions struct {
 	Debug    bool   // Enable debug logging
 }
 
+// connectionState tracks the state of an active connection
+type connectionState struct {
+	lastActivity   time.Time
+	unregisterOnce sync.Once // Ensures connection is only unregistered once
+}
+
 // Server represents an NFS server instance
 type Server struct {
 	options        ServerOptions
@@ -33,11 +39,11 @@ type Server struct {
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
 	acceptErrs     int // Counter for accept errors to prevent excessive logging
-	
+
 	// Connection management
 	connMutex      sync.Mutex
-	activeConns    map[net.Conn]time.Time  // Map of active connections and their last activity time
-	connCount      int                     // Current connection count
+	activeConns    map[net.Conn]*connectionState  // Map of active connections and their state
+	connCount      int                            // Current connection count
 }
 
 // NewServer creates a new NFS server
@@ -58,7 +64,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 		logger:      log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
 		ctx:         ctx,
 		cancel:      cancel,
-		activeConns: make(map[net.Conn]time.Time),
+		activeConns: make(map[net.Conn]*connectionState),
 	}, nil
 }
 
@@ -129,8 +135,10 @@ func (s *Server) registerConnection(conn net.Conn) bool {
 		return false
 	}
 
-	// Add to tracking map with current time
-	s.activeConns[conn] = time.Now()
+	// Add to tracking map with current time and unregister-once mechanism
+	s.activeConns[conn] = &connectionState{
+		lastActivity: time.Now(),
+	}
 	s.connCount++
 
 	if s.options.Debug {
@@ -140,19 +148,31 @@ func (s *Server) registerConnection(conn net.Conn) bool {
 }
 
 // unregisterConnection removes a connection from the tracking map and decrements the counter
+// Uses sync.Once to ensure this only happens once per connection, preventing race conditions
 func (s *Server) unregisterConnection(conn net.Conn) {
 	s.connMutex.Lock()
-	defer s.connMutex.Unlock()
+	state, exists := s.activeConns[conn]
+	s.connMutex.Unlock()
 
-	// Remove from tracking map
-	if _, exists := s.activeConns[conn]; exists {
-		delete(s.activeConns, conn)
-		s.connCount--
-		
-		if s.options.Debug {
-			s.logger.Printf("Connection closed (total: %d)", s.connCount)
-		}
+	if !exists {
+		return // Connection already unregistered
 	}
+
+	// Use sync.Once to ensure the unregistration happens exactly once
+	state.unregisterOnce.Do(func() {
+		s.connMutex.Lock()
+		defer s.connMutex.Unlock()
+
+		// Double-check the connection still exists (in case another goroutine removed it)
+		if _, stillExists := s.activeConns[conn]; stillExists {
+			delete(s.activeConns, conn)
+			s.connCount--
+
+			if s.options.Debug {
+				s.logger.Printf("Connection closed (total: %d)", s.connCount)
+			}
+		}
+	})
 }
 
 // updateConnectionActivity updates the last activity time for a connection
@@ -160,8 +180,10 @@ func (s *Server) updateConnectionActivity(conn net.Conn) {
 	s.connMutex.Lock()
 	defer s.connMutex.Unlock()
 
-	// Update last activity time
-	s.activeConns[conn] = time.Now()
+	// Update last activity time if connection still exists
+	if state, exists := s.activeConns[conn]; exists {
+		state.lastActivity = time.Now()
+	}
 }
 
 // cleanupIdleConnections closes connections that have been idle for too long
@@ -171,25 +193,27 @@ func (s *Server) cleanupIdleConnections() {
 	}
 
 	s.connMutex.Lock()
-	defer s.connMutex.Unlock()
-
 	now := time.Now()
 	idleTimeout := s.handler.options.IdleTimeout
 
-	// Check each connection
-	var idleCount int
-	for conn, lastActivity := range s.activeConns {
-		if now.Sub(lastActivity) > idleTimeout {
-			// This connection has been idle for too long
-			conn.Close() // Close the connection
-			delete(s.activeConns, conn)
-			s.connCount--
-			idleCount++
+	// Collect idle connections while holding the lock
+	var idleConns []net.Conn
+	for conn, state := range s.activeConns {
+		if now.Sub(state.lastActivity) > idleTimeout {
+			idleConns = append(idleConns, conn)
 		}
 	}
+	s.connMutex.Unlock()
 
-	if idleCount > 0 && s.options.Debug {
-		s.logger.Printf("Closed %d idle connections (remaining: %d)", idleCount, s.connCount)
+	// Close idle connections and unregister them
+	// The sync.Once in unregisterConnection ensures this happens exactly once
+	for _, conn := range idleConns {
+		conn.Close()
+		s.unregisterConnection(conn)
+	}
+
+	if len(idleConns) > 0 && s.options.Debug {
+		s.logger.Printf("Closed %d idle connections", len(idleConns))
 	}
 }
 
@@ -586,19 +610,24 @@ func isTimeoutError(err error) bool {
 // closeAllConnections closes all active connections
 func (s *Server) closeAllConnections() {
 	s.connMutex.Lock()
-	defer s.connMutex.Unlock()
-
-	// Close all active connections
+	// Collect all connections while holding the lock
+	var conns []net.Conn
 	for conn := range s.activeConns {
+		conns = append(conns, conn)
+	}
+	connCount := len(conns)
+	s.connMutex.Unlock()
+
+	// Close all connections and unregister them
+	// The sync.Once in unregisterConnection ensures cleanup happens exactly once
+	for _, conn := range conns {
 		conn.Close()
+		s.unregisterConnection(conn)
 	}
-	
-	// Clear the map
-	if len(s.activeConns) > 0 && s.options.Debug {
-		s.logger.Printf("Closed %d connections during shutdown", len(s.activeConns))
+
+	if connCount > 0 && s.options.Debug {
+		s.logger.Printf("Closed %d connections during shutdown", connCount)
 	}
-	s.activeConns = make(map[net.Conn]time.Time)
-	s.connCount = 0
 }
 
 // isConnectionResetError checks if an error is due to connection reset
