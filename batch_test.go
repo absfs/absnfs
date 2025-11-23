@@ -57,7 +57,7 @@ func TestBatchProcessor(t *testing.T) {
 
 	// Test BatchRead
 	t.Run("BatchRead", func(t *testing.T) {
-		data, err, status := server.batchProc.BatchRead(context.Background(), fileHandle, 0, len(testData))
+		data, status, err := server.batchProc.BatchRead(context.Background(), fileHandle, 0, len(testData))
 		if err != nil {
 			t.Fatalf("BatchRead failed: %v (status %d)", err, status)
 		}
@@ -72,7 +72,7 @@ func TestBatchProcessor(t *testing.T) {
 	// Test BatchWrite
 	t.Run("BatchWrite", func(t *testing.T) {
 		newData := []byte("new batch data")
-		err, status := server.batchProc.BatchWrite(context.Background(), fileHandle, 0, newData)
+		status, err := server.batchProc.BatchWrite(context.Background(), fileHandle, 0, newData)
 		if err != nil {
 			t.Fatalf("BatchWrite failed: %v (status %d)", err, status)
 		}
@@ -81,7 +81,7 @@ func TestBatchProcessor(t *testing.T) {
 		}
 
 		// Read back the data
-		data, err, status := server.batchProc.BatchRead(context.Background(), fileHandle, 0, len(newData))
+		data, status, err := server.batchProc.BatchRead(context.Background(), fileHandle, 0, len(newData))
 		if err != nil {
 			t.Fatalf("BatchRead failed: %v (status %d)", err, status)
 		}
@@ -122,7 +122,7 @@ func TestBatchProcessor(t *testing.T) {
 
 		// Now perform reads that wait for results
 		for i := 0; i < numOperations/2; i++ {
-			data, err, status := server.batchProc.BatchRead(ctx, fileHandle, 0, 5)
+			data, status, err := server.batchProc.BatchRead(ctx, fileHandle, 0, 5)
 			if err != nil {
 				t.Fatalf("Concurrent BatchRead %d failed: %v (status %d)", i, err, status)
 			}

@@ -62,10 +62,6 @@ type NFSMetrics struct {
 	ResourceErrors   uint64
 	RateLimitExceeded uint64
 
-	// Internal metrics for calculating averages and percentiles
-	readLatencies  []time.Duration
-	writeLatencies []time.Duration
-	
 	// Time-based metrics
 	StartTime time.Time
 	UptimeSeconds int64

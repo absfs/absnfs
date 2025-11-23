@@ -283,7 +283,7 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 
 	// Use batch processing if we determined it's safe to do so
 	if useBatch {
-		data, err, status := s.batchProc.BatchRead(context.Background(), fileHandle, offset, int(count))
+		data, status, err := s.batchProc.BatchRead(context.Background(), fileHandle, offset, int(count))
 		if err == nil && status == NFS_OK {
 			return data, nil
 		}
@@ -394,13 +394,13 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 
 	// Use batch processing if we determined it's safe to do so
 	if useBatch {
-		err, status := s.batchProc.BatchWrite(context.Background(), fileHandle, offset, data)
+		status, err := s.batchProc.BatchWrite(context.Background(), fileHandle, offset, data)
 		if err == nil && status == NFS_OK {
 			// Invalidate cache after successful write
 			s.attrCache.Invalidate(node.path)
 			// Clear only the specific file's buffer, not all buffers
 			s.readBuf.ClearPath(node.path)
-			
+
 			// Update node attributes to reflect changes
 			info, statErr := s.fs.Stat(node.path)
 			if statErr == nil {
@@ -410,7 +410,7 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 				node.attrs.Refresh() // Initialize cache validity
 				node.mu.Unlock()
 			}
-			
+
 			return int64(len(data)), nil
 		}
 		// If batch processing failed but not because of a file error, fall back to normal write
