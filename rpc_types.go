@@ -173,13 +173,13 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 	// Decode header
 	xid, err := xdrDecodeUint32(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode XID: %v", err)
+		return nil, fmt.Errorf("failed to decode XID: %w", err)
 	}
 	call.Header.Xid = xid
 
 	msgType, err := xdrDecodeUint32(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode message type: %v", err)
+		return nil, fmt.Errorf("failed to decode message type: %w", err)
 	}
 	if msgType != RPC_CALL {
 		return nil, fmt.Errorf("expected RPC call, got message type %d", msgType)
@@ -188,25 +188,25 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 
 	// Decode RPC version, program, version, and procedure
 	if call.Header.RPCVersion, err = xdrDecodeUint32(r); err != nil {
-		return nil, fmt.Errorf("failed to decode RPC version: %v", err)
+		return nil, fmt.Errorf("failed to decode RPC version: %w", err)
 	}
 	if call.Header.Program, err = xdrDecodeUint32(r); err != nil {
-		return nil, fmt.Errorf("failed to decode program: %v", err)
+		return nil, fmt.Errorf("failed to decode program: %w", err)
 	}
 	if call.Header.Version, err = xdrDecodeUint32(r); err != nil {
-		return nil, fmt.Errorf("failed to decode version: %v", err)
+		return nil, fmt.Errorf("failed to decode version: %w", err)
 	}
 	if call.Header.Procedure, err = xdrDecodeUint32(r); err != nil {
-		return nil, fmt.Errorf("failed to decode procedure: %v", err)
+		return nil, fmt.Errorf("failed to decode procedure: %w", err)
 	}
 
 	// Decode credential
 	if call.Credential.Flavor, err = xdrDecodeUint32(r); err != nil {
-		return nil, fmt.Errorf("failed to decode credential flavor: %v", err)
+		return nil, fmt.Errorf("failed to decode credential flavor: %w", err)
 	}
 	credLen, err := xdrDecodeUint32(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode credential length: %v", err)
+		return nil, fmt.Errorf("failed to decode credential length: %w", err)
 	}
 	// Validate credential length to prevent DoS attacks via memory exhaustion
 	if credLen > MAX_RPC_AUTH_LENGTH {
@@ -214,16 +214,16 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 	}
 	call.Credential.Body = make([]byte, credLen)
 	if _, err = io.ReadFull(r, call.Credential.Body); err != nil {
-		return nil, fmt.Errorf("failed to read credential body: %v", err)
+		return nil, fmt.Errorf("failed to read credential body: %w", err)
 	}
 
 	// Decode verifier
 	if call.Verifier.Flavor, err = xdrDecodeUint32(r); err != nil {
-		return nil, fmt.Errorf("failed to decode verifier flavor: %v", err)
+		return nil, fmt.Errorf("failed to decode verifier flavor: %w", err)
 	}
 	verLen, err := xdrDecodeUint32(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode verifier length: %v", err)
+		return nil, fmt.Errorf("failed to decode verifier length: %w", err)
 	}
 	// Validate verifier length to prevent DoS attacks via memory exhaustion
 	if verLen > MAX_RPC_AUTH_LENGTH {
@@ -231,7 +231,7 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 	}
 	call.Verifier.Body = make([]byte, verLen)
 	if _, err = io.ReadFull(r, call.Verifier.Body); err != nil {
-		return nil, fmt.Errorf("failed to read verifier body: %v", err)
+		return nil, fmt.Errorf("failed to read verifier body: %w", err)
 	}
 
 	return call, nil
@@ -241,26 +241,26 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 func EncodeRPCReply(w io.Writer, reply *RPCReply) error {
 	// Encode header
 	if err := xdrEncodeUint32(w, reply.Header.Xid); err != nil {
-		return fmt.Errorf("failed to encode XID: %v", err)
+		return fmt.Errorf("failed to encode XID: %w", err)
 	}
 	if err := xdrEncodeUint32(w, RPC_REPLY); err != nil {
-		return fmt.Errorf("failed to encode message type: %v", err)
+		return fmt.Errorf("failed to encode message type: %w", err)
 	}
 
 	// Encode reply status
 	if err := xdrEncodeUint32(w, reply.Status); err != nil {
-		return fmt.Errorf("failed to encode reply status: %v", err)
+		return fmt.Errorf("failed to encode reply status: %w", err)
 	}
 
 	// Encode verifier
 	if err := xdrEncodeUint32(w, reply.Verifier.Flavor); err != nil {
-		return fmt.Errorf("failed to encode verifier flavor: %v", err)
+		return fmt.Errorf("failed to encode verifier flavor: %w", err)
 	}
 	if err := xdrEncodeUint32(w, uint32(len(reply.Verifier.Body))); err != nil {
-		return fmt.Errorf("failed to encode verifier length: %v", err)
+		return fmt.Errorf("failed to encode verifier length: %w", err)
 	}
 	if _, err := w.Write(reply.Verifier.Body); err != nil {
-		return fmt.Errorf("failed to write verifier body: %v", err)
+		return fmt.Errorf("failed to write verifier body: %w", err)
 	}
 
 	// Encode reply data based on procedure type
@@ -304,31 +304,31 @@ func ParseAuthSysCredential(body []byte) (*AuthSysCredential, error) {
 	var err error
 	cred.Stamp, err = r.readUint32()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read stamp: %v", err)
+		return nil, fmt.Errorf("failed to read stamp: %w", err)
 	}
 
 	// Read machine name
 	cred.MachineName, err = r.readString()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read machine name: %v", err)
+		return nil, fmt.Errorf("failed to read machine name: %w", err)
 	}
 
 	// Read UID
 	cred.UID, err = r.readUint32()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read UID: %v", err)
+		return nil, fmt.Errorf("failed to read UID: %w", err)
 	}
 
 	// Read GID
 	cred.GID, err = r.readUint32()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read GID: %v", err)
+		return nil, fmt.Errorf("failed to read GID: %w", err)
 	}
 
 	// Read auxiliary GIDs count
 	gidCount, err := r.readUint32()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read GID count: %v", err)
+		return nil, fmt.Errorf("failed to read GID count: %w", err)
 	}
 
 	// Validate GID count to prevent DoS
@@ -341,7 +341,7 @@ func ParseAuthSysCredential(body []byte) (*AuthSysCredential, error) {
 	for i := uint32(0); i < gidCount; i++ {
 		cred.AuxGIDs[i], err = r.readUint32()
 		if err != nil {
-			return nil, fmt.Errorf("failed to read auxiliary GID %d: %v", i, err)
+			return nil, fmt.Errorf("failed to read auxiliary GID %d: %w", i, err)
 		}
 	}
 

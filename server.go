@@ -272,14 +272,14 @@ func (s *Server) Listen() error {
 			addr = fmt.Sprintf("%s:0", s.options.Hostname)
 			listener, err = net.Listen("tcp", addr)
 			if err != nil {
-				return fmt.Errorf("failed to listen on %s: %v", addr, err)
+				return fmt.Errorf("failed to listen on %s: %w", addr, err)
 			}
 			// Update the port to the actual port assigned
 			if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
 				s.options.Port = tcpAddr.Port
 			}
 		} else {
-			return fmt.Errorf("failed to listen on %s: %v", addr, err)
+			return fmt.Errorf("failed to listen on %s: %w", addr, err)
 		}
 	}
 	s.listener = listener
@@ -378,22 +378,32 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 			if tcpConn, ok := conn.(*net.TCPConn); ok && s.handler != nil {
 				// Apply TCP keepalive setting
 				if s.handler.options.TCPKeepAlive {
-					tcpConn.SetKeepAlive(true)
-					tcpConn.SetKeepAlivePeriod(60 * time.Second) // Standard keepalive period
+					if err := tcpConn.SetKeepAlive(true); err != nil {
+						s.logger.Printf("Warning: failed to set TCP keepalive: %v", err)
+					}
+					if err := tcpConn.SetKeepAlivePeriod(60 * time.Second); err != nil {
+						s.logger.Printf("Warning: failed to set TCP keepalive period: %v", err)
+					}
 				}
-				
+
 				// Apply TCP no delay setting (disable Nagle's algorithm)
 				if s.handler.options.TCPNoDelay {
-					tcpConn.SetNoDelay(true)
+					if err := tcpConn.SetNoDelay(true); err != nil {
+						s.logger.Printf("Warning: failed to set TCP no delay: %v", err)
+					}
 				}
-				
+
 				// Apply buffer sizes
 				if s.handler.options.SendBufferSize > 0 {
-					tcpConn.SetWriteBuffer(s.handler.options.SendBufferSize)
+					if err := tcpConn.SetWriteBuffer(s.handler.options.SendBufferSize); err != nil {
+						s.logger.Printf("Warning: failed to set send buffer size: %v", err)
+					}
 				}
-				
+
 				if s.handler.options.ReceiveBufferSize > 0 {
-					tcpConn.SetReadBuffer(s.handler.options.ReceiveBufferSize)
+					if err := tcpConn.SetReadBuffer(s.handler.options.ReceiveBufferSize); err != nil {
+						s.logger.Printf("Warning: failed to set receive buffer size: %v", err)
+					}
 				}
 				
 				if s.options.Debug {
