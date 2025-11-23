@@ -2,6 +2,7 @@ package absnfs
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -265,23 +266,71 @@ func (s *Server) Listen() error {
 
 	// Try to bind to the specified port
 	addr := fmt.Sprintf("%s:%d", s.options.Hostname, s.options.Port)
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		// If port is in use and we're using the default port, try a random port
-		if s.options.Port == 2049 && isAddrInUse(err) {
-			addr = fmt.Sprintf("%s:0", s.options.Hostname)
-			listener, err = net.Listen("tcp", addr)
-			if err != nil {
+
+	// Check if TLS is enabled
+	var listener net.Listener
+	var err error
+
+	if s.handler.options.TLS != nil && s.handler.options.TLS.Enabled {
+		// Build TLS configuration
+		tlsConfig, err := s.handler.options.TLS.BuildConfig()
+		if err != nil {
+			return fmt.Errorf("failed to build TLS config: %w", err)
+		}
+
+		// Create TLS listener
+		listener, err = tls.Listen("tcp", addr, tlsConfig)
+		if err != nil {
+			// If port is in use and we're using the default port, try a random port
+			if s.options.Port == 2049 && isAddrInUse(err) {
+				addr = fmt.Sprintf("%s:0", s.options.Hostname)
+				listener, err = tls.Listen("tcp", addr, tlsConfig)
+				if err != nil {
+					return fmt.Errorf("failed to listen on %s with TLS: %w", addr, err)
+				}
+				// Update the port to the actual port assigned
+				if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
+					s.options.Port = tcpAddr.Port
+				}
+			} else {
+				return fmt.Errorf("failed to listen on %s with TLS: %w", addr, err)
+			}
+		}
+
+		s.logger.Printf("TLS enabled on %s (MinVersion: %s, MaxVersion: %s, ClientAuth: %s)",
+			addr,
+			TLSVersionString(s.handler.options.TLS.MinVersion),
+			TLSVersionString(s.handler.options.TLS.MaxVersion),
+			s.handler.options.TLS.GetClientAuthString())
+
+		if s.handler.options.TLS.InsecureSkipVerify {
+			s.logger.Printf("WARNING: TLS verification disabled (InsecureSkipVerify=true)")
+		}
+	} else {
+		// Create regular TCP listener (no TLS)
+		listener, err = net.Listen("tcp", addr)
+		if err != nil {
+			// If port is in use and we're using the default port, try a random port
+			if s.options.Port == 2049 && isAddrInUse(err) {
+				addr = fmt.Sprintf("%s:0", s.options.Hostname)
+				listener, err = net.Listen("tcp", addr)
+				if err != nil {
+					return fmt.Errorf("failed to listen on %s: %w", addr, err)
+				}
+				// Update the port to the actual port assigned
+				if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
+					s.options.Port = tcpAddr.Port
+				}
+			} else {
 				return fmt.Errorf("failed to listen on %s: %w", addr, err)
 			}
-			// Update the port to the actual port assigned
-			if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
-				s.options.Port = tcpAddr.Port
-			}
-		} else {
-			return fmt.Errorf("failed to listen on %s: %w", addr, err)
+		}
+
+		if s.options.Debug {
+			s.logger.Printf("TLS disabled - connections are unencrypted")
 		}
 	}
+
 	s.listener = listener
 
 	procHandler := &NFSProcedureHandler{server: s}
