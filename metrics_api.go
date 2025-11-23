@@ -1,6 +1,9 @@
 package absnfs
 
 import (
+	"errors"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -76,23 +79,51 @@ func (n *AbsfsNFS) RecordOperationStart(opType string) func(err error) {
 
 // isStaleFileHandle checks if an error is related to a stale file handle
 func isStaleFileHandle(err error) bool {
-	// In a real implementation, you would check the error type or message
-	// This is a placeholder
-	return false
+	if err == nil {
+		return false
+	}
+	// Check for common stale file handle error messages
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "stale") ||
+		strings.Contains(errMsg, "ESTALE") ||
+		strings.Contains(errMsg, "no such file or directory") ||
+		strings.Contains(errMsg, "file handle")
 }
 
 // isAuthError checks if an error is related to authentication
 func isAuthError(err error) bool {
-	// In a real implementation, you would check the error type or message
-	// This is a placeholder
-	return false
+	if err == nil {
+		return false
+	}
+	// Check for permission and authentication errors
+	if errors.Is(err, os.ErrPermission) {
+		return true
+	}
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "permission denied") ||
+		strings.Contains(errMsg, "EACCES") ||
+		strings.Contains(errMsg, "EPERM") ||
+		strings.Contains(errMsg, "authentication") ||
+		strings.Contains(errMsg, "unauthorized")
 }
 
 // isResourceError checks if an error is related to resource limits
 func isResourceError(err error) bool {
-	// In a real implementation, you would check the error type or message
-	// This is a placeholder
-	return false
+	if err == nil {
+		return false
+	}
+	// Check for resource limit errors
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "no space left") ||
+		strings.Contains(errMsg, "ENOSPC") ||
+		strings.Contains(errMsg, "ENOMEM") ||
+		strings.Contains(errMsg, "out of memory") ||
+		strings.Contains(errMsg, "too many") ||
+		strings.Contains(errMsg, "EMFILE") ||
+		strings.Contains(errMsg, "ENFILE") ||
+		strings.Contains(errMsg, "quota exceeded") ||
+		strings.Contains(errMsg, "resource") ||
+		strings.Contains(errMsg, "limit")
 }
 
 // RecordAttrCacheHit records a hit in the attribute cache
