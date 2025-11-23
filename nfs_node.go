@@ -43,7 +43,9 @@ func (n *NFSNode) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	defer f.Close()
+	n.mu.Lock()
 	n.attrs.Invalidate() // Invalidate cache on write
+	n.mu.Unlock()
 	return f.Write(p)
 }
 
@@ -54,7 +56,9 @@ func (n *NFSNode) WriteAt(p []byte, off int64) (int, error) {
 		return 0, err
 	}
 	defer f.Close()
+	n.mu.Lock()
 	n.attrs.Invalidate() // Invalidate cache on write
+	n.mu.Unlock()
 	return f.WriteAt(p, off)
 }
 
@@ -124,7 +128,9 @@ func (n *NFSNode) Sync() error {
 
 // Truncate implements absfs.File
 func (n *NFSNode) Truncate(size int64) error {
+	n.mu.Lock()
 	n.attrs.Invalidate() // Invalidate cache on truncate
+	n.mu.Unlock()
 	return n.FileSystem.Truncate(n.path, size)
 }
 
@@ -140,18 +146,24 @@ func (n *NFSNode) Chdir() error {
 
 // Chmod implements absfs.File
 func (n *NFSNode) Chmod(mode os.FileMode) error {
+	n.mu.Lock()
 	n.attrs.Invalidate() // Invalidate cache on chmod
+	n.mu.Unlock()
 	return n.FileSystem.Chmod(n.path, mode)
 }
 
 // Chown implements absfs.File
 func (n *NFSNode) Chown(uid, gid int) error {
+	n.mu.Lock()
 	n.attrs.Invalidate() // Invalidate cache on chown
+	n.mu.Unlock()
 	return n.FileSystem.Chown(n.path, uid, gid)
 }
 
 // Chtimes implements absfs.File
 func (n *NFSNode) Chtimes(atime time.Time, mtime time.Time) error {
+	n.mu.Lock()
 	n.attrs.Invalidate() // Invalidate cache on chtimes
+	n.mu.Unlock()
 	return n.FileSystem.Chtimes(n.path, atime, mtime)
 }

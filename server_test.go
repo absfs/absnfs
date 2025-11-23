@@ -389,7 +389,7 @@ func TestServerHandleConnection(t *testing.T) {
 		server.cancel()
 		<-done
 
-		if server.acceptErrs < 3 {
+		if server.acceptErrs.Load() < 3 {
 			t.Error("Expected accept errors to be counted")
 		}
 	})

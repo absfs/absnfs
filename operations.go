@@ -150,13 +150,19 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 		return nil, err
 	}
 
+	// Read Uid/Gid from node.attrs with lock protection
+	node.mu.RLock()
+	uid := node.attrs.Uid
+	gid := node.attrs.Gid
+	node.mu.RUnlock()
+
 	attrs := &NFSAttrs{
 		Mode:  info.Mode(),
 		Size:  info.Size(),
 		Mtime: info.ModTime(),
 		Atime: info.ModTime(),
-		Uid:   node.attrs.Uid,
-		Gid:   node.attrs.Gid,
+		Uid:   uid,
+		Gid:   gid,
 	}
 	attrs.Refresh() // Initialize cache validity
 
@@ -180,26 +186,39 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 		return err
 	}
 
-	if attrs.Mode != node.attrs.Mode {
+	// Read current attrs with lock protection to compare
+	node.mu.RLock()
+	currentMode := node.attrs.Mode
+	currentUid := node.attrs.Uid
+	currentGid := node.attrs.Gid
+	currentMtime := node.attrs.Mtime
+	currentAtime := node.attrs.Atime
+	node.mu.RUnlock()
+
+	if attrs.Mode != currentMode {
 		if err := s.fs.Chmod(node.path, attrs.Mode); err != nil {
 			return err
 		}
 	}
 
-	if attrs.Uid != node.attrs.Uid || attrs.Gid != node.attrs.Gid {
+	if attrs.Uid != currentUid || attrs.Gid != currentGid {
 		if err := s.fs.Chown(node.path, int(attrs.Uid), int(attrs.Gid)); err != nil {
 			return err
 		}
 	}
 
-	if attrs.Mtime != node.attrs.Mtime || attrs.Atime != node.attrs.Atime {
+	if attrs.Mtime != currentMtime || attrs.Atime != currentAtime {
 		if err := s.fs.Chtimes(node.path, attrs.Atime, attrs.Mtime); err != nil {
 			return err
 		}
 	}
 
+	// Update attrs with lock protection
+	node.mu.Lock()
 	node.attrs = attrs
 	node.attrs.Refresh() // Initialize cache validity
+	node.mu.Unlock()
+
 	// Invalidate cache after attribute changes
 	s.attrCache.Invalidate(node.path)
 	return nil
@@ -227,8 +246,9 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 		return data, nil
 	}
 	
-	// Get the file handle for this node
+	// Get the file handle for this node and use batch processing if enabled
 	var fileHandle uint64
+	var useBatch bool
 	s.fileMap.RLock()
 	for handle, file := range s.fileMap.handles {
 		if nodeFile, ok := file.(*NFSNode); ok && nodeFile.path == node.path {
@@ -236,10 +256,18 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 			break
 		}
 	}
-	s.fileMap.RUnlock()
-	
-	// If we found a file handle and batching is enabled, try to use batch processing
+	// Check if we should use batch processing while still holding the lock
+	// This prevents a race where the handle could be removed after we release the lock
 	if fileHandle != 0 && s.options.BatchOperations && s.batchProc != nil {
+		// Verify handle still exists in map before using it
+		if _, exists := s.fileMap.handles[fileHandle]; exists {
+			useBatch = true
+		}
+	}
+	s.fileMap.RUnlock()
+
+	// Use batch processing if we determined it's safe to do so
+	if useBatch {
 		data, err, status := s.batchProc.BatchRead(context.Background(), fileHandle, offset, int(count))
 		if err == nil && status == NFS_OK {
 			return data, nil
@@ -329,8 +357,9 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 		data = data[:s.options.TransferSize]
 	}
 	
-	// Get the file handle for this node
+	// Get the file handle for this node and use batch processing if enabled
 	var fileHandle uint64
+	var useBatch bool
 	s.fileMap.RLock()
 	for handle, file := range s.fileMap.handles {
 		if nodeFile, ok := file.(*NFSNode); ok && nodeFile.path == node.path {
@@ -338,10 +367,18 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 			break
 		}
 	}
-	s.fileMap.RUnlock()
-	
-	// If we found a file handle and batching is enabled, try to use batch processing
+	// Check if we should use batch processing while still holding the lock
+	// This prevents a race where the handle could be removed after we release the lock
 	if fileHandle != 0 && s.options.BatchOperations && s.batchProc != nil {
+		// Verify handle still exists in map before using it
+		if _, exists := s.fileMap.handles[fileHandle]; exists {
+			useBatch = true
+		}
+	}
+	s.fileMap.RUnlock()
+
+	// Use batch processing if we determined it's safe to do so
+	if useBatch {
 		err, status := s.batchProc.BatchWrite(context.Background(), fileHandle, offset, data)
 		if err == nil && status == NFS_OK {
 			// Invalidate cache after successful write
@@ -352,9 +389,11 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 			// Update node attributes to reflect changes
 			info, statErr := s.fs.Stat(node.path)
 			if statErr == nil {
+				node.mu.Lock()
 				node.attrs.Size = info.Size()
 				node.attrs.Mtime = info.ModTime()
 				node.attrs.Refresh() // Initialize cache validity
+				node.mu.Unlock()
 			}
 			
 			return int64(len(data)), nil
@@ -390,9 +429,11 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 		// Update node attributes to reflect new size and time
 		info, statErr := s.fs.Stat(node.path)
 		if statErr == nil {
+			node.mu.Lock()
 			node.attrs.Size = info.Size()
 			node.attrs.Mtime = info.ModTime()
 			node.attrs.Refresh() // Initialize cache validity
+			node.mu.Unlock()
 		}
 	}
 	return int64(n), err
