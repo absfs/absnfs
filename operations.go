@@ -103,7 +103,15 @@ func (s *AbsfsNFS) Lookup(path string) (*NFSNode, error) {
 		return node, nil
 	}
 
-	info, err := s.fs.Stat(path)
+	// Try Lstat first if filesystem supports it (to get symlink info without following)
+	var info os.FileInfo
+	var err error
+	if symlinkFS, ok := s.fs.(SymlinkFileSystem); ok {
+		info, err = symlinkFS.Lstat(path)
+	} else {
+		info, err = s.fs.Stat(path)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("lookup: failed to stat %s: %w", path, err)
 	}
@@ -144,8 +152,15 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 		return attrs, nil
 	}
 
-	// Get fresh attributes
-	info, err := s.fs.Stat(node.path)
+	// Get fresh attributes using Lstat if available (to handle symlinks properly)
+	var info os.FileInfo
+	var err error
+	if symlinkFS, ok := s.fs.(SymlinkFileSystem); ok {
+		info, err = symlinkFS.Lstat(node.path)
+	} else {
+		info, err = s.fs.Stat(node.path)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("getattr: failed to stat %s: %w", node.path, err)
 	}
@@ -656,6 +671,68 @@ func (s *AbsfsNFS) Export(mountPath string, port int) error {
 
 	server.SetHandler(s)
 	return server.Listen()
+}
+
+// Symlink implements the SYMLINK operation
+func (s *AbsfsNFS) Symlink(dir *NFSNode, name string, target string, attrs *NFSAttrs) (*NFSNode, error) {
+	if dir == nil {
+		return nil, fmt.Errorf("nil directory node")
+	}
+	if name == "" {
+		return nil, fmt.Errorf("empty name")
+	}
+	if target == "" {
+		return nil, fmt.Errorf("empty target")
+	}
+	if attrs == nil {
+		return nil, fmt.Errorf("nil attrs")
+	}
+
+	if s.options.ReadOnly {
+		return nil, os.ErrPermission
+	}
+
+	// Check if filesystem supports symlinks
+	symlinkFS, ok := s.fs.(SymlinkFileSystem)
+	if !ok {
+		return nil, fmt.Errorf("symlink: filesystem does not support symbolic links")
+	}
+
+	// Sanitize the path to prevent directory traversal attacks
+	path, err := sanitizePath(dir.path, name)
+	if err != nil {
+		return nil, fmt.Errorf("symlink: failed to sanitize path: %w", err)
+	}
+
+	// Create the symlink
+	err = symlinkFS.Symlink(target, path)
+	if err != nil {
+		return nil, fmt.Errorf("symlink: failed to create symlink at %s pointing to %s: %w", path, target, err)
+	}
+
+	// Invalidate parent directory cache
+	s.attrCache.Invalidate(dir.path)
+	return s.Lookup(path)
+}
+
+// Readlink implements the READLINK operation
+func (s *AbsfsNFS) Readlink(node *NFSNode) (string, error) {
+	if node == nil {
+		return "", fmt.Errorf("nil node")
+	}
+
+	// Check if filesystem supports symlinks
+	symlinkFS, ok := s.fs.(SymlinkFileSystem)
+	if !ok {
+		return "", fmt.Errorf("readlink: filesystem does not support symbolic links")
+	}
+
+	target, err := symlinkFS.Readlink(node.path)
+	if err != nil {
+		return "", fmt.Errorf("readlink: failed to read symlink %s: %w", node.path, err)
+	}
+
+	return target, nil
 }
 
 // Unexport stops serving the NFS export

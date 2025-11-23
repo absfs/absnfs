@@ -225,6 +225,11 @@ func TestHandleMountCall(t *testing.T) {
 		path := "/nonexistent"
 		binary.Write(&buf, binary.BigEndian, uint32(len(path)))
 		buf.WriteString(path)
+		// Add XDR padding
+		padding := (4 - (len(path) % 4)) % 4
+		if padding > 0 {
+			buf.Write(make([]byte, padding))
+		}
 
 		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
@@ -353,6 +358,11 @@ func TestHandleMountCall(t *testing.T) {
 		path := "/"
 		binary.Write(&buf, binary.BigEndian, uint32(len(path)))
 		buf.WriteString(path)
+		// Add XDR padding
+		padding := (4 - (len(path) % 4)) % 4
+		if padding > 0 {
+			buf.Write(make([]byte, padding))
+		}
 
 		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
@@ -499,6 +509,11 @@ func TestHandleMountCall(t *testing.T) {
 		path := "/"
 		binary.Write(&buf, binary.BigEndian, uint32(len(path)))
 		buf.WriteString(path)
+		// Add XDR padding
+		padding := (4 - (len(path) % 4)) % 4
+		if padding > 0 {
+			buf.Write(make([]byte, padding))
+		}
 
 		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
