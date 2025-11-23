@@ -145,12 +145,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
-		// Create new attributes
+		// Create new attributes - read with lock protection
+		node.mu.RLock()
 		attrs := &NFSAttrs{
 			Mode: node.attrs.Mode,
 			Uid:  node.attrs.Uid,
 			Gid:  node.attrs.Gid,
 		}
+		node.mu.RUnlock()
 
 		// Update attributes
 		if setMode != 0 {
@@ -221,7 +223,11 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		}
 
 		// Check if it's a file handle instead of directory handle
-		if node.attrs.Mode&os.ModeDir == 0 {
+		node.mu.RLock()
+		isDir := node.attrs.Mode&os.ModeDir != 0
+		node.mu.RUnlock()
+
+		if !isDir {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOTDIR)
 			reply.Data = buf.Bytes()
@@ -1400,7 +1406,11 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		}
 
 		// Check if it's a directory
-		if node.attrs.Mode&os.ModeDir == 0 {
+		node.mu.RLock()
+		isDir := node.attrs.Mode&os.ModeDir != 0
+		node.mu.RUnlock()
+
+		if !isDir {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOTDIR)
 			reply.Data = buf.Bytes()
@@ -1491,7 +1501,11 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		}
 
 		// Check if it's a directory
-		if node.attrs.Mode&os.ModeDir == 0 {
+		node.mu.RLock()
+		isDir := node.attrs.Mode&os.ModeDir != 0
+		node.mu.RUnlock()
+
+		if !isDir {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOTDIR)
 			reply.Data = buf.Bytes()

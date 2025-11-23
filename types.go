@@ -173,6 +173,7 @@ type NFSNode struct {
 	absfs.FileSystem
 	path     string
 	fileId   uint64
+	mu       sync.RWMutex // Protects attrs access
 	attrs    *NFSAttrs
 	children map[string]*NFSNode
 }
@@ -359,7 +360,9 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		Uid:   0,              // Root ownership by default
 		Gid:   0,
 	}
+	root.mu.Lock()
 	root.attrs.Refresh() // Initialize cache validity
+	root.mu.Unlock()
 
 	server.root = root
 	return server, nil

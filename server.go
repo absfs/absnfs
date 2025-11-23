@@ -38,7 +38,7 @@ type Server struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
-	acceptErrs     int // Counter for accept errors to prevent excessive logging
+	acceptErrs     atomic.Int32 // Counter for accept errors to prevent excessive logging
 
 	// Connection management
 	connMutex      sync.Mutex
@@ -337,17 +337,17 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 				}
 
 				// Only log if we haven't seen too many consecutive errors
-				if s.acceptErrs < maxAcceptErrors {
+				if s.acceptErrs.Load() < maxAcceptErrors {
 					// Only log if we're in debug mode AND it's not a test error
 					if s.options.Debug && !strings.Contains(err.Error(), "test error") {
 						s.logger.Printf("accept error: %v", err)
 					}
-					s.acceptErrs++
+					s.acceptErrs.Add(1)
 					time.Sleep(acceptErrorDelay) // Prevent tight error loop
 				}
 				continue
 			}
-			s.acceptErrs = 0 // Reset error counter on successful accept
+			s.acceptErrs.Store(0) // Reset error counter on successful accept
 			
 			// Extract client IP from connection
 			clientAddr := conn.RemoteAddr().String()
