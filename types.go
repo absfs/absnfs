@@ -158,6 +158,12 @@ type ExportOptions struct {
 	// Only applicable when EnableRateLimiting is true
 	// If nil, default configuration will be used
 	RateLimitConfig *RateLimiterConfig
+
+	// TLS holds the TLS/SSL configuration for encrypted connections
+	// When TLS.Enabled is true, all NFS connections will be encrypted using TLS
+	// Provides confidentiality, integrity, and optional mutual authentication
+	// If nil, TLS is disabled and connections are unencrypted (default NFSv3 behavior)
+	TLS *TLSConfig
 }
 
 // FileHandleMap manages the mapping between NFS file handles and absfs files

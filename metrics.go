@@ -44,6 +44,16 @@ type NFSMetrics struct {
 	TotalConnections     uint64
 	RejectedConnections  uint64
 
+	// TLS metrics
+	TLSHandshakes           uint64 // Successful TLS handshakes
+	TLSHandshakeFailures    uint64 // Failed TLS handshakes
+	TLSClientCertProvided   uint64 // Connections with client certificates
+	TLSClientCertValidated  uint64 // Successfully validated client certificates
+	TLSClientCertRejected   uint64 // Rejected client certificates
+	TLSSessionReused        uint64 // TLS session resumptions
+	TLSVersion12            uint64 // Connections using TLS 1.2
+	TLSVersion13            uint64 // Connections using TLS 1.3
+
 	// Error metrics
 	ErrorCount       uint64
 	AuthFailures     uint64
@@ -289,6 +299,41 @@ func (m *MetricsCollector) RecordConnectionClosed() {
 // RecordRejectedConnection records a rejected connection
 func (m *MetricsCollector) RecordRejectedConnection() {
 	atomic.AddUint64(&m.metrics.RejectedConnections, 1)
+}
+
+// RecordTLSHandshake records a successful TLS handshake
+func (m *MetricsCollector) RecordTLSHandshake() {
+	atomic.AddUint64(&m.metrics.TLSHandshakes, 1)
+}
+
+// RecordTLSHandshakeFailure records a failed TLS handshake
+func (m *MetricsCollector) RecordTLSHandshakeFailure() {
+	atomic.AddUint64(&m.metrics.TLSHandshakeFailures, 1)
+}
+
+// RecordTLSClientCert records a connection with a client certificate
+func (m *MetricsCollector) RecordTLSClientCert(validated bool) {
+	atomic.AddUint64(&m.metrics.TLSClientCertProvided, 1)
+	if validated {
+		atomic.AddUint64(&m.metrics.TLSClientCertValidated, 1)
+	} else {
+		atomic.AddUint64(&m.metrics.TLSClientCertRejected, 1)
+	}
+}
+
+// RecordTLSSessionReused records a TLS session resumption
+func (m *MetricsCollector) RecordTLSSessionReused() {
+	atomic.AddUint64(&m.metrics.TLSSessionReused, 1)
+}
+
+// RecordTLSVersion records the TLS version used for a connection
+func (m *MetricsCollector) RecordTLSVersion(version uint16) {
+	switch version {
+	case 0x0303: // TLS 1.2
+		atomic.AddUint64(&m.metrics.TLSVersion12, 1)
+	case 0x0304: // TLS 1.3
+		atomic.AddUint64(&m.metrics.TLSVersion13, 1)
+	}
 }
 
 // updateCacheHitRate updates the attribute cache hit rate

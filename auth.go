@@ -1,6 +1,7 @@
 package absnfs
 
 import (
+	"crypto/x509"
 	"fmt"
 	"net"
 	"strings"
@@ -8,10 +9,12 @@ import (
 
 // AuthContext contains information about the client making a request
 type AuthContext struct {
-	ClientIP   string            // Client IP address
-	ClientPort int               // Client port number
-	Credential *RPCCredential    // RPC credential
-	AuthSys    *AuthSysCredential // Parsed AUTH_SYS credential (if applicable)
+	ClientIP   string               // Client IP address
+	ClientPort int                  // Client port number
+	Credential *RPCCredential       // RPC credential
+	AuthSys    *AuthSysCredential   // Parsed AUTH_SYS credential (if applicable)
+	ClientCert *x509.Certificate    // Client certificate (if TLS with client auth)
+	TLSEnabled bool                 // Whether this connection is using TLS
 }
 
 // AuthResult contains the result of authentication validation
@@ -138,4 +141,43 @@ func isIPAllowed(clientIP string, allowedIPs []string) bool {
 	}
 
 	return false
+}
+
+// ExtractCertificateIdentity extracts user identity from a client certificate
+// It returns the Common Name (CN) from the certificate subject
+// Can be extended to support other fields or custom mappings
+func ExtractCertificateIdentity(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+
+	// Primary: Use Common Name (CN) from subject
+	if cert.Subject.CommonName != "" {
+		return cert.Subject.CommonName
+	}
+
+	// Fallback: Use first DNS name from Subject Alternative Names
+	if len(cert.DNSNames) > 0 {
+		return cert.DNSNames[0]
+	}
+
+	// Fallback: Use first email address
+	if len(cert.EmailAddresses) > 0 {
+		return cert.EmailAddresses[0]
+	}
+
+	return "unknown"
+}
+
+// GetCertificateInfo returns a human-readable string with certificate details
+func GetCertificateInfo(cert *x509.Certificate) string {
+	if cert == nil {
+		return "no certificate"
+	}
+
+	return fmt.Sprintf("CN=%s, Issuer=%s, Serial=%s, NotAfter=%s",
+		cert.Subject.CommonName,
+		cert.Issuer.CommonName,
+		cert.SerialNumber.String(),
+		cert.NotAfter.Format("2006-01-02"))
 }
