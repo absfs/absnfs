@@ -83,4 +83,4 @@ ABSNFS is a new project under active development. While it has comprehensive tes
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](../LICENSE) file for details.

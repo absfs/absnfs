@@ -186,6 +186,7 @@ func TestServerHandleConnection(t *testing.T) {
 
 		done := make(chan struct{})
 		go func() {
+			defer close(done)
 			// Write valid RPC call header
 			header := RPCMsgHeader{
 				Xid:        1,
@@ -207,39 +208,48 @@ func TestServerHandleConnection(t *testing.T) {
 				},
 			}
 			if err := xdrEncodeUint32(srv, call.Header.Xid); err != nil {
-				t.Fatalf("Failed to encode XID: %v", err)
+				t.Errorf("Failed to encode XID: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.MsgType); err != nil {
-				t.Fatalf("Failed to encode message type: %v", err)
+				t.Errorf("Failed to encode message type: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.RPCVersion); err != nil {
-				t.Fatalf("Failed to encode RPC version: %v", err)
+				t.Errorf("Failed to encode RPC version: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.Program); err != nil {
-				t.Fatalf("Failed to encode program: %v", err)
+				t.Errorf("Failed to encode program: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.Version); err != nil {
-				t.Fatalf("Failed to encode version: %v", err)
+				t.Errorf("Failed to encode version: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.Procedure); err != nil {
-				t.Fatalf("Failed to encode procedure: %v", err)
+				t.Errorf("Failed to encode procedure: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Credential.Flavor); err != nil {
-				t.Fatalf("Failed to encode credential flavor: %v", err)
+				t.Errorf("Failed to encode credential flavor: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, 0); err != nil { // credential body length
-				t.Fatalf("Failed to encode credential length: %v", err)
+				t.Errorf("Failed to encode credential length: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Verifier.Flavor); err != nil {
-				t.Fatalf("Failed to encode verifier flavor: %v", err)
+				t.Errorf("Failed to encode verifier flavor: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, 0); err != nil { // verifier body length
-				t.Fatalf("Failed to encode verifier length: %v", err)
+				t.Errorf("Failed to encode verifier length: %v", err)
+					return
 			}
 			// Block on read to trigger write timeout
 			buf := make([]byte, 1024)
 			srv.Read(buf)
-			close(done)
 		}()
 
 		procHandler := &NFSProcedureHandler{server: server}
@@ -278,6 +288,7 @@ func TestServerHandleConnection(t *testing.T) {
 
 				done := make(chan struct{})
 				go func() {
+					defer close(done)
 					// Write valid RPC call header
 					header := RPCMsgHeader{
 						Xid:        1,
@@ -299,36 +310,43 @@ func TestServerHandleConnection(t *testing.T) {
 						},
 					}
 					if err := xdrEncodeUint32(srv, call.Header.Xid); err != nil {
-						t.Fatalf("Failed to encode XID: %v", err)
+						t.Errorf("Failed to encode XID: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.MsgType); err != nil {
-						t.Fatalf("Failed to encode message type: %v", err)
+						t.Errorf("Failed to encode message type: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.RPCVersion); err != nil {
-						t.Fatalf("Failed to encode RPC version: %v", err)
+						t.Errorf("Failed to encode RPC version: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.Program); err != nil {
-						t.Fatalf("Failed to encode program: %v", err)
+						t.Errorf("Failed to encode program: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.Version); err != nil {
-						t.Fatalf("Failed to encode version: %v", err)
+						t.Errorf("Failed to encode version: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.Procedure); err != nil {
-						t.Fatalf("Failed to encode procedure: %v", err)
+						t.Errorf("Failed to encode procedure: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, call.Credential.Flavor); err != nil {
-						t.Fatalf("Failed to encode credential flavor: %v", err)
+						t.Errorf("Failed to encode credential flavor: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, 0); err != nil { // credential body length
-						t.Fatalf("Failed to encode credential length: %v", err)
 					}
 					if err := xdrEncodeUint32(srv, call.Verifier.Flavor); err != nil {
-						t.Fatalf("Failed to encode verifier flavor: %v", err)
+						t.Errorf("Failed to encode verifier flavor: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, 0); err != nil { // verifier body length
-						t.Fatalf("Failed to encode verifier length: %v", err)
+						t.Errorf("Failed to encode verifier length: %v", err)
+							return
 					}
-					close(done)
 				}()
 
 				procHandler := &NFSProcedureHandler{server: server}

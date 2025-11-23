@@ -1,3 +1,34 @@
+// Package absnfs implements an NFS server adapter for the absfs filesystem interface.
+//
+// This package allows any filesystem that implements the absfs.FileSystem interface
+// to be exported as an NFSv3 share over a network. It provides a complete NFS server
+// implementation with support for standard file operations, security features, and
+// performance optimizations.
+//
+// Key Features:
+//   - NFSv3 protocol implementation
+//   - TLS/SSL encryption support for secure connections
+//   - Symlink support (SYMLINK and READLINK operations)
+//   - Rate limiting and DoS protection
+//   - Attribute caching for improved performance
+//   - Batch operation processing
+//   - Worker pool for concurrent request handling
+//   - Comprehensive metrics and monitoring
+//
+// Basic Usage:
+//
+//	fs, _ := memfs.NewFS()
+//	server, _ := absnfs.New(fs, absnfs.ExportOptions{})
+//	server.Export("/export/test")
+//
+// Security Features:
+//   - IP-based access control
+//   - Read-only export mode
+//   - User ID mapping (squash options)
+//   - Rate limiting to prevent DoS attacks
+//   - TLS/SSL encryption
+//
+// For detailed documentation, see the docs/ directory in the repository.
 package absnfs
 
 import (

@@ -5,11 +5,17 @@ This package implements an NFS server adapter for the [absfs](https://github.com
 ## Features
 
 - Export any absfs-compatible filesystem via NFS
-- Support for basic NFS operations (read, write, create, remove, etc.)
-- Configurable export options (read-only, security, etc.)
-- File handle management
+- NFSv3 protocol implementation with comprehensive operation support
+- **TLS/SSL encryption** for secure network communication
+- **Symlink support** (SYMLINK and READLINK operations)
+- Configurable export options (read-only, security, IP restrictions)
+- File handle management with efficient mapping
 - Error mapping between absfs and NFS error codes
 - Attribute caching for improved performance
+- **Rate limiting** and DoS protection
+- Worker pool for concurrent request handling
+- Batch operation processing for optimization
+- Comprehensive metrics and monitoring
 
 ## Installation
 
@@ -81,11 +87,15 @@ The package provides:
    - CREATE/REMOVE
    - RENAME
    - READDIR
+   - SYMLINK/READLINK (symbolic link support)
+   - MKDIR/RMDIR
 
 3. Security Features
+   - TLS/SSL encryption for secure connections
    - Read-only mode
-   - IP restrictions
-   - User mapping
+   - IP-based access control
+   - User ID mapping (squash options)
+   - Rate limiting to prevent DoS attacks
 
 ## Running with Privileges
 
@@ -141,6 +151,9 @@ Comprehensive documentation is available in the `docs/` directory:
 
 - [Getting Started](docs/guides/installation.md)
 - [Basic Usage](docs/guides/basic-usage.md)
+- [TLS/SSL Encryption](docs/guides/tls-encryption.md)
+- [Security Configuration](docs/guides/security.md)
+- [Performance Tuning](docs/guides/performance-tuning.md)
 - [API Reference](docs/api/index.md)
 - [Examples](docs/examples/index.md)
 - [Internals](docs/internals/index.md)

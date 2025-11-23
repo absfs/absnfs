@@ -532,16 +532,16 @@ func (bp *BatchProcessor) Stop() {
 }
 
 // BatchRead submits a read request to be batched
-// Returns the read data or an error
-func (bp *BatchProcessor) BatchRead(ctx context.Context, fileHandle uint64, offset int64, length int) ([]byte, error, uint32) {
+// Returns the read data, NFS status code, and error (error is last per Go convention)
+func (bp *BatchProcessor) BatchRead(ctx context.Context, fileHandle uint64, offset int64, length int) ([]byte, uint32, error) {
 	// If batching is disabled, return immediately to process individually
 	if !bp.enabled {
-		return nil, nil, 0
+		return nil, 0, nil
 	}
-	
+
 	// Create result channel
 	resultChan := make(chan *BatchResult, 1)
-	
+
 	// Create request
 	req := &BatchRequest{
 		Type:       BatchTypeRead,
@@ -552,39 +552,39 @@ func (bp *BatchProcessor) BatchRead(ctx context.Context, fileHandle uint64, offs
 		ResultChan: resultChan,
 		Context:    ctx,
 	}
-	
+
 	// Add to batch
 	immediate := bp.AddRequest(req)
-	
+
 	// If processing is immediate, return now
 	if immediate {
 		close(resultChan)
-		return nil, nil, 0
+		return nil, 0, nil
 	}
-	
+
 	// Wait for result with timeout
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err(), NFSERR_IO
+		return nil, NFSERR_IO, ctx.Err()
 	case res, ok := <-resultChan:
 		if !ok {
-			return nil, os.ErrInvalid, NFSERR_IO
+			return nil, NFSERR_IO, os.ErrInvalid
 		}
-		return res.Data, res.Error, res.Status
+		return res.Data, res.Status, res.Error
 	}
 }
 
 // BatchWrite submits a write request to be batched
-// Returns success or an error
-func (bp *BatchProcessor) BatchWrite(ctx context.Context, fileHandle uint64, offset int64, data []byte) (error, uint32) {
+// Returns NFS status code and error (error is last per Go convention)
+func (bp *BatchProcessor) BatchWrite(ctx context.Context, fileHandle uint64, offset int64, data []byte) (uint32, error) {
 	// If batching is disabled, return immediately to process individually
 	if !bp.enabled {
-		return nil, 0
+		return 0, nil
 	}
-	
+
 	// Create result channel
 	resultChan := make(chan *BatchResult, 1)
-	
+
 	// Create request
 	req := &BatchRequest{
 		Type:       BatchTypeWrite,
@@ -596,39 +596,39 @@ func (bp *BatchProcessor) BatchWrite(ctx context.Context, fileHandle uint64, off
 		ResultChan: resultChan,
 		Context:    ctx,
 	}
-	
+
 	// Add to batch
 	immediate := bp.AddRequest(req)
-	
+
 	// If processing is immediate, return now
 	if immediate {
 		close(resultChan)
-		return nil, 0
+		return 0, nil
 	}
-	
+
 	// Wait for result with timeout
 	select {
 	case <-ctx.Done():
-		return ctx.Err(), NFSERR_IO
+		return NFSERR_IO, ctx.Err()
 	case res, ok := <-resultChan:
 		if !ok {
-			return os.ErrInvalid, NFSERR_IO
+			return NFSERR_IO, os.ErrInvalid
 		}
-		return res.Error, res.Status
+		return res.Status, res.Error
 	}
 }
 
 // BatchGetAttr submits a getattr request to be batched
-// Returns the attributes or an error
-func (bp *BatchProcessor) BatchGetAttr(ctx context.Context, fileHandle uint64) ([]byte, error, uint32) {
+// Returns the attributes, NFS status code, and error (error is last per Go convention)
+func (bp *BatchProcessor) BatchGetAttr(ctx context.Context, fileHandle uint64) ([]byte, uint32, error) {
 	// If batching is disabled, return immediately to process individually
 	if !bp.enabled {
-		return nil, nil, 0
+		return nil, 0, nil
 	}
-	
+
 	// Create result channel
 	resultChan := make(chan *BatchResult, 1)
-	
+
 	// Create request
 	req := &BatchRequest{
 		Type:       BatchTypeGetAttr,
@@ -637,25 +637,25 @@ func (bp *BatchProcessor) BatchGetAttr(ctx context.Context, fileHandle uint64) (
 		ResultChan: resultChan,
 		Context:    ctx,
 	}
-	
+
 	// Add to batch
 	immediate := bp.AddRequest(req)
-	
+
 	// If processing is immediate, return now
 	if immediate {
 		close(resultChan)
-		return nil, nil, 0
+		return nil, 0, nil
 	}
-	
+
 	// Wait for result with timeout
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err(), NFSERR_IO
+		return nil, NFSERR_IO, ctx.Err()
 	case res, ok := <-resultChan:
 		if !ok {
-			return nil, os.ErrInvalid, NFSERR_IO
+			return nil, NFSERR_IO, os.ErrInvalid
 		}
-		return res.Data, res.Error, res.Status
+		return res.Data, res.Status, res.Error
 	}
 }
 
