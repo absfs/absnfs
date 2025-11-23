@@ -340,6 +340,75 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		reply.Data = buf.Bytes()
 		return reply, nil
 
+	case NFSPROC3_READLINK:
+		// Decode symlink handle
+		handle := FileHandle{}
+		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, GARBAGE_ARGS)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Find the symlink node
+		fileNode, ok := h.server.handler.fileMap.Get(handle.Handle)
+		if !ok {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		node, ok := fileNode.(*NFSNode)
+		if !ok {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Check if it's a symlink
+		node.mu.RLock()
+		isSymlink := node.attrs.Mode&os.ModeSymlink != 0
+		node.mu.RUnlock()
+
+		if !isSymlink {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_INVAL)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Read the symlink target
+		target, err := h.server.handler.Readlink(node)
+		if err != nil {
+			return nil, err
+		}
+
+		// Get attributes for post-op attributes
+		attrs, err := h.server.handler.GetAttr(node)
+		if err != nil {
+			return nil, err
+		}
+
+		// Encode response
+		var buf bytes.Buffer
+		xdrEncodeUint32(&buf, NFS_OK)
+
+		// Encode post-op attributes
+		xdrEncodeUint32(&buf, 1) // Has attributes
+		if err := encodeFileAttributes(&buf, attrs); err != nil {
+			return nil, err
+		}
+
+		// Encode symlink target
+		if err := xdrEncodeString(&buf, target); err != nil {
+			return nil, err
+		}
+
+		reply.Data = buf.Bytes()
+		return reply, nil
+
 	case NFSPROC3_READ:
 		handle := FileHandle{}
 		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
@@ -725,6 +794,109 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 		// Lookup the new directory
 		newNode, err := h.server.handler.Lookup(node.path + "/" + name)
+		if err != nil {
+			return nil, err
+		}
+
+		// Allocate new handle
+		handle := h.server.handler.fileMap.Allocate(newNode)
+
+		// Encode response
+		var buf bytes.Buffer
+		xdrEncodeUint32(&buf, NFS_OK)
+		binary.Write(&buf, binary.BigEndian, handle)
+		if err := encodeFileAttributes(&buf, newNode.attrs); err != nil {
+			return nil, err
+		}
+		reply.Data = buf.Bytes()
+		return reply, nil
+
+	case NFSPROC3_SYMLINK:
+		if h.server.handler.options.ReadOnly {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, ACCESS_DENIED)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Decode directory handle
+		dirHandle := FileHandle{}
+		if err := binary.Read(body, binary.BigEndian, &dirHandle.Handle); err != nil {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, GARBAGE_ARGS)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Decode symlink name
+		name, err := xdrDecodeString(body)
+		if err != nil {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, GARBAGE_ARGS)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Validate symlink name
+		if status := validateFilename(name); status != NFS_OK {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, status)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Read symlink attributes (mode)
+		var mode uint32
+		if err := binary.Read(body, binary.BigEndian, &mode); err != nil {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, GARBAGE_ARGS)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Decode symlink target
+		target, err := xdrDecodeString(body)
+		if err != nil {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, GARBAGE_ARGS)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Validate target is not empty
+		if target == "" {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_INVAL)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Find the parent directory node
+		dirNode, ok := h.server.handler.fileMap.Get(dirHandle.Handle)
+		if !ok {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		node, ok := dirNode.(*NFSNode)
+		if !ok {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Create new attributes for the symlink
+		attrs := &NFSAttrs{
+			Mode: os.FileMode(mode) | os.ModeSymlink,
+			Uid:  0,
+			Gid:  0,
+		}
+
+		// Create the symlink
+		newNode, err := h.server.handler.Symlink(node, name, target, attrs)
 		if err != nil {
 			return nil, err
 		}

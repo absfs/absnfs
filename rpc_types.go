@@ -106,8 +106,16 @@ func xdrEncodeString(w io.Writer, s string) error {
 	if err := xdrEncodeUint32(w, uint32(len(s))); err != nil {
 		return err
 	}
-	_, err := w.Write([]byte(s))
-	return err
+	if _, err := w.Write([]byte(s)); err != nil {
+		return err
+	}
+	// XDR strings must be padded to 4-byte boundaries
+	padding := (4 - (len(s) % 4)) % 4
+	if padding > 0 {
+		_, err := w.Write(make([]byte, padding))
+		return err
+	}
+	return nil
 }
 
 func xdrDecodeString(r io.Reader) (string, error) {
@@ -125,6 +133,16 @@ func xdrDecodeString(r io.Reader) (string, error) {
 	_, err = io.ReadFull(r, buf)
 	if err != nil {
 		return "", err
+	}
+
+	// XDR strings are padded to 4-byte boundaries, skip the padding
+	padding := (4 - (length % 4)) % 4
+	if padding > 0 {
+		padBuf := make([]byte, padding)
+		_, err = io.ReadFull(r, padBuf)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	return string(buf), nil

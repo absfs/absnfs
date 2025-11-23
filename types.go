@@ -13,6 +13,13 @@ import (
 // Version represents the current version of the absnfs package
 const Version = "0.1.0"
 
+// SymlinkFileSystem represents a filesystem that supports symbolic links
+type SymlinkFileSystem interface {
+	Symlink(oldname, newname string) error
+	Readlink(name string) (string, error)
+	Lstat(name string) (os.FileInfo, error)
+}
+
 // AbsfsNFS represents an NFS server that exports an absfs filesystem
 type AbsfsNFS struct {
 	fs            absfs.FileSystem  // The wrapped absfs filesystem
