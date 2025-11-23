@@ -105,7 +105,7 @@ func (s *AbsfsNFS) Lookup(path string) (*NFSNode, error) {
 
 	info, err := s.fs.Stat(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("lookup: failed to stat %s: %w", path, err)
 	}
 
 	attrs := &NFSAttrs{
@@ -147,7 +147,7 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 	// Get fresh attributes
 	info, err := s.fs.Stat(node.path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getattr: failed to stat %s: %w", node.path, err)
 	}
 
 	// Read Uid/Gid from node.attrs with lock protection
@@ -183,7 +183,7 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 	// Check if file exists first
 	_, err := s.fs.Stat(node.path)
 	if err != nil {
-		return err
+		return fmt.Errorf("setattr: %w", err)
 	}
 
 	// Read current attrs with lock protection to compare
@@ -197,19 +197,19 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 
 	if attrs.Mode != currentMode {
 		if err := s.fs.Chmod(node.path, attrs.Mode); err != nil {
-			return err
+			return fmt.Errorf("setattr: chmod failed: %w", err)
 		}
 	}
 
 	if attrs.Uid != currentUid || attrs.Gid != currentGid {
 		if err := s.fs.Chown(node.path, int(attrs.Uid), int(attrs.Gid)); err != nil {
-			return err
+			return fmt.Errorf("setattr: chown failed: %w", err)
 		}
 	}
 
 	if attrs.Mtime != currentMtime || attrs.Atime != currentAtime {
 		if err := s.fs.Chtimes(node.path, attrs.Atime, attrs.Mtime); err != nil {
-			return err
+			return fmt.Errorf("setattr: chtimes failed: %w", err)
 		}
 	}
 
@@ -283,14 +283,14 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 	// Standard read path
 	f, err := s.fs.OpenFile(node.path, os.O_RDONLY, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read: failed to open %s: %w", node.path, err)
 	}
 	defer f.Close()
 
 	// Get file size
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read: failed to stat %s: %w", node.path, err)
 	}
 
 	// Adjust count if it would read beyond EOF
@@ -306,7 +306,7 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 	buf := make([]byte, count)
 	n, err := f.ReadAt(buf, offset)
 	if err != nil && err != io.EOF {
-		return nil, err
+		return nil, fmt.Errorf("read: failed to read from %s at offset %d: %w", node.path, offset, err)
 	}
 
 	// Only attempt read-ahead if enabled and we got all requested data and there's more to read
@@ -409,9 +409,13 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 	// Standard write path
 	f, err := s.fs.OpenFile(node.path, os.O_WRONLY, 0)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("write: failed to open %s: %w", node.path, err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	n, err := f.WriteAt(data, offset)
 	if err == nil {
@@ -458,18 +462,21 @@ func (s *AbsfsNFS) Create(dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode,
 	// Sanitize the path to prevent directory traversal attacks
 	path, err := sanitizePath(dir.path, name)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create: failed to sanitize path: %w", err)
 	}
 
 	f, err := s.fs.Create(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create: failed to create %s: %w", path, err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		s.fs.Remove(path)
+		return nil, fmt.Errorf("create: failed to close %s: %w", path, err)
+	}
 
 	if err := s.fs.Chmod(path, attrs.Mode); err != nil {
 		s.fs.Remove(path)
-		return nil, err
+		return nil, fmt.Errorf("create: failed to chmod %s: %w", path, err)
 	}
 
 	// Invalidate parent directory cache
@@ -493,16 +500,17 @@ func (s *AbsfsNFS) Remove(dir *NFSNode, name string) error {
 	// Sanitize the path to prevent directory traversal attacks
 	path, err := sanitizePath(dir.path, name)
 	if err != nil {
-		return err
+		return fmt.Errorf("remove: failed to sanitize path: %w", err)
 	}
 
 	err = s.fs.Remove(path)
-	if err == nil {
-		// Invalidate caches
-		s.attrCache.Invalidate(path)
-		s.attrCache.Invalidate(dir.path)
+	if err != nil {
+		return fmt.Errorf("remove: failed to remove %s: %w", path, err)
 	}
-	return err
+	// Invalidate caches
+	s.attrCache.Invalidate(path)
+	s.attrCache.Invalidate(dir.path)
+	return nil
 }
 
 // Rename implements the RENAME operation
@@ -521,23 +529,24 @@ func (s *AbsfsNFS) Rename(oldDir *NFSNode, oldName string, newDir *NFSNode, newN
 	// Sanitize both paths to prevent directory traversal attacks
 	oldPath, err := sanitizePath(oldDir.path, oldName)
 	if err != nil {
-		return err
+		return fmt.Errorf("rename: failed to sanitize old path: %w", err)
 	}
 
 	newPath, err := sanitizePath(newDir.path, newName)
 	if err != nil {
-		return err
+		return fmt.Errorf("rename: failed to sanitize new path: %w", err)
 	}
 
 	err = s.fs.Rename(oldPath, newPath)
-	if err == nil {
-		// Invalidate caches
-		s.attrCache.Invalidate(oldPath)
-		s.attrCache.Invalidate(newPath)
-		s.attrCache.Invalidate(oldDir.path)
-		s.attrCache.Invalidate(newDir.path)
+	if err != nil {
+		return fmt.Errorf("rename: failed to rename %s to %s: %w", oldPath, newPath, err)
 	}
-	return err
+	// Invalidate caches
+	s.attrCache.Invalidate(oldPath)
+	s.attrCache.Invalidate(newPath)
+	s.attrCache.Invalidate(oldDir.path)
+	s.attrCache.Invalidate(newDir.path)
+	return nil
 }
 
 // ReadDir implements the READDIR operation
@@ -548,7 +557,7 @@ func (s *AbsfsNFS) ReadDir(dir *NFSNode) ([]*NFSNode, error) {
 
 	f, err := s.fs.OpenFile(dir.path, os.O_RDONLY, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("readdir: failed to open directory %s: %w", dir.path, err)
 	}
 	defer f.Close()
 
@@ -561,7 +570,7 @@ func (s *AbsfsNFS) ReadDir(dir *NFSNode) ([]*NFSNode, error) {
 	// Read directory entries
 	entries, err := dirFile.Readdir(-1)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("readdir: failed to read entries from %s: %w", dir.path, err)
 	}
 
 	var nodes []*NFSNode
