@@ -134,6 +134,23 @@ func (s *Server) registerConnection(conn net.Conn) bool {
 		if s.options.Debug {
 			s.logger.Printf("Connection limit reached (%d), rejecting new connection", s.handler.options.MaxConnections)
 		}
+
+		// Log structured message
+		if s.handler.structuredLogger != nil {
+			if s.handler.options.Log != nil && s.handler.options.Log.LogClientIPs {
+				clientAddr := ""
+				if conn != nil && conn.RemoteAddr() != nil {
+					clientAddr = conn.RemoteAddr().String()
+				}
+				s.handler.structuredLogger.Warn("connection limit reached",
+					LogField{Key: "limit", Value: s.handler.options.MaxConnections},
+					LogField{Key: "client_addr", Value: clientAddr})
+			} else {
+				s.handler.structuredLogger.Warn("connection limit reached",
+					LogField{Key: "limit", Value: s.handler.options.MaxConnections})
+			}
+		}
+
 		return false
 	}
 
@@ -146,6 +163,23 @@ func (s *Server) registerConnection(conn net.Conn) bool {
 	if s.options.Debug {
 		s.logger.Printf("New connection accepted (total: %d)", s.connCount)
 	}
+
+	// Log structured message
+	if s.handler.structuredLogger != nil {
+		if s.handler.options.Log != nil && s.handler.options.Log.LogClientIPs {
+			clientAddr := ""
+			if conn != nil && conn.RemoteAddr() != nil {
+				clientAddr = conn.RemoteAddr().String()
+			}
+			s.handler.structuredLogger.Info("connection accepted",
+				LogField{Key: "total_connections", Value: s.connCount},
+				LogField{Key: "client_addr", Value: clientAddr})
+		} else {
+			s.handler.structuredLogger.Info("connection accepted",
+				LogField{Key: "total_connections", Value: s.connCount})
+		}
+	}
+
 	return true
 }
 
@@ -172,6 +206,22 @@ func (s *Server) unregisterConnection(conn net.Conn) {
 
 			if s.options.Debug {
 				s.logger.Printf("Connection closed (total: %d)", s.connCount)
+			}
+
+			// Log structured message
+			if s.handler != nil && s.handler.structuredLogger != nil {
+				if s.handler.options.Log != nil && s.handler.options.Log.LogClientIPs {
+					clientAddr := ""
+					if conn != nil && conn.RemoteAddr() != nil {
+						clientAddr = conn.RemoteAddr().String()
+					}
+					s.handler.structuredLogger.Info("connection closed",
+						LogField{Key: "total_connections", Value: s.connCount},
+						LogField{Key: "client_addr", Value: clientAddr})
+				} else {
+					s.handler.structuredLogger.Info("connection closed",
+						LogField{Key: "total_connections", Value: s.connCount})
+				}
 			}
 		}
 	})
@@ -412,6 +462,17 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 				if s.options.Debug {
 					s.logger.Printf("Connection rejected: IP %s not in AllowedIPs list", clientIP)
 				}
+
+				// Log structured message
+				if s.handler != nil && s.handler.structuredLogger != nil {
+					if s.handler.options.Log != nil && s.handler.options.Log.LogClientIPs {
+						s.handler.structuredLogger.Warn("connection rejected: IP not allowed",
+							LogField{Key: "client_ip", Value: clientIP})
+					} else {
+						s.handler.structuredLogger.Warn("connection rejected: IP not allowed")
+					}
+				}
+
 				conn.Close()
 				continue
 			}
@@ -552,6 +613,16 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 
 					if s.options.Debug {
 						s.logger.Printf("Rate limit exceeded for client %s", authCtx.ClientIP)
+					}
+
+					// Log structured message
+					if s.handler.structuredLogger != nil {
+						if s.handler.options.Log != nil && s.handler.options.Log.LogClientIPs {
+							s.handler.structuredLogger.Warn("rate limit exceeded",
+								LogField{Key: "client_ip", Value: authCtx.ClientIP})
+						} else {
+							s.handler.structuredLogger.Warn("rate limit exceeded")
+						}
 					}
 
 					// Record rate limit rejection in metrics

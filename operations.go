@@ -90,6 +90,17 @@ func (s *AbsfsNFS) Lookup(path string) (*NFSNode, error) {
 		return nil, fmt.Errorf("empty path")
 	}
 
+	// Log operation if enabled
+	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogOperations {
+		startTime := time.Now()
+		defer func() {
+			duration := time.Since(startTime)
+			s.structuredLogger.Debug("LOOKUP operation",
+				LogField{Key: "path", Value: path},
+				LogField{Key: "duration_ms", Value: duration.Milliseconds()})
+		}()
+	}
+
 	// Check cache first
 	if attrs := s.attrCache.Get(path, s); attrs != nil {
 		node := &NFSNode{
@@ -251,6 +262,19 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 		return nil, fmt.Errorf("negative count")
 	}
 
+	// Log operation if enabled
+	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogOperations {
+		startTime := time.Now()
+		defer func() {
+			duration := time.Since(startTime)
+			s.structuredLogger.Debug("READ operation",
+				LogField{Key: "path", Value: node.path},
+				LogField{Key: "offset", Value: offset},
+				LogField{Key: "count", Value: count},
+				LogField{Key: "duration_ms", Value: duration.Milliseconds()})
+		}()
+	}
+
 	// Limit the read size to TransferSize if it exceeds the configured limit
 	if count > int64(s.options.TransferSize) {
 		count = int64(s.options.TransferSize)
@@ -363,7 +387,24 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 	}
 
 	if s.options.ReadOnly {
+		if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogOperations {
+			s.structuredLogger.Warn("WRITE operation denied: read-only mode",
+				LogField{Key: "path", Value: node.path})
+		}
 		return 0, os.ErrPermission
+	}
+
+	// Log operation if enabled
+	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogOperations {
+		startTime := time.Now()
+		defer func() {
+			duration := time.Since(startTime)
+			s.structuredLogger.Debug("WRITE operation",
+				LogField{Key: "path", Value: node.path},
+				LogField{Key: "offset", Value: offset},
+				LogField{Key: "size", Value: len(data)},
+				LogField{Key: "duration_ms", Value: duration.Milliseconds()})
+		}()
 	}
 
 	// Limit the write size to TransferSize if it exceeds the configured limit
@@ -471,7 +512,24 @@ func (s *AbsfsNFS) Create(dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode,
 	}
 
 	if s.options.ReadOnly {
+		if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogFileAccess {
+			s.structuredLogger.Warn("CREATE operation denied: read-only mode",
+				LogField{Key: "dir", Value: dir.path},
+				LogField{Key: "name", Value: name})
+		}
 		return nil, os.ErrPermission
+	}
+
+	// Log operation if enabled
+	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogFileAccess {
+		startTime := time.Now()
+		defer func() {
+			duration := time.Since(startTime)
+			s.structuredLogger.Info("CREATE operation",
+				LogField{Key: "dir", Value: dir.path},
+				LogField{Key: "name", Value: name},
+				LogField{Key: "duration_ms", Value: duration.Milliseconds()})
+		}()
 	}
 
 	// Sanitize the path to prevent directory traversal attacks
@@ -509,7 +567,24 @@ func (s *AbsfsNFS) Remove(dir *NFSNode, name string) error {
 	}
 
 	if s.options.ReadOnly {
+		if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogFileAccess {
+			s.structuredLogger.Warn("REMOVE operation denied: read-only mode",
+				LogField{Key: "dir", Value: dir.path},
+				LogField{Key: "name", Value: name})
+		}
 		return os.ErrPermission
+	}
+
+	// Log operation if enabled
+	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogFileAccess {
+		startTime := time.Now()
+		defer func() {
+			duration := time.Since(startTime)
+			s.structuredLogger.Info("REMOVE operation",
+				LogField{Key: "dir", Value: dir.path},
+				LogField{Key: "name", Value: name},
+				LogField{Key: "duration_ms", Value: duration.Milliseconds()})
+		}()
 	}
 
 	// Sanitize the path to prevent directory traversal attacks

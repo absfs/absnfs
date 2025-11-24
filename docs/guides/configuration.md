@@ -138,12 +138,45 @@ Timeouts help manage:
 
 ### Logging
 
-ABSNFS uses standard Go logging. To configure logging, use Go's standard `log` package or integrate with your preferred logging framework.
+ABSNFS provides production-ready structured logging with configurable output, format, and verbosity levels:
+
+```go
+options := absnfs.ExportOptions{
+    Log: &absnfs.LogConfig{
+        // Log level: "debug", "info", "warn", "error"
+        Level: "info",
+
+        // Output format: "json" or "text"
+        Format: "json",
+
+        // Output destination: "stdout", "stderr", or file path
+        Output: "/var/log/nfs/server.log",
+
+        // Optional: Log client IP addresses (default: false for privacy)
+        LogClientIPs: true,
+
+        // Optional: Log detailed NFS operations (default: false for performance)
+        LogOperations: false,
+
+        // Optional: Log file access patterns (default: false)
+        LogFileAccess: true,
+
+        // File rotation settings (when Output is a file path)
+        MaxSize:    100,  // MB
+        MaxBackups: 5,    // Number of old log files to keep
+        MaxAge:     30,   // Days to retain old logs
+        Compress:   true, // Compress rotated logs
+    },
+}
+```
 
 Logging helps with:
-- Debugging NFS issues
-- Monitoring access patterns
-- Security auditing
+- Debugging NFS issues with detailed operation logs
+- Monitoring access patterns for security auditing
+- Integration with log aggregation systems (ELK, Splunk, CloudWatch)
+- Performance analysis with timing information
+
+For more details, see the [Logging API documentation](../api/logging.md).
 
 ## Configuration Example: High-Performance
 

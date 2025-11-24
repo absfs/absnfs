@@ -69,6 +69,12 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
 		// Record cache hit for metrics
 		if s != nil {
 			s.RecordAttrCacheHit()
+
+			// Log cache hit if debug logging is enabled
+			if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+				s.structuredLogger.Debug("attribute cache hit",
+					LogField{Key: "path", Value: path})
+			}
 		}
 
 		return attrs
@@ -78,6 +84,12 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
 	// Record cache miss for metrics
 	if s != nil {
 		s.RecordAttrCacheMiss()
+
+		// Log cache miss if debug logging is enabled
+		if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+			s.structuredLogger.Debug("attribute cache miss",
+				LogField{Key: "path", Value: path})
+		}
 	}
 
 	if ok {
@@ -377,12 +389,20 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int, server ...*
 	buffer, exists := b.buffers[path]
 	if !exists {
 		b.mu.RUnlock()
-		
+
 		// Record cache miss in metrics
 		if s != nil {
 			s.RecordReadAheadMiss()
+
+			// Log cache miss if debug logging is enabled
+			if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+				s.structuredLogger.Debug("read-ahead cache miss",
+					LogField{Key: "path", Value: path},
+					LogField{Key: "offset", Value: offset},
+					LogField{Key: "count", Value: count})
+			}
 		}
-		
+
 		return nil, false
 	}
 	
@@ -398,15 +418,24 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int, server ...*
 		
 		return []byte{}, true // Empty result indicates EOF
 	}
-	
+
 	if offset < buffer.offset || offset > buffer.offset+int64(buffer.dataLen) {
 		b.mu.RUnlock()
-		
+
 		// Record cache miss in metrics
 		if s != nil {
 			s.RecordReadAheadMiss()
+
+			// Log cache miss if debug logging is enabled
+			if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+				s.structuredLogger.Debug("read-ahead cache miss: out of range",
+					LogField{Key: "path", Value: path},
+					LogField{Key: "offset", Value: offset},
+					LogField{Key: "buffer_offset", Value: buffer.offset},
+					LogField{Key: "buffer_len", Value: buffer.dataLen})
+			}
 		}
-		
+
 		return nil, false
 	}
 	
@@ -444,8 +473,16 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int, server ...*
 	// Record cache hit in metrics
 	if s != nil {
 		s.RecordReadAheadHit()
+
+		// Log cache hit if debug logging is enabled
+		if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+			s.structuredLogger.Debug("read-ahead cache hit",
+				LogField{Key: "path", Value: path},
+				LogField{Key: "offset", Value: offset},
+				LogField{Key: "bytes_read", Value: len(result)})
+		}
 	}
-	
+
 	return result, true
 }
 
