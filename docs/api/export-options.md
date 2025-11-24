@@ -51,6 +51,24 @@ type ExportOptions struct {
     // AttrCacheSize controls the maximum number of entries in the attribute cache
     AttrCacheSize int
 
+    // CacheNegativeLookups enables caching of failed lookups (file not found)
+    CacheNegativeLookups bool
+
+    // NegativeCacheTimeout controls how long negative cache entries are kept
+    NegativeCacheTimeout time.Duration
+
+    // EnableDirCache enables caching of directory entries for improved performance
+    EnableDirCache bool
+
+    // DirCacheTimeout controls how long directory entries are cached
+    DirCacheTimeout time.Duration
+
+    // DirCacheMaxEntries controls the maximum number of directories that can be cached
+    DirCacheMaxEntries int
+
+    // DirCacheMaxDirSize controls the maximum number of entries in a single directory that will be cached
+    DirCacheMaxDirSize int
+
     // AdaptToMemoryPressure enables automatic cache reduction under memory pressure
     AdaptToMemoryPressure bool
 
@@ -98,6 +116,9 @@ type ExportOptions struct {
 
     // TLS holds the TLS/SSL configuration for encrypted connections
     TLS *TLSConfig
+
+    // Log holds the logging configuration for the NFS server
+    Log *LogConfig
 
     // Timeouts controls operation-specific timeout durations
     Timeouts *TimeoutConfig
@@ -241,6 +262,66 @@ AttrCacheSize int
 ```
 
 Controls the maximum number of entries in the attribute cache. Larger values improve performance but consume more memory.
+
+**Default:** `10000`
+
+### CacheNegativeLookups
+
+```go
+CacheNegativeLookups bool
+```
+
+Enables caching of failed lookups (file not found). This can significantly reduce filesystem load for repeated lookups of non-existent files. Negative cache entries use a shorter TTL than positive entries.
+
+**Default:** `false`
+
+### NegativeCacheTimeout
+
+```go
+NegativeCacheTimeout time.Duration
+```
+
+Controls how long negative cache entries are kept. Shorter timeouts reduce the chance of stale negative cache entries. Only applicable when `CacheNegativeLookups` is `true`.
+
+**Default:** `5 * time.Second`
+
+### EnableDirCache
+
+```go
+EnableDirCache bool
+```
+
+Enables caching of directory entries for improved performance. When enabled, directory listings are cached to reduce filesystem calls.
+
+**Default:** `false`
+
+### DirCacheTimeout
+
+```go
+DirCacheTimeout time.Duration
+```
+
+Controls how long directory entries are cached. Longer timeouts improve performance but may cause clients to see stale directory listings. Only applicable when `EnableDirCache` is `true`.
+
+**Default:** `10 * time.Second`
+
+### DirCacheMaxEntries
+
+```go
+DirCacheMaxEntries int
+```
+
+Controls the maximum number of directories that can be cached. Helps limit memory usage by directory entry caching. Only applicable when `EnableDirCache` is `true`.
+
+**Default:** `1000`
+
+### DirCacheMaxDirSize
+
+```go
+DirCacheMaxDirSize int
+```
+
+Controls the maximum number of entries in a single directory that will be cached. Directories with more entries than this will not be cached to prevent memory issues. Only applicable when `EnableDirCache` is `true`.
 
 **Default:** `10000`
 
@@ -403,6 +484,16 @@ TLS *TLSConfig
 Holds the TLS/SSL configuration for encrypted connections. When `TLS.Enabled` is true, all NFS connections will be encrypted using TLS. Provides confidentiality, integrity, and optional mutual authentication. If nil, TLS is disabled and connections are unencrypted (default NFSv3 behavior).
 
 **Default:** `nil` (TLS disabled)
+
+### Log
+
+```go
+Log *LogConfig
+```
+
+Holds the logging configuration for the NFS server. When `nil`, logging is disabled (no-op logger is used). When provided, enables structured logging with configurable level, format, and output.
+
+**Default:** `nil` (logging disabled)
 
 ### Timeouts
 
