@@ -64,6 +64,17 @@ type NFSMetrics struct {
 	ResourceErrors   uint64
 	RateLimitExceeded uint64
 
+	// Timeout metrics
+	ReadTimeouts    uint64
+	WriteTimeouts   uint64
+	LookupTimeouts  uint64
+	ReaddirTimeouts uint64
+	CreateTimeouts  uint64
+	RemoveTimeouts  uint64
+	RenameTimeouts  uint64
+	HandleTimeouts  uint64
+	TotalTimeouts   uint64
+
 	// Time-based metrics
 	StartTime time.Time
 	UptimeSeconds int64
@@ -288,6 +299,30 @@ func (m *MetricsCollector) RecordError(errorType string) {
 // RecordRateLimitExceeded records a rate limit rejection
 func (m *MetricsCollector) RecordRateLimitExceeded() {
 	atomic.AddUint64(&m.metrics.RateLimitExceeded, 1)
+}
+
+// RecordTimeout records a timeout for a specific operation type
+func (m *MetricsCollector) RecordTimeout(opType string) {
+	atomic.AddUint64(&m.metrics.TotalTimeouts, 1)
+
+	switch opType {
+	case "READ":
+		atomic.AddUint64(&m.metrics.ReadTimeouts, 1)
+	case "WRITE":
+		atomic.AddUint64(&m.metrics.WriteTimeouts, 1)
+	case "LOOKUP":
+		atomic.AddUint64(&m.metrics.LookupTimeouts, 1)
+	case "READDIR":
+		atomic.AddUint64(&m.metrics.ReaddirTimeouts, 1)
+	case "CREATE":
+		atomic.AddUint64(&m.metrics.CreateTimeouts, 1)
+	case "REMOVE":
+		atomic.AddUint64(&m.metrics.RemoveTimeouts, 1)
+	case "RENAME":
+		atomic.AddUint64(&m.metrics.RenameTimeouts, 1)
+	case "HANDLE":
+		atomic.AddUint64(&m.metrics.HandleTimeouts, 1)
+	}
 }
 
 // RecordConnection records a new connection
