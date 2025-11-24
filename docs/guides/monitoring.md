@@ -103,9 +103,7 @@ func main() {
 	fs, _ := memfs.NewFS()
 
 	// Create NFS server
-	nfsServer, _ := absnfs.New(fs, absnfs.ExportOptions{
-		LogLevel: "Info",
-	})
+	nfsServer, _ := absnfs.New(fs, absnfs.ExportOptions{})
 
 	// Export the filesystem
 	nfsServer.Export("/export/test", 2049)
@@ -141,19 +139,19 @@ func main() {
 	// Add a Prometheus metrics endpoint if using Prometheus
 	http.HandleFunc("/prometheus", func(w http.ResponseWriter, r *http.Request) {
 		metrics := nfsServer.GetMetrics()
-		
+
 		// Generate Prometheus format metrics
 		w.Header().Set("Content-Type", "text/plain")
-		
+
 		// Counter metrics
-		w.Write([]byte("# HELP absnfs_operations_total Total number of NFS operations\n"))
-		w.Write([]byte("# TYPE absnfs_operations_total counter\n"))
-		w.Write([]byte("absnfs_operations_total " + fmt.Sprint(metrics.TotalOperations) + "\n"))
-		
-		w.Write([]byte("# HELP absnfs_read_operations_total Total number of READ operations\n"))
-		w.Write([]byte("# TYPE absnfs_read_operations_total counter\n"))
-		w.Write([]byte("absnfs_read_operations_total " + fmt.Sprint(metrics.ReadOperations) + "\n"))
-		
+		fmt.Fprintf(w, "# HELP absnfs_operations_total Total number of NFS operations\n")
+		fmt.Fprintf(w, "# TYPE absnfs_operations_total counter\n")
+		fmt.Fprintf(w, "absnfs_operations_total %d\n", metrics.TotalOperations)
+
+		fmt.Fprintf(w, "# HELP absnfs_read_operations_total Total number of READ operations\n")
+		fmt.Fprintf(w, "# TYPE absnfs_read_operations_total counter\n")
+		fmt.Fprintf(w, "absnfs_read_operations_total %d\n", metrics.ReadOperations)
+
 		// More metrics in Prometheus format...
 	})
 
@@ -180,6 +178,7 @@ To integrate with Prometheus, you can use a custom collector:
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -271,16 +270,18 @@ func (c *NFSCollector) Collect(ch chan<- prometheus.Metric) {
 	// Get current metrics from NFS server
 	metrics := c.nfsServer.GetMetrics()
 
-	// Update counters
-	c.totalOps.Set(float64(metrics.TotalOperations))
-	c.readOps.Set(float64(metrics.ReadOperations))
-	c.writeOps.Set(float64(metrics.WriteOperations))
-	
+	// Update counters using Add() method
+	// Note: In a real implementation, you'd track deltas between calls
+	// For simplicity, this example shows the pattern
+	c.totalOps.Add(float64(metrics.TotalOperations))
+	c.readOps.Add(float64(metrics.ReadOperations))
+	c.writeOps.Add(float64(metrics.WriteOperations))
+
 	// Update gauges
 	c.cacheHitRate.Set(float64(metrics.CacheHitRate))
 	c.activeConnections.Set(float64(metrics.ActiveConnections))
-	c.errorCount.Set(float64(metrics.ErrorCount))
-	
+	c.errorCount.Add(float64(metrics.ErrorCount))
+
 	// Send to channel
 	c.totalOps.Collect(ch)
 	c.readOps.Collect(ch)
@@ -481,34 +482,27 @@ showmount -e localhost
 
 ## Log Monitoring
 
-Configure comprehensive logging in your ABSNFS server:
+ABSNFS includes built-in logging that you can configure using the standard Go logger. You can set a custom logger on the server instance:
 
 ```go
-options := absnfs.ExportOptions{
-    LogLevel: "Info",        // Options: Debug, Info, Warning, Error
-    LogFile: "/var/log/absnfs.log",
-    LogFormat: "json",       // Options: text, json
-    LogMaxSize: 100,         // Max size in MB before rotation
-    LogMaxBackups: 5,        // Number of log files to keep
-    LogMaxAge: 30,           // Max age in days
-    LogCompress: true,       // Compress rotated logs
-}
+import (
+    "log"
+    "os"
+)
+
+// Create a custom logger
+logger := log.New(os.Stdout, "[absnfs] ", log.LstdFlags|log.Lshortfile)
+
+// Create NFS server
+nfsServer, _ := absnfs.New(fs, absnfs.ExportOptions{})
+
+// The logger is automatically initialized, but you can replace it if needed
+// by accessing the internal logger field (if exported in your version)
 ```
 
 ### Log Analysis
 
-Use tools like `grep`, `awk`, or more sophisticated log analysis tools to extract insights:
-
-```bash
-# Count errors
-grep "level=error" /var/log/absnfs.log | wc -l
-
-# Find authentication failures
-grep "auth failure" /var/log/absnfs.log
-
-# Count operations by type
-grep "operation=" /var/log/absnfs.log | awk -F 'operation=' '{print $2}' | awk '{print $1}' | sort | uniq -c
-```
+Monitor the server's standard output/error for operational messages and use standard log analysis tools to extract insights from your application logs.
 
 ## Alerting
 
@@ -565,26 +559,28 @@ For simple setups, you can implement email alerts directly:
 func monitorAndAlert(nfsServer *absnfs.AbsfsNFS, alertThresholds AlertThresholds) {
     ticker := time.NewTicker(1 * time.Minute)
     defer ticker.Stop()
-    
+
+    var lastErrorCount uint64
+
     for range ticker.C {
         metrics := nfsServer.GetMetrics()
-        
+
         // Check error rate
         errRate := float64(metrics.ErrorCount-lastErrorCount) / 60.0
         if errRate > alertThresholds.ErrorRate {
             sendAlert("High error rate", fmt.Sprintf("Error rate: %.2f/s", errRate))
         }
-        
-        // Check latency
-        if metrics.P95ReadLatency > alertThresholds.ReadLatency {
-            sendAlert("High read latency", fmt.Sprintf("P95 read latency: %v", metrics.P95ReadLatency))
+
+        // Check latency (if P95 metrics are available)
+        if metrics.MaxReadLatency > alertThresholds.ReadLatency {
+            sendAlert("High read latency", fmt.Sprintf("Max read latency: %v", metrics.MaxReadLatency))
         }
-        
+
         // Check cache hit rate
         if metrics.CacheHitRate < alertThresholds.MinCacheHitRate {
             sendAlert("Low cache hit rate", fmt.Sprintf("Cache hit rate: %.2f%%", metrics.CacheHitRate*100))
         }
-        
+
         // Update last values
         lastErrorCount = metrics.ErrorCount
     }
@@ -593,10 +589,9 @@ func monitorAndAlert(nfsServer *absnfs.AbsfsNFS, alertThresholds AlertThresholds
 func sendAlert(subject, message string) {
     // Send email, Slack message, etc.
     log.Printf("ALERT: %s - %s", subject, message)
-    
-    // Example email sending (pseudo-code)
-    mail := NewEmailClient("smtp.example.com", 587, "user", "password")
-    mail.Send("admin@example.com", subject, message)
+
+    // Example: Send to alerting system
+    // alertingClient.Send(subject, message)
 }
 ```
 

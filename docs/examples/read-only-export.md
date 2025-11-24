@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/absfs/absnfs"
+	"github.com/absfs/absfs"
 	"github.com/absfs/memfs"
 )
 
@@ -263,22 +264,7 @@ This will only allow connections from the specified IP addresses or ranges.
 
 ### Temporary Read-Only Mode
 
-You might want to temporarily switch a filesystem to read-only mode:
-
-```go
-// Start in read-write mode
-options := absnfs.ExportOptions{
-    ReadOnly: false,
-}
-server, err := absnfs.New(fs, options)
-
-// Later, switch to read-only
-newOptions := server.GetExportOptions()
-newOptions.ReadOnly = true
-if err := server.UpdateExportOptions(newOptions); err != nil {
-    log.Printf("Failed to update options: %v", err)
-}
-```
+To switch between read-only and read-write modes, you would need to restart the server with the appropriate ExportOptions. The read-only setting cannot be changed dynamically while the server is running.
 
 ### Read-Only with Attribute Caching
 

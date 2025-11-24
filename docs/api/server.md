@@ -32,10 +32,10 @@ The `Server` type is responsible for:
 ### Listen
 
 ```go
-func (s *Server) Listen(address string) error
+func (s *Server) Listen() error
 ```
 
-Starts listening for incoming connections at the specified address.
+Starts listening for incoming connections. The address is configured through the `ServerOptions` when the server is created.
 
 ### Stop
 
@@ -45,21 +45,13 @@ func (s *Server) Stop() error
 
 Stops the server, closing all active connections and releasing resources.
 
-### RegisterHandler
+### SetHandler
 
 ```go
-func (s *Server) RegisterHandler(program, version uint32, handler RPCHandler) error
+func (s *Server) SetHandler(handler *AbsfsNFS)
 ```
 
-Registers a handler for a specific RPC program and version. This is used internally to register NFS protocol handlers.
-
-### SetLogger
-
-```go
-func (s *Server) SetLogger(logger Logger) 
-```
-
-Sets a logger for the server to log events and errors.
+Sets the NFS handler for the server. This must be called before starting the server to register the handler that will process NFS requests.
 
 ## Example Usage
 

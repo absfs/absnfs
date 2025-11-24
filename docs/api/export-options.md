@@ -130,6 +130,186 @@ Controls how long file attributes are cached by the server. Longer timeouts impr
 
 **Default:** `5 * time.Second`
 
+### AttrCacheSize
+
+```go
+AttrCacheSize int
+```
+
+Controls the maximum number of entries in the attribute cache. Larger values improve performance but consume more memory.
+
+**Default:** `10000` (10,000 entries)
+
+### Async
+
+```go
+Async bool
+```
+
+When set to `true`, allows asynchronous writes. This can improve write performance but may risk data loss in case of server crashes before data is flushed to disk.
+
+**Default:** `false`
+
+### MaxFileSize
+
+```go
+MaxFileSize int64
+```
+
+Controls the maximum allowed file size in bytes. Files larger than this limit cannot be created or extended beyond this size. Setting to 0 means no limit.
+
+**Default:** `0` (no limit)
+
+### ReadAheadMaxFiles
+
+```go
+ReadAheadMaxFiles int
+```
+
+Controls the maximum number of files that can have active read-ahead buffers simultaneously. This helps limit memory usage by read-ahead buffering.
+
+**Default:** `100` (files)
+
+### ReadAheadMaxMemory
+
+```go
+ReadAheadMaxMemory int64
+```
+
+Controls the maximum amount of memory in bytes that can be used for read-ahead buffers. Once this limit is reached, least recently used buffers will be evicted.
+
+**Default:** `104857600` (100MB)
+
+### AdaptToMemoryPressure
+
+```go
+AdaptToMemoryPressure bool
+```
+
+Enables automatic cache reduction when system memory is under pressure. When enabled, the server will periodically check system memory usage and reduce cache sizes when memory usage exceeds `MemoryHighWatermark`, until usage falls below `MemoryLowWatermark`.
+
+**Default:** `false` (disabled)
+
+### MemoryHighWatermark
+
+```go
+MemoryHighWatermark float64
+```
+
+Defines the threshold (as a fraction of total memory) at which memory pressure reduction actions will be triggered. Only applicable when `AdaptToMemoryPressure` is `true`. Valid range: 0.0 to 1.0 (0% to 100% of total memory).
+
+**Default:** `0.8` (80% of total memory)
+
+### MemoryLowWatermark
+
+```go
+MemoryLowWatermark float64
+```
+
+Defines the target memory usage (as a fraction of total memory) that the server will try to achieve when reducing cache sizes in response to memory pressure. Only applicable when `AdaptToMemoryPressure` is `true`. Valid range: 0.0 to `MemoryHighWatermark`.
+
+**Default:** `0.6` (60% of total memory)
+
+### MemoryCheckInterval
+
+```go
+MemoryCheckInterval time.Duration
+```
+
+Defines how frequently memory usage is checked for pressure detection. Only applicable when `AdaptToMemoryPressure` is `true`.
+
+**Default:** `30 * time.Second`
+
+### MaxWorkers
+
+```go
+MaxWorkers int
+```
+
+Controls the maximum number of goroutines used for handling concurrent operations. More workers can improve performance for concurrent workloads but consume more CPU resources.
+
+**Default:** `runtime.NumCPU() * 4` (number of logical CPUs multiplied by 4)
+
+### BatchOperations
+
+```go
+BatchOperations bool
+```
+
+Enables grouping of similar operations for improved performance. When enabled, the server will attempt to process multiple read/write operations together to reduce context switching and improve throughput.
+
+**Default:** `true`
+
+### MaxBatchSize
+
+```go
+MaxBatchSize int
+```
+
+Controls the maximum number of operations that can be included in a single batch. Larger batches can improve performance but may increase latency for individual operations. Only applicable when `BatchOperations` is `true`.
+
+**Default:** `10` (operations)
+
+### MaxConnections
+
+```go
+MaxConnections int
+```
+
+Limits the number of simultaneous client connections. Setting to 0 means unlimited connections (limited only by system resources).
+
+**Default:** `100`
+
+### IdleTimeout
+
+```go
+IdleTimeout time.Duration
+```
+
+Defines how long to keep inactive connections before closing them. This helps reclaim resources from abandoned connections.
+
+**Default:** `5 * time.Minute`
+
+### TCPKeepAlive
+
+```go
+TCPKeepAlive bool
+```
+
+Enables TCP keep-alive probes on NFS connections. Keep-alive helps detect dead connections when clients disconnect improperly.
+
+**Default:** `true`
+
+### TCPNoDelay
+
+```go
+TCPNoDelay bool
+```
+
+Disables Nagle's algorithm on TCP connections to reduce latency. This may improve performance for small requests at the cost of increased bandwidth usage.
+
+**Default:** `true`
+
+### SendBufferSize
+
+```go
+SendBufferSize int
+```
+
+Controls the size of the TCP send buffer in bytes. Larger buffers can improve throughput but consume more memory.
+
+**Default:** `262144` (256KB)
+
+### ReceiveBufferSize
+
+```go
+ReceiveBufferSize int
+```
+
+Controls the size of the TCP receive buffer in bytes. Larger buffers can improve throughput but consume more memory.
+
+**Default:** `262144` (256KB)
+
 ## Example Usage
 
 ```go

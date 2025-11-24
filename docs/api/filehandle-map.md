@@ -5,88 +5,107 @@ title: FileHandleMap
 
 # FileHandleMap
 
-The `FileHandleMap` is a critical internal component of ABSNFS that manages the mapping between NFS file handles and ABSFS filesystem paths and nodes.
+The `FileHandleMap` is a critical internal component of ABSNFS that manages the mapping between numeric file handles and open `absfs.File` instances.
 
 ## Purpose
 
-In NFS, clients identify files and directories using opaque file handles rather than paths. The `FileHandleMap` serves several important purposes:
+In NFS, clients identify open files and directories using numeric file handles rather than paths. The `FileHandleMap` serves several important purposes:
 
-1. **Handle Generation**: Creates unique file handles for files and directories
-2. **Handle-to-Node Mapping**: Maps file handles to internal `NFSNode` representations
-3. **Handle Persistence**: Ensures file handles remain valid across server restarts
-4. **Handle Cleanup**: Manages the lifecycle of handles, releasing resources when appropriate
+1. **Handle Allocation**: Creates unique numeric handles for open files and directories
+2. **Handle-to-File Mapping**: Maps numeric handles to `absfs.File` instances
+3. **Handle Release**: Manages the lifecycle of handles, closing files and releasing resources when appropriate
+4. **Reference Tracking**: Tracks active file handles to manage resource cleanup
 
 ## Type Definition
 
 ```go
 type FileHandleMap struct {
-    // contains filtered or unexported fields
+    sync.RWMutex
+    handles    map[uint64]absfs.File
+    lastHandle uint64
 }
 ```
 
 The `FileHandleMap` type is used internally by the `AbsfsNFS` type and is not typically created or manipulated directly by users.
 
-## NFS File Handles
+## Handle Format
 
-NFS file handles are opaque identifiers that:
+In this implementation, file handles are simple `uint64` integers that are allocated sequentially. The map maintains:
 
-1. Are passed from the server to clients
-2. Are presented by clients in subsequent operations
-3. Must uniquely identify a file or directory
-4. Should persist across server restarts if possible
-5. Must be secure (cannot be easily forged)
-
-In ABSNFS, file handles include:
-
-- A unique identifier for the file or directory
-- A generation number to detect stale handles
-- Security information to prevent forgery
-- Additional metadata for efficient lookup
+- A mapping from handle ID to the corresponding `absfs.File` instance
+- The last allocated handle ID for efficient allocation
+- Thread-safe access through read-write locks
 
 ## Key Operations
 
 The `FileHandleMap` provides several key operations:
 
-### GetNode
+### Allocate
 
 ```go
-func (fm *FileHandleMap) GetNode(handle FileHandle) (*NFSNode, error)
+func (fm *FileHandleMap) Allocate(f absfs.File) uint64
 ```
 
-Looks up the `NFSNode` corresponding to a file handle. Returns an error if the handle is invalid or stale.
+Creates a new file handle for the given `absfs.File`. The method finds the smallest available handle ID (starting from 1) and associates it with the provided file. Returns the allocated handle ID.
 
-### CreateHandle
+**Parameters:**
+- `f`: The `absfs.File` instance to associate with the new handle
+
+**Returns:**
+- `uint64`: The allocated handle ID
+
+### Get
 
 ```go
-func (fm *FileHandleMap) CreateHandle(node *NFSNode) (FileHandle, error)
+func (fm *FileHandleMap) Get(handle uint64) (absfs.File, bool)
 ```
 
-Creates a new file handle for an `NFSNode`. This is called when a client accesses a file or directory for the first time.
+Retrieves the `absfs.File` associated with the given handle ID. Returns the file and a boolean indicating whether the handle exists.
 
-### ReleaseHandle
+**Parameters:**
+- `handle`: The handle ID to look up
+
+**Returns:**
+- `absfs.File`: The file associated with the handle (or nil if not found)
+- `bool`: `true` if the handle exists, `false` otherwise
+
+### Release
 
 ```go
-func (fm *FileHandleMap) ReleaseHandle(handle FileHandle) error
+func (fm *FileHandleMap) Release(handle uint64)
 ```
 
-Releases a file handle, potentially freeing resources when the handle is no longer needed.
+Releases a file handle, closing the associated file and removing it from the map. This should be called when the client is done with the file.
 
-### InvalidateHandle
+**Parameters:**
+- `handle`: The handle ID to release
+
+### ReleaseAll
 
 ```go
-func (fm *FileHandleMap) InvalidateHandle(handle FileHandle) error
+func (fm *FileHandleMap) ReleaseAll()
 ```
 
-Marks a file handle as invalid. This is called when a file or directory is deleted or renamed.
+Closes and removes all file handles. This is typically called during server shutdown to ensure all files are properly closed.
+
+### Count
+
+```go
+func (fm *FileHandleMap) Count() int
+```
+
+Returns the number of active file handles currently in the map.
+
+**Returns:**
+- `int`: The number of active handles
 
 ## Handle Lifecycle
 
-File handles follow a lifecycle:
+File handles follow a simple lifecycle:
 
-1. **Creation**: When a client first accesses a file or directory
-2. **Usage**: When a client performs operations using the handle
-3. **Invalidation**: When a file or directory is deleted or renamed
-4. **Release**: When a client is done using the handle or the server needs to reclaim resources
+1. **Allocation**: When a client opens a file or directory, `Allocate()` is called with the `absfs.File` instance
+2. **Usage**: The handle ID is used in subsequent NFS operations to reference the open file
+3. **Release**: When the client closes the file, `Release()` is called to close the file and free the handle
 
 ## Implementation Details
 
@@ -94,80 +113,81 @@ The `FileHandleMap` implementation includes several important details:
 
 ### Thread Safety
 
-The `FileHandleMap` is thread-safe, allowing concurrent access from multiple clients.
+The `FileHandleMap` is thread-safe through the use of `sync.RWMutex`, allowing concurrent access from multiple clients. Read operations (like `Get()` and `Count()`) use read locks, while write operations (like `Allocate()`, `Release()`, and `ReleaseAll()`) use write locks.
 
-### Handle Generation
+### Handle Allocation Strategy
 
-File handles are generated using:
-- Cryptographic techniques to ensure uniqueness and security
-- Metadata to aid in efficient lookup
-- Generation numbers to detect stale handles
+File handles are allocated using a simple sequential strategy:
+- Handles start at 1 (handle 0 is reserved/invalid)
+- The allocator finds the smallest available handle ID
+- This approach reuses handle IDs when files are closed
+- The `lastHandle` field tracks the highest allocated handle for optimization
 
-### Handle Persistence
+### Resource Management
 
-For handles to persist across server restarts, the `FileHandleMap` can:
-- Generate handles deterministically based on file metadata
-- Store handle mappings in persistent storage
-- Reconstruct mappings on server restart
-
-### Handle Validity Checking
-
-The `FileHandleMap` performs several validity checks on handles:
-- Ensures the handle format is correct
-- Verifies security information to prevent forgery
-- Checks that the referenced file or directory still exists
-- Validates generation numbers to detect stale handles
+The `FileHandleMap` manages file resources by:
+- Automatically closing files when handles are released
+- Ensuring all files are closed during `ReleaseAll()` (typically on server shutdown)
+- Preventing resource leaks through proper cleanup
 
 ## Performance Considerations
 
 The `FileHandleMap` is optimized for performance in several ways:
 
-1. **Caching**: Frequently used handle mappings are cached
-2. **Efficient Lookup**: Handle design enables efficient lookup
-3. **Concurrency**: Handle operations can proceed concurrently
-4. **Resource Management**: Handles are released when no longer needed
-
-## Security Considerations
-
-The `FileHandleMap` includes several security features:
-
-1. **Handle Verification**: Handles are verified for authenticity
-2. **Unpredictable Handles**: Handles are designed to be difficult to guess
-3. **Stale Handle Detection**: Stale handles are detected and rejected
-4. **Handle Invalidation**: Handles for deleted files are invalidated
+1. **Efficient Lookup**: Map-based lookups provide O(1) access time
+2. **Concurrent Access**: Read-write locks allow multiple concurrent reads
+3. **Handle Reuse**: Released handles can be reused, preventing unbounded growth
+4. **Minimal Allocation**: Simple integer handles avoid complex serialization
 
 ## Example Usage
 
 While users don't typically interact with `FileHandleMap` directly, here's an example of how it's used internally:
 
 ```go
-// When a client wants to access a file
-func (nfs *AbsfsNFS) handleLookup(dirHandle FileHandle, name string) (FileHandle, *NFSAttributes, error) {
-    // Get the directory node
-    dirNode, err := nfs.fileHandleMap.GetNode(dirHandle)
+// When a client opens a file
+func (nfs *AbsfsNFS) handleOpen(path string, flags int) (uint64, error) {
+    // Open the file using the underlying filesystem
+    file, err := nfs.fs.OpenFile(path, flags, 0644)
     if err != nil {
-        return nil, nil, err
+        return 0, err
     }
-    
-    // Look up the child node
-    childNode, err := dirNode.Lookup(name)
-    if err != nil {
-        return nil, nil, err
+
+    // Allocate a handle for the open file
+    handle := nfs.fileHandleMap.Allocate(file)
+
+    return handle, nil
+}
+
+// When a client reads from a file
+func (nfs *AbsfsNFS) handleRead(handle uint64, offset int64, count int) ([]byte, error) {
+    // Get the file from the handle
+    file, ok := nfs.fileHandleMap.Get(handle)
+    if !ok {
+        return nil, os.ErrNotExist
     }
-    
-    // Create a file handle for the child node
-    childHandle, err := nfs.fileHandleMap.CreateHandle(childNode)
-    if err != nil {
-        return nil, nil, err
+
+    // Read from the file
+    buf := make([]byte, count)
+    n, err := file.ReadAt(buf, offset)
+    if err != nil && err != io.EOF {
+        return nil, err
     }
-    
-    // Get the attributes for the child node
-    attrs, err := childNode.GetAttributes()
-    if err != nil {
-        return nil, nil, err
-    }
-    
-    return childHandle, attrs, nil
+
+    return buf[:n], nil
+}
+
+// When a client closes a file
+func (nfs *AbsfsNFS) handleClose(handle uint64) error {
+    // Release the handle (this also closes the file)
+    nfs.fileHandleMap.Release(handle)
+    return nil
+}
+
+// During server shutdown
+func (nfs *AbsfsNFS) Shutdown() error {
+    // Close all open files
+    nfs.fileHandleMap.ReleaseAll()
+    return nil
 }
 ```
 
@@ -175,6 +195,6 @@ func (nfs *AbsfsNFS) handleLookup(dirHandle FileHandle, name string) (FileHandle
 
 The `FileHandleMap` interacts closely with several other components in ABSNFS:
 
-- **AbsfsNFS**: Coordinates overall NFS operations
-- **NFSNode**: Represents files and directories in the filesystem
-- **Server**: Handles network communication and client requests
+- **AbsfsNFS**: Uses the map to track open files for NFS operations
+- **absfs.File**: The interface that all open files implement
+- **Server**: Indirectly uses the map through NFS operations

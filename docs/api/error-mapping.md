@@ -35,41 +35,40 @@ The error mapping logic considers several factors:
 
 | ABSFS/Go Error | NFS Error | Description |
 |----------------|-----------|-------------|
-| `os.ErrNotExist` | `NFS3ERR_NOENT` | File or directory not found |
-| `os.ErrPermission` | `NFS3ERR_ACCES` | Permission denied |
-| `os.ErrExist` | `NFS3ERR_EXIST` | File already exists |
-| Error from read-only filesystem | `NFS3ERR_ROFS` | Read-only file system |
+| `os.ErrNotExist` | `NFSERR_NOENT` | File or directory not found |
+| `os.ErrPermission` | `NFSERR_ACCES` | Permission denied |
+| `os.ErrExist` | `NFSERR_EXIST` | File already exists |
+| Error from read-only filesystem | `NFSERR_ROFS` | Read-only file system |
 
 ### File Type Errors
 
 | ABSFS/Go Error | NFS Error | Description |
 |----------------|-----------|-------------|
-| Directory when file expected | `NFS3ERR_ISDIR` | Is a directory |
-| File when directory expected | `NFS3ERR_NOTDIR` | Not a directory |
+| `syscall.EISDIR` | `NFSERR_ISDIR` | Is a directory |
+| `syscall.ENOTDIR` | `NFSERR_NOTDIR` | Not a directory |
 
 ### Resource Errors
 
 | ABSFS/Go Error | NFS Error | Description |
 |----------------|-----------|-------------|
-| Disk space error | `NFS3ERR_NOSPC` | No space left on device |
-| Quota exceeded | `NFS3ERR_DQUOT` | Disk quota exceeded |
-| File too large | `NFS3ERR_FBIG` | File too large |
+| `syscall.ENOSPC` | `NFSERR_NOSPC` | No space left on device |
+| `syscall.EDQUOT` | `NFSERR_DQUOT` | Disk quota exceeded |
+| File size limit errors | `NFSERR_FBIG` | File too large |
 
-### Handle and Reference Errors
+### Directory Errors
 
 | ABSFS/Go Error | NFS Error | Description |
 |----------------|-----------|-------------|
-| Invalid file handle | `NFS3ERR_BADHANDLE` | Invalid file handle |
-| Stale file handle | `NFS3ERR_STALE` | Stale file handle |
-| Invalid cookie | `NFS3ERR_BAD_COOKIE` | READDIR cookie is stale |
+| `syscall.ENOTEMPTY` | `NFSERR_NOTEMPTY` | Directory not empty |
+| `syscall.ENAMETOOLONG` | `NFSERR_NAMETOOLONG` | Filename too long |
 
 ### Operation Errors
 
 | ABSFS/Go Error | NFS Error | Description |
 |----------------|-----------|-------------|
-| Unsupported operation | `NFS3ERR_NOTSUPP` | Operation not supported |
-| Generic I/O error | `NFS3ERR_IO` | I/O error |
-| Invalid argument | `NFS3ERR_INVAL` | Invalid argument |
+| Generic I/O error | `NFSERR_IO` | I/O error |
+| `os.ErrInvalid` | `NFSERR_INVAL` | Invalid argument |
+| Other errors | `NFSERR_IO` | Default error mapping |
 
 ## Implementation Details
 
@@ -87,38 +86,33 @@ ABSNFS uses several techniques to detect and categorize errors:
 Here's a simplified example of how error mapping is implemented:
 
 ```go
-func mapToNFSError(err error, op string) nfsv3.NFSStatus {
+func mapToNFSError(err error, op string) uint32 {
     if err == nil {
-        return nfsv3.NFS3_OK
-    }
-
-    // Check for specific error types
-    var invalidHandle *InvalidFileHandleError
-    if errors.As(err, &invalidHandle) {
-        return nfsv3.NFS3ERR_BADHANDLE
-    }
-
-    var staleHandle *StaleFileHandleError
-    if errors.As(err, &staleHandle) {
-        return nfsv3.NFS3ERR_STALE
+        return NFS_OK
     }
 
     // Check for standard error conditions
     switch {
     case errors.Is(err, fs.ErrNotExist) || os.IsNotExist(err):
-        return nfsv3.NFS3ERR_NOENT
+        return NFSERR_NOENT
     case errors.Is(err, fs.ErrPermission) || os.IsPermission(err):
-        return nfsv3.NFS3ERR_ACCES
+        return NFSERR_ACCES
     case errors.Is(err, fs.ErrExist) || os.IsExist(err):
-        return nfsv3.NFS3ERR_EXIST
+        return NFSERR_EXIST
+    case errors.Is(err, os.ErrInvalid):
+        return NFSERR_INVAL
     case errors.Is(err, syscall.EISDIR):
-        return nfsv3.NFS3ERR_ISDIR
+        return NFSERR_ISDIR
     case errors.Is(err, syscall.ENOTDIR):
-        return nfsv3.NFS3ERR_NOTDIR
+        return NFSERR_NOTDIR
     case errors.Is(err, syscall.ENOTEMPTY):
-        return nfsv3.NFS3ERR_NOTEMPTY
+        return NFSERR_NOTEMPTY
     case errors.Is(err, syscall.EROFS):
-        return nfsv3.NFS3ERR_ROFS
+        return NFSERR_ROFS
+    case errors.Is(err, syscall.ENOSPC):
+        return NFSERR_NOSPC
+    case errors.Is(err, syscall.ENAMETOOLONG):
+        return NFSERR_NAMETOOLONG
     // ... other cases ...
     }
 
@@ -127,7 +121,7 @@ func mapToNFSError(err error, op string) nfsv3.NFSStatus {
     case "READ":
         // Special handling for read operations
         if errors.Is(err, io.EOF) {
-            return nfsv3.NFS3_OK // EOF is not an error for NFS reads
+            return NFS_OK // EOF is not an error for NFS reads
         }
     case "LOOKUP":
         // Special handling for lookup operations
@@ -135,7 +129,7 @@ func mapToNFSError(err error, op string) nfsv3.NFSStatus {
     }
 
     // Default to I/O error for unrecognized errors
-    return nfsv3.NFS3ERR_IO
+    return NFSERR_IO
 }
 ```
 

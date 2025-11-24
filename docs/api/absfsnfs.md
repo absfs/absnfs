@@ -43,29 +43,29 @@ func (nfs *AbsfsNFS) Unexport() error
 
 Stops exporting the filesystem and shuts down the NFS server.
 
-### GetFileSystem
+### Close
 
 ```go
-func (nfs *AbsfsNFS) GetFileSystem() absfs.FileSystem
+func (nfs *AbsfsNFS) Close() error
 ```
 
-Returns the underlying ABSFS filesystem being exported.
+Closes the NFS server and releases all resources. This should be called when shutting down the server.
 
-### GetExportOptions
+### GetMetrics
 
 ```go
-func (nfs *AbsfsNFS) GetExportOptions() ExportOptions
+func (nfs *AbsfsNFS) GetMetrics() NFSMetrics
 ```
 
-Returns the current export options for the NFS server.
+Returns current performance and operational metrics for the NFS server, including operation counts, cache hit rates, and error statistics.
 
-### UpdateExportOptions
+### IsHealthy
 
 ```go
-func (nfs *AbsfsNFS) UpdateExportOptions(options ExportOptions) error
+func (nfs *AbsfsNFS) IsHealthy() bool
 ```
 
-Updates the export options for the NFS server. Some options may require restarting the server to take effect.
+Performs a health check on the NFS server and returns true if the server is operating normally.
 
 ## Example Usage
 

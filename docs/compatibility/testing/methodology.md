@@ -38,12 +38,15 @@ func main() {
 
     // Configure standard export options for testing
     options := absnfs.ExportOptions{
-        ReadOnly: false,
-        Secure: true,
-        AllowedIPs: []string{}, // Allow all IPs for testing
-        EnableReadAhead: true,
-        ReadAheadSize: 262144, // 256KB
+        ReadOnly:         false,
+        Secure:           true,
+        AllowedIPs:       []string{}, // Allow all IPs for testing
+        EnableReadAhead:  true,
+        ReadAheadSize:    262144,                // 256KB
         AttrCacheTimeout: 10 * time.Second,
+        TransferSize:     65536,                 // 64KB
+        MaxConnections:   100,
+        IdleTimeout:      5 * time.Minute,
     }
 
     // Create NFS server

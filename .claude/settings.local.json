@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(test:*)",
+      "Bash(find:*)",
+      "Bash(gh issue list:*)",
+      "Bash(go list:*)",
+      "Bash(go doc:*)",
+      "Bash(git branch:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

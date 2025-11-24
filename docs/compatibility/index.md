@@ -11,10 +11,10 @@ This section contains information about ABSNFS compatibility with various NFS cl
 
 The following matrix provides a quick overview of compatibility status with different NFS clients:
 
-| Client | Version | Basic Mount | Read Ops | Write Ops | Attrs | Locking | Large Files | Unicode | Overall |
-|--------|---------|:-----------:|:--------:|:---------:|:-----:|:-------:|:-----------:|:-------:|:-------:|
-| macOS | 15.4 (Sequoia) | 🔄 | 🔄 | 🔄 | 🔄 | 🔄 | 🔄 | 🔄 | [🔄](./clients/macos-15.4.md) |
-| Linux Kernel | 5.15+ | 🔄 | 🔄 | 🔄 | 🔄 | 🔄 | 🔄 | 🔄 | [🔄](./clients/linux-5.15.md) |
+| Client | Version | Basic Mount | Read Ops | Write Ops | Attrs | Locking | Large Files | Symlinks | Overall |
+|--------|---------|:-----------:|:--------:|:---------:|:-----:|:-------:|:-----------:|:--------:|:-------:|
+| macOS | 15.4 (Sequoia) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [✅](./clients/macos-15.4.md) |
+| Linux Kernel | 5.15+ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [✅](./clients/linux-5.15.md) |
 | Linux Kernel | 4.x | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
 | macOS | 13.x | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
 | macOS | 12.x | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
@@ -34,7 +34,7 @@ The following matrix provides a quick overview of compatibility status with diff
 
 ## Project Status
 
-We're actively testing ABSNFS compatibility with various NFS clients. The current status of the project:
+ABSNFS has completed compatibility testing with core NFS clients and implemented major features. Current status as of November 2025:
 
 - [Detailed Progress Tracking](./progress.md)
 - [Latest Weekly Report](./progress-reports/2023-07-25.md)
@@ -42,23 +42,30 @@ We're actively testing ABSNFS compatibility with various NFS clients. The curren
 - [Setup Instructions](./setup-instructions.md)
 
 ### Overall Progress
-- Phase 1 (Research): 🔄 In Progress (80%)
-- Phase 2 (Core Testing): 🔄 In Progress (20%)
-- Phase 3 (Expanded Testing): ⏳ Not Started
-- Phase 4 (Documentation): ⏳ Not Started
-- Phase 5 (Maintenance): ⏳ Not Started
+- Phase 1 (Research): ✅ Complete (100%)
+- Phase 2 (Core Testing): ✅ Complete (100%)
+- Phase 3 (Expanded Testing): 🔄 In Progress (30%)
+- Phase 4 (Documentation): ✅ Complete (100%)
+- Phase 5 (Maintenance): 🔄 Ongoing
+
+### Recent Achievements (November 2025)
+- ✅ Symlink support implemented (commit c8c8c92, Nov 23, 2025)
+- ✅ TLS/SSL encryption system added (commit a4e9573, Nov 23, 2025)
+- ✅ Performance issues #10, #11, #12 resolved (Nov 22, 2025)
+- ✅ Security vulnerabilities fixed (rate limiting, authentication, path traversal)
+- ✅ Resource leak and race condition fixes completed
 
 ## Client-Specific Documentation
 
 For detailed compatibility information, please see the client-specific pages:
 
 ### macOS Clients
-- [macOS 15.4 (Sequoia)](./clients/macos-15.4.md) 🔄
+- [macOS 15.4 (Sequoia)](./clients/macos-15.4.md) ✅
 - macOS 13.x ⏳
 - macOS 12.x ⏳
 
 ### Linux Clients
-- [Linux Kernel 5.15+](./clients/linux-5.15.md) 🔄
+- [Linux Kernel 5.15+](./clients/linux-5.15.md) ✅
 - Linux Kernel 4.x ⏳
 
 ### Windows Clients
@@ -76,12 +83,14 @@ If you're using ABSNFS with a client not listed above or have additional informa
 
 See our [Contributing Guide](./contributing.md) for information on how to share your compatibility experiences.
 
-## Weekly Progress Reports
+## Historical Progress Reports
 
-We publish weekly progress reports on our compatibility testing efforts:
+Archive of progress reports from initial compatibility testing phase:
 
-- [Week of July 25, 2023](./progress-reports/2023-07-25.md) (Latest)
+- [Week of July 25, 2023](./progress-reports/2023-07-25.md)
 - [Week of July 15, 2023](./progress-reports/2023-07-15.md)
+
+*Note: These reports are from the initial testing phase. See [Progress](./progress.md) for current status.*
 
 ## Testing Resources
 

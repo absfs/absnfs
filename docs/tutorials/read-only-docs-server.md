@@ -341,10 +341,14 @@ func (l *DocumentationLogger) GetStats() map[string]int {
 	return stats
 }
 
-// Implement logger interface for NFS server
-func (l *DocumentationLogger) Log(level, msg string) {
-	log.Printf("[%s] %s", level, msg)
-	
+// Note: The following methods are conceptual examples for logging
+// The actual implementation would integrate with the server's internal mechanisms
+
+// Printf implements a logger interface
+func (l *DocumentationLogger) Printf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	log.Print(msg)
+
 	// Extract path from READ operations
 	if strings.Contains(msg, "READ") {
 		parts := strings.Split(msg, " ")
@@ -355,16 +359,6 @@ func (l *DocumentationLogger) Log(level, msg string) {
 			}
 		}
 	}
-}
-
-// OnConnect is called when a client connects
-func (l *DocumentationLogger) OnConnect(addr string) {
-	log.Printf("Client connected: %s", addr)
-}
-
-// OnDisconnect is called when a client disconnects
-func (l *DocumentationLogger) OnDisconnect(addr string) {
-	log.Printf("Client disconnected: %s", addr)
 }
 ```
 
@@ -427,9 +421,7 @@ if err != nil {
     log.Fatalf("Failed to create NFS server: %v", err)
 }
 
-// Set the logger
-server.SetLogger(logger)
-
+// Note: Custom logging would be integrated with Go's standard logging
 // Start stats reporter
 go runStatsReporter(logger)
 ```
@@ -854,10 +846,14 @@ func (l *DocumentationLogger) GetStats() map[string]int {
 	return stats
 }
 
-// Implement logger interface for NFS server
-func (l *DocumentationLogger) Log(level, msg string) {
-	log.Printf("[%s] %s", level, msg)
-	
+// Note: The following methods are conceptual examples for logging
+// The actual implementation would integrate with the server's internal mechanisms
+
+// Printf implements a logger interface
+func (l *DocumentationLogger) Printf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	log.Print(msg)
+
 	// Extract path from READ operations
 	if strings.Contains(msg, "READ") {
 		parts := strings.Split(msg, " ")
@@ -868,16 +864,6 @@ func (l *DocumentationLogger) Log(level, msg string) {
 			}
 		}
 	}
-}
-
-// OnConnect is called when a client connects
-func (l *DocumentationLogger) OnConnect(addr string) {
-	log.Printf("Client connected: %s", addr)
-}
-
-// OnDisconnect is called when a client disconnects
-func (l *DocumentationLogger) OnDisconnect(addr string) {
-	log.Printf("Client disconnected: %s", addr)
 }
 
 // Search result structure
@@ -939,9 +925,7 @@ func main() {
 		log.Fatalf("Failed to create NFS server: %v", err)
 	}
 
-	// Set the logger
-	server.SetLogger(logger)
-
+	// Note: Custom logging would be integrated with Go's standard logging
 	// Start stats reporter
 	go runStatsReporter(logger)
 

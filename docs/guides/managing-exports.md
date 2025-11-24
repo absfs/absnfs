@@ -45,24 +45,32 @@ This will:
 3. Release network resources
 4. Unregister from the portmapper (if applicable)
 
-### Updating Export Options
+### Changing Export Behavior
 
-To update the options for an existing export:
+Export options are set when creating the NFS server and cannot be changed dynamically. To change export behavior, you need to unexport the filesystem, create a new server instance with different options, and export again:
 
 ```go
-// Get current options
-currentOptions := nfsServer.GetExportOptions()
+// Unexport current filesystem
+if err := nfsServer.Unexport(); err != nil {
+    log.Printf("Error unexporting: %v", err)
+}
 
-// Modify options
-currentOptions.ReadOnly = true // Switch to read-only mode
+// Create new server with different options
+newOptions := absnfs.ExportOptions{
+    ReadOnly: true, // Switch to read-only mode
+}
+nfsServer, err := absnfs.New(fs, newOptions)
+if err != nil {
+    log.Fatal(err)
+}
 
-// Update options
-if err := nfsServer.UpdateExportOptions(currentOptions); err != nil {
-    log.Printf("Error updating options: %v", err)
+// Export with new options
+if err := nfsServer.Export(mountPath, port); err != nil {
+    log.Fatal(err)
 }
 ```
 
-Note that some option changes may require client reconnection to take full effect.
+Note that this will disconnect all clients, who will need to reconnect.
 
 ## Multiple Exports
 
@@ -123,6 +131,7 @@ For dynamic export creation:
 package main
 
 import (
+    "fmt"
     "log"
     "net/http"
     "sync"
@@ -304,6 +313,7 @@ import (
     "os"
     "os/signal"
     "syscall"
+    "time"
 
     "github.com/absfs/absnfs"
     "github.com/absfs/memfs"
@@ -481,12 +491,11 @@ For high availability:
 
 To effectively monitor exports:
 
-1. Implement logging:
+1. Use the built-in metrics system:
    ```go
-   options := absnfs.ExportOptions{
-       LogLevel: "Debug",
-       LogOperations: true,
-   }
+   metrics := nfsServer.GetMetrics()
+   log.Printf("Total operations: %d", metrics.TotalOperations)
+   log.Printf("Active connections: %d", metrics.ActiveConnections)
    ```
 
 2. Implement health endpoints:

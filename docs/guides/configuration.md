@@ -69,12 +69,9 @@ To configure attribute caching for improved performance:
 options := absnfs.ExportOptions{
     // How long attributes are cached
     AttrCacheTimeout: 10 * time.Second,
-    
+
     // Maximum number of entries in the cache
     AttrCacheSize: 10000,
-    
-    // Whether to cache negative lookups
-    CacheNegativeLookups: true,
 }
 ```
 
@@ -125,50 +122,43 @@ Adjusting the transfer size can help:
 
 ### Timeouts
 
-To configure various timeout values:
+To configure timeout values:
 
 ```go
 options := absnfs.ExportOptions{
     // How long to wait for idle connections before closing
     IdleTimeout: 5 * time.Minute,
-    
-    // Maximum time to wait for a single operation
-    OperationTimeout: 30 * time.Second,
-    
-    // How long file handles remain valid when unused
-    HandleTimeout: 10 * time.Minute,
 }
 ```
 
 Timeouts help manage:
 - Resource usage for idle connections
-- Recovery from stuck operations
-- Cleanup of abandoned file handles
+- Cleanup of abandoned connections
 
-### Logging
+### Connection Management
 
-To configure logging:
+To configure connection management:
 
 ```go
 options := absnfs.ExportOptions{
-    // Log level (Debug, Info, Warning, Error)
-    LogLevel: "Info",
-    
-    // Whether to log client IP addresses
-    LogClientIPs: true,
-    
-    // Whether to log operation details
-    LogOperations: true,
-}
+    // Maximum number of simultaneous client connections
+    MaxConnections: 100,
 
-// Set a custom logger
-nfsServer.SetLogger(myLogger)
+    // How long to wait for idle connections before closing
+    IdleTimeout: 5 * time.Minute,
+
+    // Enable TCP keep-alive probes
+    TCPKeepAlive: true,
+
+    // Disable Nagle's algorithm for lower latency
+    TCPNoDelay: true,
+}
 ```
 
-Logging configuration helps with:
-- Debugging NFS issues
-- Monitoring access patterns
-- Security auditing
+Connection management helps with:
+- Controlling resource usage
+- Preventing resource exhaustion
+- Optimizing network performance
 
 ## Configuration Example: High-Performance
 
@@ -178,17 +168,27 @@ Here's an example configuration optimized for high performance:
 options := absnfs.ExportOptions{
     // Performance optimizations
     AttrCacheTimeout: 30 * time.Second,
+    AttrCacheSize: 50000,
     EnableReadAhead: true,
     ReadAheadSize: 1048576, // 1MB
+    ReadAheadMaxFiles: 200,
+    ReadAheadMaxMemory: 209715200, // 200MB
     TransferSize: 262144, // 256KB
-    
-    // Reduce security slightly for performance
+
+    // Worker pool configuration
+    MaxWorkers: 16,
+    BatchOperations: true,
+    MaxBatchSize: 20,
+
+    // Connection settings
+    MaxConnections: 200,
+    TCPNoDelay: true,
+    SendBufferSize: 524288,    // 512KB
+    ReceiveBufferSize: 524288, // 512KB
+
+    // Security settings
     Secure: true,
     AllowedIPs: []string{"192.168.0.0/16"}, // Trust local network
-    
-    // Minimize logging for performance
-    LogLevel: "Warning",
-    LogOperations: false,
 }
 ```
 
@@ -203,15 +203,15 @@ options := absnfs.ExportOptions{
     Secure: true,
     AllowedIPs: []string{"10.0.0.5", "10.0.0.6"}, // Only specific IPs
     Squash: "all", // Map all users to anonymous
-    
+
     // Short timeouts for security
     IdleTimeout: 1 * time.Minute,
-    HandleTimeout: 5 * time.Minute,
-    
-    // Extensive logging for auditing
-    LogLevel: "Debug",
-    LogClientIPs: true,
-    LogOperations: true,
+
+    // Conservative caching for data freshness
+    AttrCacheTimeout: 2 * time.Second,
+
+    // Limit connections
+    MaxConnections: 20,
 }
 ```
 
@@ -274,13 +274,19 @@ Example `config.json`:
     "Secure": true,
     "AllowedIPs": ["192.168.1.0/24"],
     "Squash": "root",
-    "AttrCacheTimeout": 10000000000,  // 10 seconds in nanoseconds
+    "AttrCacheTimeout": 10000000000,
+    "AttrCacheSize": 20000,
     "EnableReadAhead": true,
     "ReadAheadSize": 524288,
+    "ReadAheadMaxFiles": 100,
+    "ReadAheadMaxMemory": 104857600,
     "TransferSize": 131072,
-    "LogLevel": "Info"
+    "MaxConnections": 100,
+    "IdleTimeout": 300000000000
 }
 ```
+
+Note: Duration values in JSON are specified in nanoseconds (e.g., 10000000000 = 10 seconds).
 
 ## Configuration Best Practices
 

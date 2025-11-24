@@ -5,13 +5,17 @@ title: NFSNode
 
 # NFSNode
 
-The `NFSNode` type represents a file or directory in the NFS filesystem hierarchy. It maps between NFS file handles and the actual files and directories in the underlying ABSFS filesystem.
+The `NFSNode` type represents a file or directory in the NFS filesystem. It implements the `absfs.File` interface, providing a wrapper around a filesystem path that can be used with NFS operations.
 
 ## Type Definition
 
 ```go
 type NFSNode struct {
-    // contains filtered or unexported fields
+    absfs.FileSystem
+    path     string
+    fileId   uint64
+    attrs    *NFSAttrs
+    children map[string]*NFSNode
 }
 ```
 
@@ -21,116 +25,225 @@ The `NFSNode` type is primarily used internally by the `AbsfsNFS` type and is no
 
 The `NFSNode` serves several important purposes in the ABSNFS system:
 
-1. **File Handle Mapping**: Maps between NFS file handles and filesystem paths
-2. **Attribute Caching**: Caches file attributes for performance
-3. **Hierarchy Management**: Maintains parent-child relationships for directories
-4. **Reference Counting**: Tracks usage to manage resource cleanup
+1. **absfs.File Implementation**: Implements the `absfs.File` interface for compatibility with the FileHandleMap
+2. **Path Management**: Wraps a filesystem path and provides file operations
+3. **Attribute Caching**: Caches file attributes for performance
+4. **Directory Hierarchy**: Maintains references to child nodes for directory navigation
 
-## Key Properties
+## absfs.File Interface Implementation
 
-### Path
+`NFSNode` implements all 18 methods of the `absfs.File` interface:
 
-Each `NFSNode` is associated with a path in the underlying filesystem. This path is used to perform operations on the file or directory.
+### Read Operations
 
-### Attributes
-
-The `NFSNode` caches file attributes (metadata) such as:
-- File type (regular file, directory, symlink, etc.)
-- File size
-- Timestamps (creation, modification, access)
-- Permissions
-- Owner and group
-
-### Children
-
-For directory nodes, the `NFSNode` maintains references to child nodes that have been accessed. This helps with efficient lookups and navigation of the filesystem hierarchy.
-
-## Methods
-
-Most methods of `NFSNode` are internal and not exposed as part of the public API. The key operations include:
-
-### Lookup
-
-Looks up a child node by name within a directory node.
-
-### GetAttributes
-
-Retrieves the cached attributes for the node, refreshing them if necessary.
-
-### SetAttributes
-
-Updates the attributes of a node (and the underlying file).
-
-### ReleaseNode
-
-Decreases the reference count for a node, potentially releasing resources when no longer needed.
-
-## Lifecycle
-
-The lifecycle of an `NFSNode` is managed automatically by the `AbsfsNFS` system:
-
-1. **Creation**: Nodes are created when a file or directory is first accessed
-2. **Reference Counting**: References are tracked to manage the node's lifetime
-3. **Caching**: Nodes are cached to improve performance for repeated access
-4. **Release**: Nodes are released when no longer referenced
-
-## Example Internal Usage
-
-While users don't typically interact with `NFSNode` directly, here's an example of how it's used internally:
+#### Close
 
 ```go
-// When a client requests a file
-func (nfs *AbsfsNFS) handleLookup(handle NFSFileHandle, name string) (NFSNode, error) {
-    // Look up the parent node
-    parentNode, err := nfs.fileHandleMap.GetNode(handle)
-    if err != nil {
-        return nil, err
-    }
-    
-    // Look up the child node
-    childNode, err := parentNode.Lookup(name)
-    if err != nil {
-        return nil, err
-    }
-    
-    // Return the child node
-    return childNode, nil
-}
+func (n *NFSNode) Close() error
 ```
+
+Closes the node. For NFSNode, this is a no-op as the node doesn't maintain an open file descriptor.
+
+#### Read
+
+```go
+func (n *NFSNode) Read(p []byte) (int, error)
+```
+
+Reads data from the file into the provided byte slice. Opens the file, reads data, and closes it.
+
+#### ReadAt
+
+```go
+func (n *NFSNode) ReadAt(p []byte, off int64) (int, error)
+```
+
+Reads data from the file at the specified offset. Opens the file, reads at the offset, and closes it.
+
+#### Seek
+
+```go
+func (n *NFSNode) Seek(offset int64, whence int) (int64, error)
+```
+
+Seeks to a position in the file. Opens the file, performs the seek, and closes it.
+
+#### Stat
+
+```go
+func (n *NFSNode) Stat() (os.FileInfo, error)
+```
+
+Returns file information for the node's path.
+
+### Write Operations
+
+#### Write
+
+```go
+func (n *NFSNode) Write(p []byte) (int, error)
+```
+
+Writes data to the file. Opens the file for writing, writes data, invalidates cached attributes, and closes it.
+
+#### WriteAt
+
+```go
+func (n *NFSNode) WriteAt(p []byte, off int64) (int, error)
+```
+
+Writes data to the file at the specified offset. Opens the file, writes at offset, invalidates cached attributes, and closes it.
+
+#### WriteString
+
+```go
+func (n *NFSNode) WriteString(s string) (int, error)
+```
+
+Writes a string to the file. Converts the string to bytes and calls `Write()`.
+
+#### Truncate
+
+```go
+func (n *NFSNode) Truncate(size int64) error
+```
+
+Truncates or extends the file to the specified size. Invalidates cached attributes.
+
+#### Sync
+
+```go
+func (n *NFSNode) Sync() error
+```
+
+Syncs file changes to disk. For NFSNode, this checks if the file exists.
+
+### Directory Operations
+
+#### Readdir
+
+```go
+func (n *NFSNode) Readdir(count int) ([]os.FileInfo, error)
+```
+
+Reads directory entries. Opens the directory, reads entries, filters out "." and "..", and closes it.
+
+#### Readdirnames
+
+```go
+func (n *NFSNode) Readdirnames(count int) ([]string, error)
+```
+
+Reads directory entry names. Calls `Readdir()` and extracts the names.
+
+### Metadata Operations
+
+#### Name
+
+```go
+func (n *NFSNode) Name() string
+```
+
+Returns the base name of the file or directory. Returns "/" for the root path.
+
+#### Chdir
+
+```go
+func (n *NFSNode) Chdir() error
+```
+
+Changes the current directory to this node's path.
+
+#### Chmod
+
+```go
+func (n *NFSNode) Chmod(mode os.FileMode) error
+```
+
+Changes the file mode/permissions. Invalidates cached attributes.
+
+#### Chown
+
+```go
+func (n *NFSNode) Chown(uid, gid int) error
+```
+
+Changes the file owner and group. Invalidates cached attributes.
+
+#### Chtimes
+
+```go
+func (n *NFSNode) Chtimes(atime time.Time, mtime time.Time) error
+```
+
+Changes the access and modification times. Invalidates cached attributes.
 
 ## Implementation Details
 
 The `NFSNode` implementation includes several important details:
 
-### Thread Safety
+### Stateless Operations
 
-`NFSNode` operations are thread-safe, allowing concurrent access from multiple clients.
+Unlike traditional file handles, `NFSNode` doesn't maintain open file descriptors. Each operation opens the file, performs the operation, and closes it. This approach:
+- Simplifies resource management
+- Prevents file descriptor exhaustion
+- Ensures operations always see the current file state
 
-### Cache Validation
+### Attribute Invalidation
 
-Attribute caching includes validation logic to ensure that cached attributes are not stale.
+Write operations automatically invalidate cached attributes by calling `attrs.Invalidate()`. This ensures that subsequent attribute queries return fresh data after modifications.
 
-### Path Normalization
+### Directory Filtering
 
-Paths are normalized to ensure consistent lookup and comparison.
+The `Readdir()` method automatically filters out "." and ".." entries, which are not typically needed in NFS operations and can cause confusion.
 
-### Reference Counting
+### Path Management
 
-A reference counting system ensures that nodes are properly cleaned up when no longer needed.
+The node stores its path and uses the embedded `FileSystem` to perform operations. The `Name()` method returns the base name, with special handling for the root path ("/").
+
+## Usage Pattern
+
+`NFSNode` instances are typically created and stored in the `FileHandleMap`:
+
+```go
+// Create a node for a path
+node := &NFSNode{
+    FileSystem: fs,
+    path:       "/path/to/file",
+    attrs:      &NFSAttrs{},
+}
+
+// Allocate a handle
+handle := fileHandleMap.Allocate(node)
+
+// Later, retrieve and use the node
+file, ok := fileHandleMap.Get(handle)
+if ok {
+    // file is the NFSNode, which implements absfs.File
+    data, err := file.ReadAt(buffer, offset)
+}
+```
 
 ## Performance Considerations
 
-The `NFSNode` type is optimized for performance in several ways:
+The `NFSNode` design makes trade-offs for simplicity and correctness:
 
-1. **Attribute Caching**: Reduces the need to query the filesystem for frequently accessed attributes
-2. **Hierarchy Caching**: Maintains a cache of recently accessed nodes to speed up lookups
-3. **Lazy Loading**: Child nodes are loaded on demand rather than all at once
-4. **Reference Counting**: Efficient management of node lifecycle to avoid memory leaks
+**Advantages:**
+1. **No file descriptor leaks**: Files are opened and closed for each operation
+2. **Consistent state**: Always operates on the current file state
+3. **Simple lifecycle**: No complex cleanup or resource tracking
 
-## Relation to Other Types
+**Trade-offs:**
+1. **Open/close overhead**: Each operation incurs file open/close costs
+2. **No seek state**: Cannot maintain a file position between operations (uses ReadAt/WriteAt instead)
 
-`NFSNode` interacts closely with several other types in the ABSNFS system:
+For performance-critical scenarios, the read-ahead buffer and attribute cache mitigate these costs.
 
-- **AbsfsNFS**: Coordinates overall NFS operations
-- **FileHandleMap**: Maps between file handles and nodes
-- **AttrCache**: Caches file attributes for performance
+## Relation to Other Components
+
+`NFSNode` interacts closely with several other components in ABSNFS:
+
+- **absfs.FileSystem**: Embedded to provide filesystem operations
+- **FileHandleMap**: Stores NFSNode instances mapped to handles
+- **NFSAttrs**: Caches file attributes with invalidation support
+- **AbsfsNFS**: Creates and manages NFSNode instances

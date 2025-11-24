@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/absfs/absnfs"
+	"github.com/absfs/absfs"
 	"github.com/absfs/memfs"
 )
 
@@ -44,23 +45,19 @@ func main() {
 			"192.168.1.0/24",                      // Local network
 		},
 		Squash: "root",                           // Map root users to anonymous (default)
-		
+
 		// Performance options
 		EnableReadAhead: true,                    // Enable read-ahead buffering
 		ReadAheadSize: 524288,                    // 512KB read-ahead buffer
 		TransferSize: 262144,                     // 256KB transfer size
-		
+
 		// Caching options
 		AttrCacheTimeout: 15 * time.Second,       // Cache attributes for 15 seconds
 		AttrCacheSize: 10000,                     // Cache up to 10000 entries
-		
+
 		// Connection options
 		MaxConnections: 100,                      // Maximum simultaneous connections
 		IdleTimeout: 5 * time.Minute,             // Close idle connections after 5 minutes
-		
-		// Logging options
-		LogLevel: "Info",                         // Log level: Debug, Info, Warning, Error
-		LogClientIPs: true,                       // Log client IP addresses
 	}
 
 	// Create NFS server with custom options
@@ -278,16 +275,7 @@ These options manage client connections:
 
 ### Logging Options
 
-```go
-// Logging options
-LogLevel: "Info",                         // Log level: Debug, Info, Warning, Error
-LogClientIPs: true,                       // Log client IP addresses
-```
-
-These options control server logging:
-
-- **LogLevel**: How verbose the logging should be
-- **LogClientIPs**: Whether to log client IP addresses
+Logging is configured through the Server's logger interface. You can implement custom logging by providing a logger that implements the appropriate interface. See the "Monitoring Configuration Effects" section below for an example.
 
 ## Using the Configuration
 
@@ -400,10 +388,6 @@ options := absnfs.ExportOptions{
     // Limited connections
     MaxConnections: 20,
     IdleTimeout: 2 * time.Minute,
-    
-    // Detailed logging
-    LogLevel: "Debug",
-    LogClientIPs: true,
 }
 ```
 
@@ -452,44 +436,35 @@ options := absnfs.ExportOptions{
 }
 ```
 
-## Dynamic Configuration Updates
+## Configuration Best Practices
 
-You can update some export options dynamically without restarting the server:
-
-```go
-// Get current options
-currentOptions := server.GetExportOptions()
-
-// Update options
-currentOptions.ReadOnly = true // Switch to read-only mode
-
-// Apply updates
-if err := server.UpdateExportOptions(currentOptions); err != nil {
-    log.Printf("Failed to update options: %v", err)
-}
-```
-
-Note that some options may require clients to reconnect to take effect.
+When configuring export options, keep in mind that most configuration changes require server restart. Plan your configuration carefully before deployment to minimize downtime.
 
 ## Monitoring Configuration Effects
 
-To understand how your configuration affects performance, you can add monitoring:
+To understand how your configuration affects performance, you can implement a custom logger:
 
 ```go
-// Start a goroutine to periodically log stats
+// Custom logger for monitoring
+type MetricsLogger struct {
+    readOps  int64
+    writeOps int64
+}
+
+func (l *MetricsLogger) Printf(format string, args ...interface{}) {
+    log.Printf(format, args...)
+    // Track operations based on log messages
+}
+
+// Start a goroutine to periodically report stats
 go func() {
     ticker := time.NewTicker(1 * time.Minute)
     defer ticker.Stop()
-    
+
     for range ticker.C {
-        // Get server metrics
-        metrics := server.GetMetrics()
-        
-        // Log key metrics
-        log.Printf("Cache hit rate: %.2f%%", metrics.CacheHitRate * 100)
-        log.Printf("Read operations: %d", metrics.ReadOperations)
-        log.Printf("Write operations: %d", metrics.WriteOperations)
-        log.Printf("Active connections: %d", metrics.ActiveConnections)
+        log.Printf("Server statistics:")
+        log.Printf("Read operations: %d", atomic.LoadInt64(&logger.readOps))
+        log.Printf("Write operations: %d", atomic.LoadInt64(&logger.writeOps))
     }
 }()
 ```

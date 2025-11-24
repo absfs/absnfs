@@ -58,13 +58,10 @@ func main() {
 	options := absnfs.ExportOptions{
 		// Connection limits
 		MaxConnections: 100,           // Maximum simultaneous connections
-		
+
 		// Timeouts
 		IdleTimeout: 5 * time.Minute,  // How long to keep idle connections
-		
-		// Network settings
-		TCPOnly: false,                // Accept both TCP and UDP (default)
-		
+
 		// Security settings
 		Secure: true,                  // Enable security features
 		AllowedIPs: []string{},        // Empty means allow all (for now)
@@ -110,7 +107,6 @@ func populateFilesystem(fs absfs.FileSystem) {
 This simple server includes basic connection settings:
 - Maximum connections limit
 - Idle timeout for connections
-- Protocol support (TCP and UDP)
 - Security enabling
 
 ## Step 3: Implementing Connection Logging
@@ -129,6 +125,7 @@ import (
 	"time"
 
 	"github.com/absfs/absnfs"
+	"github.com/absfs/absfs"
 	"github.com/absfs/memfs"
 )
 
@@ -174,18 +171,16 @@ func main() {
 	options := absnfs.ExportOptions{
 		MaxConnections: 100,
 		IdleTimeout: 5 * time.Minute,
-		LogLevel: "Info",        // Enable detailed logging
-		LogClientIPs: true,      // Log client IP addresses
 	}
-	
+
 	// Create the NFS server
 	server, err := absnfs.New(fs, options)
 	if err != nil {
 		log.Fatalf("Failed to create NFS server: %v", err)
 	}
-	
-	// Set the custom logger
-	server.SetLogger(connLogger)
+
+	// Note: Custom logging can be implemented through Go's standard logging
+	// or by integrating with the server's internal logging mechanisms
 	
 	// Export the filesystem
 	mountPath := "/export/test"
@@ -384,9 +379,7 @@ func main() {
 	options := absnfs.ExportOptions{
 		MaxConnections: 100,
 		IdleTimeout: 5 * time.Minute,
-		LogLevel: "Info",
-		LogClientIPs: true,
-		
+
 		// IP-based access control (if needed)
 		Secure: true,
 		AllowedIPs: []string{
@@ -394,15 +387,15 @@ func main() {
 			"192.168.0.0/16",
 		},
 	}
-	
+
 	// Create the NFS server
 	server, err := absnfs.New(fs, options)
 	if err != nil {
 		log.Fatalf("Failed to create NFS server: %v", err)
 	}
-	
-	// Set the connection manager as logger
-	server.SetLogger(connManager)
+
+	// Note: Connection tracking is done through the connection manager
+	// Custom logging can be integrated as needed
 	
 	// Export the filesystem
 	mountPath := "/export/test"
@@ -819,30 +812,27 @@ func main() {
 	options := absnfs.ExportOptions{
 		MaxConnections: 100,
 		IdleTimeout: 5 * time.Minute,
-		LogLevel: "Info",
-		LogClientIPs: true,
-		
+
 		// IP-based access control
 		Secure: true,
 		AllowedIPs: []string{
 			"127.0.0.1",
 			"192.168.0.0/16",
 		},
-		
+
 		// Performance settings
 		EnableReadAhead: true,
 		ReadAheadSize: 262144, // 256KB
 		AttrCacheTimeout: 10 * time.Second,
 	}
-	
+
 	// Create the NFS server
 	server, err := absnfs.New(fs, options)
 	if err != nil {
 		log.Fatalf("Failed to create NFS server: %v", err)
 	}
-	
-	// Set the connection manager as logger
-	server.SetLogger(connManager)
+
+	// Note: Connection tracking is managed by the connection manager
 	
 	// Export the filesystem
 	mountPath := "/export/test"
@@ -910,7 +900,9 @@ This comprehensive example:
 3. Provides rate limiting to prevent overload
 4. Includes an HTTP monitoring interface
 5. Supports graceful shutdown with connection draining
-6. Logs detailed connection information
+6. Provides detailed connection information
+
+Note: Some of the logging functions shown (SetLogger, OnConnect, OnDisconnect) are conceptual examples. The actual implementation would need to integrate with the NFS server's internal mechanisms or use Go's standard logging.
 
 ## Testing the Monitoring Interface
 
