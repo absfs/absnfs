@@ -125,9 +125,6 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 		}()
 	}
 
-<<<<<<< HEAD
-	// Check cache first (including negative cache)
-=======
 	// Check for timeout before proceeding
 	select {
 	case <-ctx.Done():
@@ -138,8 +135,7 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 	default:
 	}
 
-	// Check cache first
->>>>>>> 141f3c7 (Implement configurable operation timeouts (issue #63))
+	// Check cache first (including negative cache)
 	if attrs := s.attrCache.Get(path, s); attrs != nil {
 		node := &NFSNode{
 			FileSystem: s.fs,
@@ -655,10 +651,13 @@ func (s *AbsfsNFS) CreateWithContext(ctx context.Context, dir *NFSNode, name str
 		return nil, fmt.Errorf("create: failed to chmod %s: %w", path, err)
 	}
 
-	// Invalidate parent directory cache and negative cache entries in the directory
+	// Invalidate parent directory caches and negative cache entries in the directory
 	s.attrCache.Invalidate(dir.path)
 	s.attrCache.InvalidateNegativeInDir(dir.path)
 	s.attrCache.Invalidate(path) // Also invalidate the specific path in case it was negatively cached
+	if s.dirCache != nil {
+		s.dirCache.Invalidate(dir.path)
+	}
 	return s.Lookup(path)
 }
 
@@ -725,6 +724,9 @@ func (s *AbsfsNFS) RemoveWithContext(ctx context.Context, dir *NFSNode, name str
 	// Invalidate caches
 	s.attrCache.Invalidate(path)
 	s.attrCache.Invalidate(dir.path)
+	if s.dirCache != nil {
+		s.dirCache.Invalidate(dir.path)
+	}
 	return nil
 }
 
@@ -784,6 +786,10 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 	// Invalidate negative cache entries in both directories
 	s.attrCache.InvalidateNegativeInDir(oldDir.path)
 	s.attrCache.InvalidateNegativeInDir(newDir.path)
+	if s.dirCache != nil {
+		s.dirCache.Invalidate(oldDir.path)
+		s.dirCache.Invalidate(newDir.path)
+	}
 	return nil
 }
 
@@ -813,6 +819,58 @@ func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFS
 	default:
 	}
 
+	// Check directory cache first if enabled
+	var entries []os.FileInfo
+	var cacheHit bool
+	if s.dirCache != nil {
+		entries, cacheHit = s.dirCache.Get(dir.path)
+		if cacheHit {
+			// Record cache hit in metrics
+			if s.metrics != nil {
+				s.RecordDirCacheHit()
+			}
+
+			// Log cache hit if debug logging is enabled
+			if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+				s.structuredLogger.Debug("directory cache hit",
+					LogField{Key: "path", Value: dir.path})
+			}
+
+			// Convert cached entries to nodes
+			var nodes []*NFSNode
+			for _, entry := range entries {
+				name := entry.Name()
+				// Skip "." and ".." entries
+				if name == "." || name == ".." {
+					continue
+				}
+				// Sanitize the path to prevent directory traversal attacks
+				entryPath, err := sanitizePath(dir.path, name)
+				if err != nil {
+					// Skip entries with invalid names
+					continue
+				}
+				node, err := s.Lookup(entryPath)
+				if err != nil {
+					continue
+				}
+				nodes = append(nodes, node)
+			}
+			return nodes, nil
+		}
+
+		// Record cache miss in metrics
+		if s.metrics != nil {
+			s.RecordDirCacheMiss()
+		}
+
+		// Log cache miss if debug logging is enabled
+		if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+			s.structuredLogger.Debug("directory cache miss",
+				LogField{Key: "path", Value: dir.path})
+		}
+	}
+
 	f, err := s.fs.OpenFile(dir.path, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, fmt.Errorf("readdir: failed to open directory %s: %w", dir.path, err)
@@ -826,9 +884,14 @@ func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFS
 	}
 
 	// Read directory entries
-	entries, err := dirFile.Readdir(-1)
+	entries, err = dirFile.Readdir(-1)
 	if err != nil {
 		return nil, fmt.Errorf("readdir: failed to read entries from %s: %w", dir.path, err)
+	}
+
+	// Store entries in cache if enabled
+	if s.dirCache != nil {
+		s.dirCache.Put(dir.path, entries)
 	}
 
 	var nodes []*NFSNode
@@ -953,10 +1016,13 @@ func (s *AbsfsNFS) Symlink(dir *NFSNode, name string, target string, attrs *NFSA
 		return nil, fmt.Errorf("symlink: failed to create symlink at %s pointing to %s: %w", path, target, err)
 	}
 
-	// Invalidate parent directory cache and negative cache entries in the directory
+	// Invalidate parent directory caches and negative cache entries in the directory
 	s.attrCache.Invalidate(dir.path)
 	s.attrCache.InvalidateNegativeInDir(dir.path)
 	s.attrCache.Invalidate(path) // Also invalidate the specific path in case it was negatively cached
+	if s.dirCache != nil {
+		s.dirCache.Invalidate(dir.path)
+	}
 	return s.Lookup(path)
 }
 
