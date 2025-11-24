@@ -2,7 +2,9 @@ package absnfs
 
 import (
 	"container/list"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -656,6 +658,192 @@ func (b *ReadAheadBuffer) Clear() {
 func (b *ReadAheadBuffer) ClearPath(path string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	b.evictBuffer(path)
+}
+
+// DirCache provides caching for directory entries
+type DirCache struct {
+	entries     map[string]*CachedDirEntry
+	accessList  *list.List
+	mu          sync.RWMutex
+	timeout     time.Duration
+	maxEntries  int
+	maxDirSize  int
+	hits        uint64
+	misses      uint64
+}
+
+// CachedDirEntry represents cached directory entries with expiration
+type CachedDirEntry struct {
+	entries     []os.FileInfo
+	validUntil  time.Time
+	listElement *list.Element
+}
+
+// NewDirCache creates a new directory cache with the specified timeout and limits
+func NewDirCache(timeout time.Duration, maxEntries int, maxDirSize int) *DirCache {
+	if maxEntries <= 0 {
+		maxEntries = 1000 // Default: 1000 directories
+	}
+	if maxDirSize <= 0 {
+		maxDirSize = 10000 // Default: 10000 entries per directory
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Second // Default: 10 seconds
+	}
+
+	return &DirCache{
+		entries:    make(map[string]*CachedDirEntry),
+		accessList: list.New(),
+		timeout:    timeout,
+		maxEntries: maxEntries,
+		maxDirSize: maxDirSize,
+	}
+}
+
+// Get retrieves cached directory entries if they exist and are not expired
+func (c *DirCache) Get(path string) ([]os.FileInfo, bool) {
+	c.mu.RLock()
+	cached, ok := c.entries[path]
+	if !ok {
+		c.mu.RUnlock()
+		atomic.AddUint64(&c.misses, 1)
+		return nil, false
+	}
+
+	// Check if expired
+	if time.Now().After(cached.validUntil) {
+		c.mu.RUnlock()
+		atomic.AddUint64(&c.misses, 1)
+
+		// Remove expired entry
+		c.mu.Lock()
+		delete(c.entries, path)
+		c.removeFromAccessList(path)
+		c.mu.Unlock()
+
+		return nil, false
+	}
+
+	// Make a copy of the entries to prevent modification
+	entries := make([]os.FileInfo, len(cached.entries))
+	copy(entries, cached.entries)
+	c.mu.RUnlock()
+
+	// Update access log (LRU tracking)
+	c.mu.Lock()
+	// Revalidate that entry still exists before updating access log
+	if _, stillExists := c.entries[path]; stillExists {
+		c.updateAccessLog(path)
+	}
+	c.mu.Unlock()
+
+	atomic.AddUint64(&c.hits, 1)
+	return entries, true
+}
+
+// Put adds or updates cached directory entries
+func (c *DirCache) Put(path string, entries []os.FileInfo) {
+	// Don't cache directories that exceed the maximum size
+	if len(entries) > c.maxDirSize {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Check if entry already exists
+	existing, exists := c.entries[path]
+
+	// Check if we need to evict entries to make room
+	if len(c.entries) >= c.maxEntries && !exists {
+		// Need to evict the least recently used entry
+		if c.accessList.Len() > 0 {
+			lruElement := c.accessList.Back()
+			if lruElement != nil {
+				lruPath := lruElement.Value.(string)
+				delete(c.entries, lruPath)
+				c.accessList.Remove(lruElement)
+			}
+		}
+	}
+
+	// Make a copy of the entries to prevent external modification
+	entriesCopy := make([]os.FileInfo, len(entries))
+	copy(entriesCopy, entries)
+
+	// Preserve the listElement reference when updating existing entry
+	var listElem *list.Element
+	if exists && existing != nil {
+		listElem = existing.listElement
+	}
+
+	c.entries[path] = &CachedDirEntry{
+		entries:     entriesCopy,
+		validUntil:  time.Now().Add(c.timeout),
+		listElement: listElem,
+	}
+
+	// Update access log to mark this as most recently used
+	c.updateAccessLog(path)
+}
+
+// updateAccessLog moves the path to the front of the access list (most recently used)
+func (c *DirCache) updateAccessLog(path string) {
+	cached, ok := c.entries[path]
+	if !ok {
+		return
+	}
+
+	if cached.listElement != nil {
+		c.accessList.MoveToFront(cached.listElement)
+	} else {
+		cached.listElement = c.accessList.PushFront(path)
+	}
+}
+
+// removeFromAccessList removes a path from the access list
+func (c *DirCache) removeFromAccessList(path string) {
+	cached, ok := c.entries[path]
+	if !ok || cached.listElement == nil {
+		return
+	}
+
+	c.accessList.Remove(cached.listElement)
+	cached.listElement = nil
+}
+
+// Invalidate removes an entry from the cache
+func (c *DirCache) Invalidate(path string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	delete(c.entries, path)
+	c.removeFromAccessList(path)
+}
+
+// Clear removes all entries from the cache
+func (c *DirCache) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.entries = make(map[string]*CachedDirEntry)
+	c.accessList = list.New()
+}
+
+// Size returns the current number of entries in the cache
+func (c *DirCache) Size() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return len(c.entries)
+}
+
+// Stats returns entries count, hits, and misses
+func (c *DirCache) Stats() (int, int64, int64) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return len(c.entries), int64(atomic.LoadUint64(&c.hits)), int64(atomic.LoadUint64(&c.misses))
 }
