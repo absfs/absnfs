@@ -32,6 +32,7 @@
 package absnfs
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"runtime"
@@ -55,7 +56,8 @@ type SymlinkFileSystem interface {
 type AbsfsNFS struct {
 	fs            absfs.FileSystem  // The wrapped absfs filesystem
 	root          *NFSNode          // Root directory node
-	logger        *log.Logger       // Optional logging
+	logger        *log.Logger       // Deprecated: use structuredLogger instead
+	structuredLogger Logger         // Structured logger for production use
 	fileMap       *FileHandleMap    // Maps file handles to absfs files
 	mountPath     string            // Export path
 	options       ExportOptions     // NFS export options
@@ -202,6 +204,68 @@ type ExportOptions struct {
 	// Provides confidentiality, integrity, and optional mutual authentication
 	// If nil, TLS is disabled and connections are unencrypted (default NFSv3 behavior)
 	TLS *TLSConfig
+
+	// Log holds the logging configuration for the NFS server
+	// When nil, logging is disabled (no-op logger is used)
+	// When provided, enables structured logging with configurable level, format, and output
+	Log *LogConfig
+}
+
+// LogConfig defines the logging configuration for the NFS server
+type LogConfig struct {
+	// Level sets the minimum log level to output
+	// Valid values: "debug", "info", "warn", "error"
+	// Default: "info"
+	Level string
+
+	// Format sets the log output format
+	// Valid values: "json", "text"
+	// Default: "text"
+	Format string
+
+	// Output sets the log destination
+	// Valid values: "stdout", "stderr", or a file path
+	// Default: "stderr"
+	Output string
+
+	// LogClientIPs enables logging of client IP addresses
+	// When true, client IPs are included in connection and authentication logs
+	// Default: false (for privacy)
+	LogClientIPs bool
+
+	// LogOperations enables detailed logging of NFS operations
+	// When true, logs each NFS operation (LOOKUP, READ, WRITE, etc.) with timing
+	// Default: false (reduces log volume)
+	LogOperations bool
+
+	// LogFileAccess enables logging of file access patterns
+	// When true, logs file opens, closes, and access patterns
+	// Default: false (reduces log volume)
+	LogFileAccess bool
+
+	// MaxSize defines the maximum size of log file in megabytes before rotation
+	// NOTE: File rotation is not yet implemented. This field is reserved for future enhancement.
+	// Only applicable when Output is a file path
+	// Default: 100 MB
+	MaxSize int
+
+	// MaxBackups defines the maximum number of old log files to retain
+	// NOTE: File rotation is not yet implemented. This field is reserved for future enhancement.
+	// Only applicable when Output is a file path
+	// Default: 3
+	MaxBackups int
+
+	// MaxAge defines the maximum number of days to retain old log files
+	// NOTE: File rotation is not yet implemented. This field is reserved for future enhancement.
+	// Only applicable when Output is a file path
+	// Default: 28 days
+	MaxAge int
+
+	// Compress enables gzip compression of rotated log files
+	// NOTE: File rotation is not yet implemented. This field is reserved for future enhancement.
+	// Only applicable when Output is a file path
+	// Default: false
+	Compress bool
 }
 
 // FileHandleMap manages the mapping between NFS file handles and absfs files
@@ -345,6 +409,19 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	}
 
 	// Create server object with configured caches
+	// Initialize structured logger
+	var structuredLogger Logger
+	if options.Log != nil {
+		slogger, err := NewSlogLogger(options.Log)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create logger: %w", err)
+		}
+		structuredLogger = slogger
+	} else {
+		// Use no-op logger when logging is disabled
+		structuredLogger = NewNoopLogger()
+	}
+
 	server := &AbsfsNFS{
 		fs:      fs,
 		options: options,
@@ -353,9 +430,10 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 			nextHandle:  1, // Start from 1, as 0 is typically reserved
 			freeHandles: NewUint64MinHeap(),
 		},
-		logger:    log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
-		attrCache: NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
-		readBuf:   NewReadAheadBuffer(options.ReadAheadSize),
+		logger:           log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
+		structuredLogger: structuredLogger,
+		attrCache:        NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
+		readBuf:          NewReadAheadBuffer(options.ReadAheadSize),
 	}
 	
 	// Configure read-ahead buffer with size limits
@@ -477,5 +555,38 @@ func (n *AbsfsNFS) Close() error {
 		n.readBuf.Clear()
 	}
 
+	// Close structured logger if it's a SlogLogger
+	if slogger, ok := n.structuredLogger.(*SlogLogger); ok {
+		if err := slogger.Close(); err != nil {
+			return fmt.Errorf("failed to close logger: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// SetLogger sets or updates the structured logger for the NFS server
+// This allows changing the logger after the server has been created
+// Pass nil to disable logging (uses no-op logger)
+func (n *AbsfsNFS) SetLogger(logger Logger) error {
+	if n == nil {
+		return fmt.Errorf("nil server")
+	}
+
+	if logger == nil {
+		// Use no-op logger when nil is passed
+		n.structuredLogger = NewNoopLogger()
+		return nil
+	}
+
+	// Close existing logger if it's a SlogLogger
+	if slogger, ok := n.structuredLogger.(*SlogLogger); ok {
+		if err := slogger.Close(); err != nil {
+			// Log error but continue with setting new logger
+			n.logger.Printf("failed to close previous logger: %v", err)
+		}
+	}
+
+	n.structuredLogger = logger
 	return nil
 }

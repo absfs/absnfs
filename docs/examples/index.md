@@ -24,3 +24,4 @@ This section provides complete, working examples that demonstrate various aspect
 - [Multi-Export Server](./multi-export-server.md): Exporting multiple filesystems from a single server
 - [High-Performance Configuration](./high-performance.md): Optimizing for high-performance scenarios
 - [Secure Server Configuration](./secure-server.md): Configuring a secure NFS server
+- [NFS Server with Logging](./nfs-with-logging.md): Production-ready logging configuration and examples
