@@ -12,6 +12,15 @@ import (
 
 // Logger defines the interface for logging in ABSNFS.
 // Applications can provide their own implementation to integrate with existing logging systems.
+//
+// Thread Safety:
+// All Logger implementations must be safe for concurrent use by multiple goroutines.
+// The provided SlogLogger implementation uses mutex protection to ensure thread safety.
+//
+// Performance Notes:
+// - Logging operations should be non-blocking to avoid impacting NFS performance
+// - Consider using buffered I/O for file-based loggers
+// - Structured fields (LogField) enable efficient filtering and analysis
 type Logger interface {
 	// Debug logs a debug-level message with optional structured fields
 	Debug(msg string, fields ...LogField)
@@ -37,6 +46,7 @@ type SlogLogger struct {
 	logger *slog.Logger
 	mu     sync.Mutex
 	writer io.WriteCloser // Optional writer for file logging
+	closed bool           // Tracks whether Close() has been called
 }
 
 // NewSlogLogger creates a new SlogLogger with the provided configuration
@@ -89,7 +99,7 @@ func NewSlogLogger(config *LogConfig) (*SlogLogger, error) {
 		if closer != nil {
 			closer.Close()
 		}
-		return nil, fmt.Errorf("unsupported log format: %s", config.Format)
+		return nil, fmt.Errorf("unsupported log format %q: valid formats are 'json' or 'text'", config.Format)
 	}
 
 	return &SlogLogger{
@@ -136,9 +146,17 @@ func (l *SlogLogger) Error(msg string, fields ...LogField) {
 
 // log is the internal method that performs the actual logging
 func (l *SlogLogger) log(level slog.Level, msg string, fields ...LogField) {
-	if l == nil || l.logger == nil {
+	if l == nil {
 		return
 	}
+
+	l.mu.Lock()
+	if l.logger == nil {
+		l.mu.Unlock()
+		return
+	}
+	logger := l.logger
+	l.mu.Unlock()
 
 	// Convert LogField slice to slog.Attr slice
 	attrs := make([]slog.Attr, 0, len(fields))
@@ -147,13 +165,18 @@ func (l *SlogLogger) log(level slog.Level, msg string, fields ...LogField) {
 	}
 
 	// Use LogAttrs for efficient structured logging
-	l.logger.LogAttrs(context.Background(), level, msg, attrs...)
+	logger.LogAttrs(context.Background(), level, msg, attrs...)
 }
 
 // Close closes the logger and any associated resources
 func (l *SlogLogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if l.closed {
+		return nil
+	}
+	l.closed = true
 
 	if l.writer != nil {
 		return l.writer.Close()

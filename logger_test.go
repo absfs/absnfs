@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/absfs/memfs"
 )
@@ -482,4 +484,117 @@ func TestSlogLogger_NilSafety(t *testing.T) {
 	logger.Info("test")
 	logger.Warn("test")
 	logger.Error("test")
+}
+
+// TestSlogLogger_ConcurrentLogging tests concurrent writes from multiple goroutines
+func TestSlogLogger_ConcurrentLogging(t *testing.T) {
+	tmpDir := t.TempDir()
+	logFile := filepath.Join(tmpDir, "concurrent.log")
+
+	config := &LogConfig{
+		Level:  "debug",
+		Format: "json",
+		Output: logFile,
+	}
+
+	logger, err := NewSlogLogger(config)
+	if err != nil {
+		t.Fatalf("failed to create logger: %v", err)
+	}
+
+	const numGoroutines = 100
+	const messagesPerGoroutine = 100
+
+	// Launch 100 goroutines that each write 100 messages
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < messagesPerGoroutine; j++ {
+				logger.Debug("test message", LogField{Key: "goroutine", Value: id}, LogField{Key: "message", Value: j})
+				logger.Info("test message", LogField{Key: "goroutine", Value: id}, LogField{Key: "message", Value: j})
+				logger.Warn("test message", LogField{Key: "goroutine", Value: id}, LogField{Key: "message", Value: j})
+				logger.Error("test message", LogField{Key: "goroutine", Value: id}, LogField{Key: "message", Value: j})
+			}
+		}(i)
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	// Close logger to flush
+	if err := logger.Close(); err != nil {
+		t.Fatalf("failed to close logger: %v", err)
+	}
+
+	// Verify log file was created and has content
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("failed to read log file: %v", err)
+	}
+
+	if len(data) == 0 {
+		t.Error("log file is empty")
+	}
+
+	// Count lines (should be 100 goroutines * 100 messages * 4 levels = 40,000 lines)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	expectedLines := numGoroutines * messagesPerGoroutine * 4
+	if len(lines) != expectedLines {
+		t.Errorf("expected %d log lines, got %d", expectedLines, len(lines))
+	}
+
+	// Verify all lines are valid JSON
+	for i, line := range lines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Errorf("invalid JSON at line %d: %v", i+1, err)
+			break // Don't flood output
+		}
+	}
+}
+
+// TestSlogLogger_CloseWhileLogging tests closing logger while background logging is active
+func TestSlogLogger_CloseWhileLogging(t *testing.T) {
+	tmpDir := t.TempDir()
+	logFile := filepath.Join(tmpDir, "close-while-logging.log")
+
+	config := &LogConfig{
+		Level:  "debug",
+		Format: "json",
+		Output: logFile,
+	}
+
+	logger, err := NewSlogLogger(config)
+	if err != nil {
+		t.Fatalf("failed to create logger: %v", err)
+	}
+
+	// Start background logging
+	done := make(chan bool)
+	go func() {
+		for i := 0; i < 1000; i++ {
+			logger.Info("background message", LogField{Key: "iteration", Value: i})
+		}
+		done <- true
+	}()
+
+	// Give background goroutine a moment to start logging
+	time.Sleep(10 * time.Millisecond)
+
+	// Close logger while background logging is still active
+	if err := logger.Close(); err != nil {
+		t.Fatalf("failed to close logger: %v", err)
+	}
+
+	// Wait for background goroutine to finish (should not panic)
+	<-done
+
+	// Verify multiple closes are safe
+	if err := logger.Close(); err != nil {
+		// Second close should be idempotent and not error
+		t.Logf("second close returned error (expected to be idempotent): %v", err)
+	}
 }

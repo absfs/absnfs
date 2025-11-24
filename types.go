@@ -244,21 +244,25 @@ type LogConfig struct {
 	LogFileAccess bool
 
 	// MaxSize defines the maximum size of log file in megabytes before rotation
+	// NOTE: File rotation is not yet implemented. This field is reserved for future enhancement.
 	// Only applicable when Output is a file path
 	// Default: 100 MB
 	MaxSize int
 
 	// MaxBackups defines the maximum number of old log files to retain
+	// NOTE: File rotation is not yet implemented. This field is reserved for future enhancement.
 	// Only applicable when Output is a file path
 	// Default: 3
 	MaxBackups int
 
 	// MaxAge defines the maximum number of days to retain old log files
+	// NOTE: File rotation is not yet implemented. This field is reserved for future enhancement.
 	// Only applicable when Output is a file path
 	// Default: 28 days
 	MaxAge int
 
 	// Compress enables gzip compression of rotated log files
+	// NOTE: File rotation is not yet implemented. This field is reserved for future enhancement.
 	// Only applicable when Output is a file path
 	// Default: false
 	Compress bool
