@@ -1,3 +1,34 @@
+// Package absnfs implements an NFS server adapter for the absfs filesystem interface.
+//
+// This package allows any filesystem that implements the absfs.FileSystem interface
+// to be exported as an NFSv3 share over a network. It provides a complete NFS server
+// implementation with support for standard file operations, security features, and
+// performance optimizations.
+//
+// Key Features:
+//   - NFSv3 protocol implementation
+//   - TLS/SSL encryption support for secure connections
+//   - Symlink support (SYMLINK and READLINK operations)
+//   - Rate limiting and DoS protection
+//   - Attribute caching for improved performance
+//   - Batch operation processing
+//   - Worker pool for concurrent request handling
+//   - Comprehensive metrics and monitoring
+//
+// Basic Usage:
+//
+//	fs, _ := memfs.NewFS()
+//	server, _ := absnfs.New(fs, absnfs.ExportOptions{})
+//	server.Export("/export/test")
+//
+// Security Features:
+//   - IP-based access control
+//   - Read-only export mode
+//   - User ID mapping (squash options)
+//   - Rate limiting to prevent DoS attacks
+//   - TLS/SSL encryption
+//
+// For detailed documentation, see the docs/ directory in the repository.
 package absnfs
 
 import (
@@ -13,6 +44,13 @@ import (
 // Version represents the current version of the absnfs package
 const Version = "0.1.0"
 
+// SymlinkFileSystem represents a filesystem that supports symbolic links
+type SymlinkFileSystem interface {
+	Symlink(oldname, newname string) error
+	Readlink(name string) (string, error)
+	Lstat(name string) (os.FileInfo, error)
+}
+
 // AbsfsNFS represents an NFS server that exports an absfs filesystem
 type AbsfsNFS struct {
 	fs            absfs.FileSystem  // The wrapped absfs filesystem
@@ -27,6 +65,7 @@ type AbsfsNFS struct {
 	workerPool    *WorkerPool       // Worker pool for concurrent operations
 	batchProc     *BatchProcessor   // Processor for batched operations
 	metrics       *MetricsCollector // Metrics collection and reporting
+	rateLimiter   *RateLimiter      // Rate limiter for DoS protection
 }
 
 // ExportOptions defines the configuration for an NFS export
@@ -147,13 +186,30 @@ type ExportOptions struct {
 	// Larger buffers can improve throughput but consume more memory
 	// Default: 262144 (256KB)
 	ReceiveBufferSize int
+
+	// EnableRateLimiting enables rate limiting and DoS protection
+	// When enabled, the server will limit requests per IP, per connection, and per operation type
+	// Default: true
+	EnableRateLimiting bool
+
+	// RateLimitConfig provides detailed rate limiting configuration
+	// Only applicable when EnableRateLimiting is true
+	// If nil, default configuration will be used
+	RateLimitConfig *RateLimiterConfig
+
+	// TLS holds the TLS/SSL configuration for encrypted connections
+	// When TLS.Enabled is true, all NFS connections will be encrypted using TLS
+	// Provides confidentiality, integrity, and optional mutual authentication
+	// If nil, TLS is disabled and connections are unencrypted (default NFSv3 behavior)
+	TLS *TLSConfig
 }
 
 // FileHandleMap manages the mapping between NFS file handles and absfs files
 type FileHandleMap struct {
 	sync.RWMutex
-	handles    map[uint64]absfs.File
-	lastHandle uint64
+	handles     map[uint64]absfs.File
+	nextHandle  uint64        // Counter for allocating new handles
+	freeHandles *uint64MinHeap // Min-heap of freed handles for reuse
 }
 
 // NFSNode represents a file or directory in the NFS tree
@@ -161,6 +217,7 @@ type NFSNode struct {
 	absfs.FileSystem
 	path     string
 	fileId   uint64
+	mu       sync.RWMutex // Protects attrs access
 	attrs    *NFSAttrs
 	children map[string]*NFSNode
 }
@@ -275,12 +332,26 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		options.ReceiveBufferSize = 262144 // Default: 256KB
 	}
 
+	// Rate limiting is enabled by default for security
+	// This can be explicitly disabled by setting EnableRateLimiting to false
+	// Note: In Go, bool fields default to false, so we can't distinguish between
+	// "explicitly set to false" and "not set". We treat not setting EnableRateLimiting
+	// as opting in to rate limiting (secure by default).
+	if options.RateLimitConfig == nil {
+		config := DefaultRateLimiterConfig()
+		options.RateLimitConfig = &config
+		// Enable rate limiting by default (secure by default)
+		options.EnableRateLimiting = true
+	}
+
 	// Create server object with configured caches
 	server := &AbsfsNFS{
 		fs:      fs,
 		options: options,
 		fileMap: &FileHandleMap{
-			handles: make(map[uint64]absfs.File),
+			handles:     make(map[uint64]absfs.File),
+			nextHandle:  1, // Start from 1, as 0 is typically reserved
+			freeHandles: NewUint64MinHeap(),
 		},
 		logger:    log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
 		attrCache: NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
@@ -305,6 +376,14 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	// Initialize metrics collection
 	server.initMetrics()
 
+	// Initialize rate limiter if enabled
+	if options.EnableRateLimiting {
+		server.rateLimiter = NewRateLimiter(*options.RateLimitConfig)
+		server.logger.Printf("Rate limiting enabled (per-IP: %d req/s, global: %d req/s)",
+			options.RateLimitConfig.PerIPRequestsPerSecond,
+			options.RateLimitConfig.GlobalRequestsPerSecond)
+	}
+
 	// Initialize root node
 	root := &NFSNode{
 		FileSystem: fs,
@@ -325,7 +404,9 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		Uid:   0,              // Root ownership by default
 		Gid:   0,
 	}
+	root.mu.Lock()
 	root.attrs.Refresh() // Initialize cache validity
+	root.mu.Unlock()
 
 	server.root = root
 	return server, nil
@@ -371,25 +452,30 @@ func (n *AbsfsNFS) ExecuteWithWorker(task func() interface{}) interface{} {
 func (n *AbsfsNFS) Close() error {
 	// Stop memory monitoring if active
 	n.stopMemoryMonitoring()
-	
+
 	// Stop worker pool
 	if n.workerPool != nil {
 		n.workerPool.Stop()
 	}
-	
+
 	// Stop batch processor
 	if n.batchProc != nil {
 		n.batchProc.Stop()
 	}
-	
+
+	// Release all file handles to prevent file descriptor leaks
+	if n.fileMap != nil {
+		n.fileMap.ReleaseAll()
+	}
+
 	// Clear caches to free memory
 	if n.attrCache != nil {
 		n.attrCache.Clear()
 	}
-	
+
 	if n.readBuf != nil {
 		n.readBuf.Clear()
 	}
-	
+
 	return nil
 }

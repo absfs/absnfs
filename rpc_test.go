@@ -344,6 +344,146 @@ func TestRPCReplyEncodeWithTypes(t *testing.T) {
 	})
 }
 
+func TestXDRStringLengthValidation(t *testing.T) {
+	t.Run("excessive string length", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		// Write a length that exceeds MAX_XDR_STRING_LENGTH
+		excessiveLength := uint32(MAX_XDR_STRING_LENGTH + 1)
+		binary.Write(buf, binary.BigEndian, excessiveLength)
+
+		_, err := xdrDecodeString(buf)
+		if err == nil {
+			t.Error("xdrDecodeString should fail with excessive length")
+		}
+		if err != nil && !bytes.Contains([]byte(err.Error()), []byte("exceeds maximum allowed length")) {
+			t.Errorf("Expected length validation error, got: %v", err)
+		}
+	})
+
+	t.Run("valid string length at boundary", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		// Write a length exactly at MAX_XDR_STRING_LENGTH
+		maxLength := uint32(MAX_XDR_STRING_LENGTH)
+		binary.Write(buf, binary.BigEndian, maxLength)
+		// Write the actual string data
+		testData := make([]byte, MAX_XDR_STRING_LENGTH)
+		for i := range testData {
+			testData[i] = 'A'
+		}
+		buf.Write(testData)
+
+		result, err := xdrDecodeString(buf)
+		if err != nil {
+			t.Errorf("xdrDecodeString should succeed with max length: %v", err)
+		}
+		if len(result) != MAX_XDR_STRING_LENGTH {
+			t.Errorf("Expected length %d, got %d", MAX_XDR_STRING_LENGTH, len(result))
+		}
+	})
+}
+
+func TestRPCAuthLengthValidation(t *testing.T) {
+	t.Run("excessive credential length", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		// Write valid RPC call header
+		binary.Write(buf, binary.BigEndian, uint32(1))      // XID
+		binary.Write(buf, binary.BigEndian, uint32(0))      // RPC_CALL
+		binary.Write(buf, binary.BigEndian, uint32(2))      // RPC Version
+		binary.Write(buf, binary.BigEndian, uint32(100003)) // NFS Program
+		binary.Write(buf, binary.BigEndian, uint32(3))      // Version
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Procedure
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Auth flavor
+		// Write excessive credential length
+		excessiveLength := uint32(MAX_RPC_AUTH_LENGTH + 1)
+		binary.Write(buf, binary.BigEndian, excessiveLength)
+
+		_, err := DecodeRPCCall(buf)
+		if err == nil {
+			t.Error("DecodeRPCCall should fail with excessive credential length")
+		}
+		if err != nil && !bytes.Contains([]byte(err.Error()), []byte("credential length")) {
+			t.Errorf("Expected credential length validation error, got: %v", err)
+		}
+	})
+
+	t.Run("excessive verifier length", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		// Write valid RPC call header with valid credential
+		binary.Write(buf, binary.BigEndian, uint32(1))      // XID
+		binary.Write(buf, binary.BigEndian, uint32(0))      // RPC_CALL
+		binary.Write(buf, binary.BigEndian, uint32(2))      // RPC Version
+		binary.Write(buf, binary.BigEndian, uint32(100003)) // NFS Program
+		binary.Write(buf, binary.BigEndian, uint32(3))      // Version
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Procedure
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Auth flavor
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Auth length (valid)
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Verifier flavor
+		// Write excessive verifier length
+		excessiveLength := uint32(MAX_RPC_AUTH_LENGTH + 1)
+		binary.Write(buf, binary.BigEndian, excessiveLength)
+
+		_, err := DecodeRPCCall(buf)
+		if err == nil {
+			t.Error("DecodeRPCCall should fail with excessive verifier length")
+		}
+		if err != nil && !bytes.Contains([]byte(err.Error()), []byte("verifier length")) {
+			t.Errorf("Expected verifier length validation error, got: %v", err)
+		}
+	})
+
+	t.Run("valid credential length at boundary", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		// Write valid RPC call with max credential length
+		binary.Write(buf, binary.BigEndian, uint32(1))      // XID
+		binary.Write(buf, binary.BigEndian, uint32(0))      // RPC_CALL
+		binary.Write(buf, binary.BigEndian, uint32(2))      // RPC Version
+		binary.Write(buf, binary.BigEndian, uint32(100003)) // NFS Program
+		binary.Write(buf, binary.BigEndian, uint32(3))      // Version
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Procedure
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Auth flavor
+		binary.Write(buf, binary.BigEndian, uint32(MAX_RPC_AUTH_LENGTH)) // Max auth length
+		// Write credential body
+		credBody := make([]byte, MAX_RPC_AUTH_LENGTH)
+		buf.Write(credBody)
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Verifier flavor
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Verifier length
+
+		call, err := DecodeRPCCall(buf)
+		if err != nil {
+			t.Errorf("DecodeRPCCall should succeed with max credential length: %v", err)
+		}
+		if len(call.Credential.Body) != MAX_RPC_AUTH_LENGTH {
+			t.Errorf("Expected credential length %d, got %d", MAX_RPC_AUTH_LENGTH, len(call.Credential.Body))
+		}
+	})
+
+	t.Run("valid verifier length at boundary", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		// Write valid RPC call with max verifier length
+		binary.Write(buf, binary.BigEndian, uint32(1))      // XID
+		binary.Write(buf, binary.BigEndian, uint32(0))      // RPC_CALL
+		binary.Write(buf, binary.BigEndian, uint32(2))      // RPC Version
+		binary.Write(buf, binary.BigEndian, uint32(100003)) // NFS Program
+		binary.Write(buf, binary.BigEndian, uint32(3))      // Version
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Procedure
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Auth flavor
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Auth length
+		binary.Write(buf, binary.BigEndian, uint32(0))      // Verifier flavor
+		binary.Write(buf, binary.BigEndian, uint32(MAX_RPC_AUTH_LENGTH)) // Max verifier length
+		// Write verifier body
+		verBody := make([]byte, MAX_RPC_AUTH_LENGTH)
+		buf.Write(verBody)
+
+		call, err := DecodeRPCCall(buf)
+		if err != nil {
+			t.Errorf("DecodeRPCCall should succeed with max verifier length: %v", err)
+		}
+		if len(call.Verifier.Body) != MAX_RPC_AUTH_LENGTH {
+			t.Errorf("Expected verifier length %d, got %d", MAX_RPC_AUTH_LENGTH, len(call.Verifier.Body))
+		}
+	})
+}
+
 func TestRPCErrorPaths(t *testing.T) {
 	t.Run("decode errors", func(t *testing.T) {
 		// Test empty buffer

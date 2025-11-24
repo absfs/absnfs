@@ -4,11 +4,96 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"math"
 	"os"
+	"runtime"
+	"strings"
 )
 
+// validateFilename validates a filename for CREATE/MKDIR operations
+// Returns error status code if invalid, NFS_OK if valid
+func validateFilename(name string) uint32 {
+	// Check for empty name
+	if name == "" {
+		return NFSERR_INVAL
+	}
+
+	// Check for maximum length (255 bytes for most filesystems)
+	if len(name) > 255 {
+		return NFSERR_NAMETOOLONG
+	}
+
+	// Check for null bytes
+	if strings.Contains(name, "\x00") {
+		return NFSERR_INVAL
+	}
+
+	// Check for path separators (both forward and back slash)
+	if strings.ContainsAny(name, "/\\") {
+		return NFSERR_INVAL
+	}
+
+	// Check for parent directory references
+	if name == "." || name == ".." {
+		return NFSERR_INVAL
+	}
+
+	// Check for reserved names on Windows
+	if runtime.GOOS == "windows" {
+		upperName := strings.ToUpper(name)
+		// Check base name without extension
+		baseName := upperName
+		if idx := strings.Index(upperName, "."); idx != -1 {
+			baseName = upperName[:idx]
+		}
+
+		reservedNames := []string{
+			"CON", "PRN", "AUX", "NUL",
+			"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+			"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+		}
+		for _, reserved := range reservedNames {
+			if baseName == reserved {
+				return NFSERR_INVAL
+			}
+		}
+	}
+
+	return NFS_OK
+}
+
+// validateMode validates file/directory mode for CREATE/MKDIR/SETATTR operations
+// Returns error status code if invalid, NFS_OK if valid
+func validateMode(mode uint32, isDir bool) uint32 {
+	// Valid permission bits: 0777 (rwxrwxrwx)
+	const validPermBits = 0777
+
+	// Valid file type bits (octal 0170000)
+	const fileTypeMask = 0170000
+
+	// Extract file type bits
+	fileTypeBits := mode & fileTypeMask
+
+	// For CREATE/MKDIR, file type bits should not be set (0)
+	// The file type is determined by the operation itself
+	if fileTypeBits != 0 {
+		return NFSERR_INVAL
+	}
+
+	// Check that only valid permission bits are set
+	if mode&^validPermBits != 0 {
+		return NFSERR_INVAL
+	}
+
+	// For directories, execute bits are often required for traversal
+	// But we don't enforce this as it's a valid use case to create
+	// directories without execute permissions (though impractical)
+
+	return NFS_OK
+}
+
 // handleNFSCall handles NFS protocol operations
-func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply *RPCReply) (*RPCReply, error) {
+func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	// Check version first
 	if call.Header.Version != NFS_V3 {
 		reply.Status = PROG_MISMATCH
@@ -144,12 +229,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
-		// Create new attributes
+		// Create new attributes - read with lock protection
+		node.mu.RLock()
 		attrs := &NFSAttrs{
 			Mode: node.attrs.Mode,
 			Uid:  node.attrs.Uid,
 			Gid:  node.attrs.Gid,
 		}
+		node.mu.RUnlock()
 
 		// Update attributes
 		if setMode != 0 {
@@ -220,7 +307,11 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		}
 
 		// Check if it's a file handle instead of directory handle
-		if node.attrs.Mode&os.ModeDir == 0 {
+		node.mu.RLock()
+		isDir := node.attrs.Mode&os.ModeDir != 0
+		node.mu.RUnlock()
+
+		if !isDir {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOTDIR)
 			reply.Data = buf.Bytes()
@@ -249,6 +340,75 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		reply.Data = buf.Bytes()
 		return reply, nil
 
+	case NFSPROC3_READLINK:
+		// Decode symlink handle
+		handle := FileHandle{}
+		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, GARBAGE_ARGS)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Find the symlink node
+		fileNode, ok := h.server.handler.fileMap.Get(handle.Handle)
+		if !ok {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		node, ok := fileNode.(*NFSNode)
+		if !ok {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Check if it's a symlink
+		node.mu.RLock()
+		isSymlink := node.attrs.Mode&os.ModeSymlink != 0
+		node.mu.RUnlock()
+
+		if !isSymlink {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_INVAL)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Read the symlink target
+		target, err := h.server.handler.Readlink(node)
+		if err != nil {
+			return nil, err
+		}
+
+		// Get attributes for post-op attributes
+		attrs, err := h.server.handler.GetAttr(node)
+		if err != nil {
+			return nil, err
+		}
+
+		// Encode response
+		var buf bytes.Buffer
+		xdrEncodeUint32(&buf, NFS_OK)
+
+		// Encode post-op attributes
+		xdrEncodeUint32(&buf, 1) // Has attributes
+		if err := encodeFileAttributes(&buf, attrs); err != nil {
+			return nil, err
+		}
+
+		// Encode symlink target
+		if err := xdrEncodeString(&buf, target); err != nil {
+			return nil, err
+		}
+
+		reply.Data = buf.Bytes()
+		return reply, nil
+
 	case NFSPROC3_READ:
 		handle := FileHandle{}
 		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
@@ -272,6 +432,30 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
+		}
+
+		// Check for integer overflow: offset + count must not overflow uint64
+		if offset > math.MaxUint64-uint64(count) {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_INVAL)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Apply rate limiting for large reads (> 64KB)
+		if count > 65536 && h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
+			if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeReadLarge) {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, NFSERR_DELAY) // Server is busy
+				reply.Data = buf.Bytes()
+
+				// Record rate limit exceeded
+				if h.server.handler.metrics != nil {
+					h.server.handler.metrics.RecordRateLimitExceeded()
+				}
+
+				return reply, nil
+			}
 		}
 
 		// Find the node
@@ -360,6 +544,30 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
+		// Check for integer overflow: offset + count must not overflow uint64
+		if offset > math.MaxUint64-uint64(count) {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_INVAL)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Apply rate limiting for large writes (> 64KB)
+		if count > 65536 && h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
+			if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeWriteLarge) {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, NFSERR_DELAY) // Server is busy
+				reply.Data = buf.Bytes()
+
+				// Record rate limit exceeded
+				if h.server.handler.metrics != nil {
+					h.server.handler.metrics.RecordRateLimitExceeded()
+				}
+
+				return reply, nil
+			}
+		}
+
 		// Read data length and data
 		var dataLen uint32
 		if err := binary.Read(body, binary.BigEndian, &dataLen); err != nil {
@@ -442,6 +650,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
+		// Validate filename
+		if status := validateFilename(name); status != NFS_OK {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, status)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
 		// Read create mode and attributes
 		var createMode uint32
 		if err := binary.Read(body, binary.BigEndian, &createMode); err != nil {
@@ -460,9 +676,9 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		}
 
 		// Validate mode
-		if mode&0x8000 != 0 {
+		if status := validateMode(mode, false); status != NFS_OK {
 			var buf bytes.Buffer
-			xdrEncodeUint32(&buf, NFSERR_INVAL)
+			xdrEncodeUint32(&buf, status)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
@@ -529,6 +745,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
+		// Validate dirname
+		if status := validateFilename(name); status != NFS_OK {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, status)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
 		// Read directory mode
 		var mode uint32
 		if err := binary.Read(body, binary.BigEndian, &mode); err != nil {
@@ -539,9 +763,9 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		}
 
 		// Validate mode
-		if mode&0x8000 != 0 {
+		if status := validateMode(mode, true); status != NFS_OK {
 			var buf bytes.Buffer
-			xdrEncodeUint32(&buf, NFSERR_INVAL)
+			xdrEncodeUint32(&buf, status)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
@@ -587,7 +811,126 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		reply.Data = buf.Bytes()
 		return reply, nil
 
+	case NFSPROC3_SYMLINK:
+		if h.server.handler.options.ReadOnly {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, ACCESS_DENIED)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Decode directory handle
+		dirHandle := FileHandle{}
+		if err := binary.Read(body, binary.BigEndian, &dirHandle.Handle); err != nil {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, GARBAGE_ARGS)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Decode symlink name
+		name, err := xdrDecodeString(body)
+		if err != nil {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, GARBAGE_ARGS)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Validate symlink name
+		if status := validateFilename(name); status != NFS_OK {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, status)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Read symlink attributes (mode)
+		var mode uint32
+		if err := binary.Read(body, binary.BigEndian, &mode); err != nil {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, GARBAGE_ARGS)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Decode symlink target
+		target, err := xdrDecodeString(body)
+		if err != nil {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, GARBAGE_ARGS)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Validate target is not empty
+		if target == "" {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_INVAL)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Find the parent directory node
+		dirNode, ok := h.server.handler.fileMap.Get(dirHandle.Handle)
+		if !ok {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		node, ok := dirNode.(*NFSNode)
+		if !ok {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Create new attributes for the symlink
+		attrs := &NFSAttrs{
+			Mode: os.FileMode(mode) | os.ModeSymlink,
+			Uid:  0,
+			Gid:  0,
+		}
+
+		// Create the symlink
+		newNode, err := h.server.handler.Symlink(node, name, target, attrs)
+		if err != nil {
+			return nil, err
+		}
+
+		// Allocate new handle
+		handle := h.server.handler.fileMap.Allocate(newNode)
+
+		// Encode response
+		var buf bytes.Buffer
+		xdrEncodeUint32(&buf, NFS_OK)
+		binary.Write(&buf, binary.BigEndian, handle)
+		if err := encodeFileAttributes(&buf, newNode.attrs); err != nil {
+			return nil, err
+		}
+		reply.Data = buf.Bytes()
+		return reply, nil
+
 	case NFSPROC3_READDIR:
+		// Apply rate limiting for READDIR operations
+		if h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
+			if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeReaddir) {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, NFSERR_DELAY) // Server is busy
+				reply.Data = buf.Bytes()
+
+				// Record rate limit exceeded
+				if h.server.handler.metrics != nil {
+					h.server.handler.metrics.RecordRateLimitExceeded()
+				}
+
+				return reply, nil
+			}
+		}
+
 		// Decode arguments
 		handle := FileHandle{}
 		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
@@ -1335,7 +1678,11 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		}
 
 		// Check if it's a directory
-		if node.attrs.Mode&os.ModeDir == 0 {
+		node.mu.RLock()
+		isDir := node.attrs.Mode&os.ModeDir != 0
+		node.mu.RUnlock()
+
+		if !isDir {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOTDIR)
 			reply.Data = buf.Bytes()
@@ -1426,7 +1773,11 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		}
 
 		// Check if it's a directory
-		if node.attrs.Mode&os.ModeDir == 0 {
+		node.mu.RLock()
+		isDir := node.attrs.Mode&os.ModeDir != 0
+		node.mu.RUnlock()
+
+		if !isDir {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOTDIR)
 			reply.Data = buf.Bytes()

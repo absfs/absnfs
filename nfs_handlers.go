@@ -24,7 +24,7 @@ func (e *RPCError) Error() string {
 }
 
 // HandleCall processes an NFS RPC call and returns a reply
-func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader) (*RPCReply, error) {
+func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx *AuthContext) (*RPCReply, error) {
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -38,9 +38,18 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader) (*RPCRep
 		},
 	}
 
-	// Check authentication
-	if call.Credential.Flavor != 0 {
+	// Validate authentication
+	authResult := ValidateAuthentication(authCtx, h.server.handler.options)
+	if !authResult.Allowed {
 		reply.Status = MSG_DENIED
+		if h.server.options.Debug {
+			h.server.logger.Printf("Authentication denied: %s (client: %s:%d, flavor: %d)",
+				authResult.Reason, authCtx.ClientIP, authCtx.ClientPort, authCtx.Credential.Flavor)
+		}
+		// Increment auth failure metric if available
+		if h.server.handler.metrics != nil {
+			h.server.handler.metrics.RecordError("AUTH")
+		}
 		return reply, nil
 	}
 
@@ -49,17 +58,29 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader) (*RPCRep
 	replyChan := make(chan *RPCReply, 1)
 
 	go func() {
+		// Check if context is already cancelled before starting work
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		var result *RPCReply
 		var err error
 
 		switch call.Header.Program {
 		case MOUNT_PROGRAM:
-			result, err = h.handleMountCall(call, body, reply)
+			result, err = h.handleMountCall(call, body, reply, authCtx)
 		case NFS_PROGRAM:
-			result, err = h.handleNFSCall(call, body, reply)
+			result, err = h.handleNFSCall(call, body, reply, authCtx)
 		default:
 			reply.Status = PROG_UNAVAIL
-			replyChan <- reply
+			// Check context before sending
+			select {
+			case <-ctx.Done():
+				return
+			case replyChan <- reply:
+			}
 			return
 		}
 
@@ -77,10 +98,20 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader) (*RPCRep
 					reply.Status = GARBAGE_ARGS
 				}
 			}
-			replyChan <- reply
+			// Check context before sending
+			select {
+			case <-ctx.Done():
+				return
+			case replyChan <- reply:
+			}
 			return
 		}
-		replyChan <- result
+		// Check context before sending result
+		select {
+		case <-ctx.Done():
+			return
+		case replyChan <- result:
+		}
 	}()
 
 	select {

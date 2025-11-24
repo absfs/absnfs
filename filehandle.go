@@ -5,23 +5,23 @@ import (
 )
 
 // Allocate creates a new file handle for the given absfs.File
+// Optimized to O(log n) or O(1) using a free list instead of O(n) linear search
 func (fm *FileHandleMap) Allocate(f absfs.File) uint64 {
 	fm.Lock()
 	defer fm.Unlock()
 
-	// Try to find the smallest available handle
-	var handle uint64 = 1
-	for {
-		if _, exists := fm.handles[handle]; !exists {
-			break
-		}
-		handle++
+	var handle uint64
+
+	// First, try to reuse a freed handle (prefer smallest available)
+	if !fm.freeHandles.IsEmpty() {
+		handle = fm.freeHandles.PopMin()
+	} else {
+		// No freed handles available, use the next sequential handle
+		handle = fm.nextHandle
+		fm.nextHandle++
 	}
 
 	fm.handles[handle] = f
-	if handle > fm.lastHandle {
-		fm.lastHandle = handle
-	}
 	return handle
 }
 
@@ -42,6 +42,8 @@ func (fm *FileHandleMap) Release(handle uint64) {
 	if f, exists := fm.handles[handle]; exists {
 		f.Close()
 		delete(fm.handles, handle)
+		// Add the freed handle to the free list for reuse
+		fm.freeHandles.PushValue(handle)
 	}
 }
 
@@ -54,6 +56,9 @@ func (fm *FileHandleMap) ReleaseAll() {
 		f.Close()
 		delete(fm.handles, handle)
 	}
+
+	// Clear the free list since all handles are now released
+	fm.freeHandles = NewUint64MinHeap()
 }
 
 // Count returns the number of active file handles

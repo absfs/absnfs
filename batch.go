@@ -107,16 +107,15 @@ func (bp *BatchProcessor) AddRequest(req *BatchRequest) bool {
 	}
 	
 	batch.mu.Lock()
-	defer batch.mu.Unlock()
-	
+
 	// If this is the first request in the batch, set the ready time
 	if len(batch.Requests) == 0 {
 		batch.ReadyTime = time.Now().Add(bp.delay)
 	}
-	
+
 	// Add the request to the batch
 	batch.Requests = append(batch.Requests, req)
-	
+
 	// If the batch is full, trigger immediate processing
 	if len(batch.Requests) >= batch.MaxSize {
 		// Create a new empty batch
@@ -124,12 +123,16 @@ func (bp *BatchProcessor) AddRequest(req *BatchRequest) bool {
 			Type:    req.Type,
 			MaxSize: batch.MaxSize,
 		}
-		
+
+		// Unlock the old batch before passing to goroutine to prevent deadlock
+		batch.mu.Unlock()
+
 		// Process the full batch asynchronously
 		go bp.processBatch(batch)
 		return true
 	}
-	
+
+	batch.mu.Unlock()
 	return false
 }
 
@@ -206,6 +209,7 @@ func (bp *BatchProcessor) processReadBatch(batch *Batch) {
 					Error:  os.ErrNotExist,
 					Status: NFSERR_NOENT,
 				}
+				close(req.ResultChan)
 			}
 			continue
 		}
@@ -220,28 +224,31 @@ func (bp *BatchProcessor) processReadBatch(batch *Batch) {
 					Error:  req.Context.Err(),
 					Status: NFSERR_IO,
 				}
+				close(req.ResultChan)
 				continue
 			default:
 				// Process the request
 			}
-			
+
 			// Perform the actual read operation
 			buffer := make([]byte, req.Length)
 			bytesRead, err := file.ReadAt(buffer, req.Offset)
-			
+
 			if err != nil && err != io.EOF {
 				req.ResultChan <- &BatchResult{
 					Error:  err,
 					Status: NFSERR_IO,
 				}
+				close(req.ResultChan)
 				continue
 			}
-			
+
 			// Send successful result
 			req.ResultChan <- &BatchResult{
 				Data:   buffer[:bytesRead],
 				Status: NFS_OK,
 			}
+			close(req.ResultChan)
 		}
 	}
 }
@@ -265,6 +272,7 @@ func (bp *BatchProcessor) processWriteBatch(batch *Batch) {
 					Error:  os.ErrNotExist,
 					Status: NFSERR_NOENT,
 				}
+				close(req.ResultChan)
 			}
 			continue
 		}
@@ -276,6 +284,7 @@ func (bp *BatchProcessor) processWriteBatch(batch *Batch) {
 					Error:  os.ErrPermission,
 					Status: NFSERR_ROFS,
 				}
+				close(req.ResultChan)
 			}
 			continue
 		}
@@ -290,27 +299,30 @@ func (bp *BatchProcessor) processWriteBatch(batch *Batch) {
 					Error:  req.Context.Err(),
 					Status: NFSERR_IO,
 				}
+				close(req.ResultChan)
 				continue
 			default:
 				// Process the request
 			}
-			
+
 			// Perform the actual write operation
 			_, err := file.WriteAt(req.Data, req.Offset)
-			
+
 			if err != nil {
 				req.ResultChan <- &BatchResult{
 					Error:  err,
 					Status: NFSERR_IO,
 				}
+				close(req.ResultChan)
 				continue
 			}
-			
+
 			// Send successful result
 			req.ResultChan <- &BatchResult{
 				Data:   nil, // No data for write operations
 				Status: NFS_OK,
 			}
+			close(req.ResultChan)
 			
 			// Invalidate attribute cache for written file
 			path := ""
@@ -333,11 +345,12 @@ func (bp *BatchProcessor) processGetAttrBatch(batch *Batch) {
 				Error:  req.Context.Err(),
 				Status: NFSERR_IO,
 			}
+			close(req.ResultChan)
 			continue
 		default:
 			// Process the request
 		}
-		
+
 		// Get the file
 		file, ok := bp.processor.fileMap.Get(req.FileHandle)
 		if !ok {
@@ -345,6 +358,7 @@ func (bp *BatchProcessor) processGetAttrBatch(batch *Batch) {
 				Error:  os.ErrNotExist,
 				Status: NFSERR_NOENT,
 			}
+			close(req.ResultChan)
 			continue
 		}
 		
@@ -366,6 +380,7 @@ func (bp *BatchProcessor) processGetAttrBatch(batch *Batch) {
 					Error:  err,
 					Status: NFSERR_IO,
 				}
+				close(req.ResultChan)
 				continue
 			}
 			
@@ -392,14 +407,16 @@ func (bp *BatchProcessor) processGetAttrBatch(batch *Batch) {
 				Error:  err,
 				Status: NFSERR_IO,
 			}
+			close(req.ResultChan)
 			continue
 		}
-		
+
 		// Send successful result
 		req.ResultChan <- &BatchResult{
 			Data:   buf.Bytes(),
 			Status: NFS_OK,
 		}
+		close(req.ResultChan)
 	}
 }
 
@@ -415,11 +432,12 @@ func (bp *BatchProcessor) processSetAttrBatch(batch *Batch) {
 				Error:  req.Context.Err(),
 				Status: NFSERR_IO,
 			}
+			close(req.ResultChan)
 			continue
 		default:
 			// Process the request
 		}
-		
+
 		// Get the file
 		file, ok := bp.processor.fileMap.Get(req.FileHandle)
 		if !ok {
@@ -427,21 +445,23 @@ func (bp *BatchProcessor) processSetAttrBatch(batch *Batch) {
 				Error:  os.ErrNotExist,
 				Status: NFSERR_NOENT,
 			}
+			close(req.ResultChan)
 			continue
 		}
-		
+
 		// In a real implementation, we would parse req.Data to get the attributes to set
 		// and then apply them to the file. For now, we'll just invalidate the cache.
-		
+
 		// Invalidate attribute cache for this file
 		if node, ok := file.(*NFSNode); ok {
 			bp.processor.attrCache.Invalidate(node.path)
 		}
-		
+
 		// Send successful result
 		req.ResultChan <- &BatchResult{
 			Status: NFS_OK,
 		}
+		close(req.ResultChan)
 	}
 }
 
@@ -456,11 +476,12 @@ func (bp *BatchProcessor) processDirReadBatch(batch *Batch) {
 				Error:  req.Context.Err(),
 				Status: NFSERR_IO,
 			}
+			close(req.ResultChan)
 			continue
 		default:
 			// Process the request
 		}
-		
+
 		// Get the directory
 		dir, ok := bp.processor.fileMap.Get(req.FileHandle)
 		if !ok {
@@ -468,9 +489,10 @@ func (bp *BatchProcessor) processDirReadBatch(batch *Batch) {
 				Error:  os.ErrNotExist,
 				Status: NFSERR_NOENT,
 			}
+			close(req.ResultChan)
 			continue
 		}
-		
+
 		// Verify this is a directory
 		info, err := dir.Stat()
 		if err != nil {
@@ -478,25 +500,28 @@ func (bp *BatchProcessor) processDirReadBatch(batch *Batch) {
 				Error:  err,
 				Status: NFSERR_IO,
 			}
+			close(req.ResultChan)
 			continue
 		}
-		
+
 		if !info.IsDir() {
 			req.ResultChan <- &BatchResult{
 				Error:  os.ErrInvalid,
 				Status: NFSERR_NOTDIR,
 			}
+			close(req.ResultChan)
 			continue
 		}
-		
+
 		// In a real implementation, we would read the directory entries
 		// and format them according to the NFS protocol. For this example,
 		// we'll just return a successful status.
-		
+
 		// Send successful result
 		req.ResultChan <- &BatchResult{
 			Status: NFS_OK,
 		}
+		close(req.ResultChan)
 	}
 }
 
@@ -507,16 +532,16 @@ func (bp *BatchProcessor) Stop() {
 }
 
 // BatchRead submits a read request to be batched
-// Returns the read data or an error
-func (bp *BatchProcessor) BatchRead(ctx context.Context, fileHandle uint64, offset int64, length int) ([]byte, error, uint32) {
+// Returns the read data, NFS status code, and error (error is last per Go convention)
+func (bp *BatchProcessor) BatchRead(ctx context.Context, fileHandle uint64, offset int64, length int) ([]byte, uint32, error) {
 	// If batching is disabled, return immediately to process individually
 	if !bp.enabled {
-		return nil, nil, 0
+		return nil, 0, nil
 	}
-	
+
 	// Create result channel
 	resultChan := make(chan *BatchResult, 1)
-	
+
 	// Create request
 	req := &BatchRequest{
 		Type:       BatchTypeRead,
@@ -527,39 +552,39 @@ func (bp *BatchProcessor) BatchRead(ctx context.Context, fileHandle uint64, offs
 		ResultChan: resultChan,
 		Context:    ctx,
 	}
-	
+
 	// Add to batch
 	immediate := bp.AddRequest(req)
-	
+
 	// If processing is immediate, return now
 	if immediate {
 		close(resultChan)
-		return nil, nil, 0
+		return nil, 0, nil
 	}
-	
+
 	// Wait for result with timeout
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err(), NFSERR_IO
+		return nil, NFSERR_IO, ctx.Err()
 	case res, ok := <-resultChan:
 		if !ok {
-			return nil, os.ErrInvalid, NFSERR_IO
+			return nil, NFSERR_IO, os.ErrInvalid
 		}
-		return res.Data, res.Error, res.Status
+		return res.Data, res.Status, res.Error
 	}
 }
 
 // BatchWrite submits a write request to be batched
-// Returns success or an error
-func (bp *BatchProcessor) BatchWrite(ctx context.Context, fileHandle uint64, offset int64, data []byte) (error, uint32) {
+// Returns NFS status code and error (error is last per Go convention)
+func (bp *BatchProcessor) BatchWrite(ctx context.Context, fileHandle uint64, offset int64, data []byte) (uint32, error) {
 	// If batching is disabled, return immediately to process individually
 	if !bp.enabled {
-		return nil, 0
+		return 0, nil
 	}
-	
+
 	// Create result channel
 	resultChan := make(chan *BatchResult, 1)
-	
+
 	// Create request
 	req := &BatchRequest{
 		Type:       BatchTypeWrite,
@@ -571,39 +596,39 @@ func (bp *BatchProcessor) BatchWrite(ctx context.Context, fileHandle uint64, off
 		ResultChan: resultChan,
 		Context:    ctx,
 	}
-	
+
 	// Add to batch
 	immediate := bp.AddRequest(req)
-	
+
 	// If processing is immediate, return now
 	if immediate {
 		close(resultChan)
-		return nil, 0
+		return 0, nil
 	}
-	
+
 	// Wait for result with timeout
 	select {
 	case <-ctx.Done():
-		return ctx.Err(), NFSERR_IO
+		return NFSERR_IO, ctx.Err()
 	case res, ok := <-resultChan:
 		if !ok {
-			return os.ErrInvalid, NFSERR_IO
+			return NFSERR_IO, os.ErrInvalid
 		}
-		return res.Error, res.Status
+		return res.Status, res.Error
 	}
 }
 
 // BatchGetAttr submits a getattr request to be batched
-// Returns the attributes or an error
-func (bp *BatchProcessor) BatchGetAttr(ctx context.Context, fileHandle uint64) ([]byte, error, uint32) {
+// Returns the attributes, NFS status code, and error (error is last per Go convention)
+func (bp *BatchProcessor) BatchGetAttr(ctx context.Context, fileHandle uint64) ([]byte, uint32, error) {
 	// If batching is disabled, return immediately to process individually
 	if !bp.enabled {
-		return nil, nil, 0
+		return nil, 0, nil
 	}
-	
+
 	// Create result channel
 	resultChan := make(chan *BatchResult, 1)
-	
+
 	// Create request
 	req := &BatchRequest{
 		Type:       BatchTypeGetAttr,
@@ -612,25 +637,25 @@ func (bp *BatchProcessor) BatchGetAttr(ctx context.Context, fileHandle uint64) (
 		ResultChan: resultChan,
 		Context:    ctx,
 	}
-	
+
 	// Add to batch
 	immediate := bp.AddRequest(req)
-	
+
 	// If processing is immediate, return now
 	if immediate {
 		close(resultChan)
-		return nil, nil, 0
+		return nil, 0, nil
 	}
-	
+
 	// Wait for result with timeout
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err(), NFSERR_IO
+		return nil, NFSERR_IO, ctx.Err()
 	case res, ok := <-resultChan:
 		if !ok {
-			return nil, os.ErrInvalid, NFSERR_IO
+			return nil, NFSERR_IO, os.ErrInvalid
 		}
-		return res.Data, res.Error, res.Status
+		return res.Data, res.Status, res.Error
 	}
 }
 

@@ -1,23 +1,25 @@
 package absnfs
 
 import (
+	"container/list"
 	"sync"
 	"time"
 )
 
 // AttrCache provides caching for file attributes
 type AttrCache struct {
-	mu        sync.RWMutex
-	cache     map[string]*CachedAttrs
-	ttl       time.Duration
-	maxSize   int           // Maximum number of entries in the cache
-	accessLog []string      // Keep track of least recently used entries
+	mu         sync.RWMutex
+	cache      map[string]*CachedAttrs
+	ttl        time.Duration
+	maxSize    int        // Maximum number of entries in the cache
+	accessList *list.List // Doubly-linked list for O(1) LRU tracking
 }
 
 // CachedAttrs represents cached file attributes with expiration
 type CachedAttrs struct {
-	attrs    *NFSAttrs
-	expireAt time.Time
+	attrs       *NFSAttrs
+	expireAt    time.Time
+	listElement *list.Element // Reference to position in LRU list for O(1) access
 }
 
 // NewAttrCache creates a new attribute cache with the specified TTL and maximum size
@@ -25,12 +27,12 @@ func NewAttrCache(ttl time.Duration, maxSize int) *AttrCache {
 	if maxSize <= 0 {
 		maxSize = 10000 // Default size if invalid
 	}
-	
+
 	return &AttrCache{
-		cache:     make(map[string]*CachedAttrs),
-		ttl:       ttl,
-		maxSize:   maxSize,
-		accessLog: make([]string, 0, maxSize),
+		cache:      make(map[string]*CachedAttrs),
+		ttl:        ttl,
+		maxSize:    maxSize,
+		accessList: list.New(),
 	}
 }
 
@@ -44,19 +46,7 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
 	c.mu.RLock()
 	cached, ok := c.cache[path]
 	if ok && time.Now().Before(cached.expireAt) {
-		c.mu.RUnlock()
-		
-		// Update access log (LRU tracking)
-		c.mu.Lock()
-		c.updateAccessLog(path)
-		c.mu.Unlock()
-		
-		// Record cache hit for metrics
-		if s != nil {
-			s.RecordAttrCacheHit()
-		}
-		
-		// Return a copy to prevent modification of cached data
+		// Copy attributes while holding RLock to prevent data races
 		attrs := &NFSAttrs{
 			Mode:  cached.attrs.Mode,
 			Size:  cached.attrs.Size,
@@ -65,6 +55,22 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
 			Uid:   cached.attrs.Uid,
 			Gid:   cached.attrs.Gid,
 		}
+		c.mu.RUnlock()
+
+		// Update access log (LRU tracking)
+		c.mu.Lock()
+		// Revalidate that entry still exists before updating access log
+		// This prevents race condition where entry could be deleted between locks
+		if _, stillExists := c.cache[path]; stillExists {
+			c.updateAccessLog(path)
+		}
+		c.mu.Unlock()
+
+		// Record cache hit for metrics
+		if s != nil {
+			s.RecordAttrCacheHit()
+		}
+
 		return attrs
 	}
 	c.mu.RUnlock()
@@ -84,24 +90,34 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
 	return nil
 }
 
-// updateAccessLog moves the path to the front of the access log (most recently used)
+// updateAccessLog moves the path to the front of the access list (most recently used)
+// This is now O(1) using doubly-linked list operations
 func (c *AttrCache) updateAccessLog(path string) {
-	// Remove from current position if it exists
-	c.removeFromAccessLog(path)
-	
-	// Add to the front (most recently used)
-	c.accessLog = append([]string{path}, c.accessLog...)
+	cached, ok := c.cache[path]
+	if !ok {
+		return
+	}
+
+	if cached.listElement != nil {
+		// Move existing element to front - O(1)
+		c.accessList.MoveToFront(cached.listElement)
+	} else {
+		// Add new element to front - O(1)
+		cached.listElement = c.accessList.PushFront(path)
+	}
 }
 
-// removeFromAccessLog removes a path from the access log
+// removeFromAccessLog removes a path from the access list
+// This is now O(1) using doubly-linked list operations
 func (c *AttrCache) removeFromAccessLog(path string) {
-	for i, p := range c.accessLog {
-		if p == path {
-			// Remove the item from the slice
-			c.accessLog = append(c.accessLog[:i], c.accessLog[i+1:]...)
-			break
-		}
+	cached, ok := c.cache[path]
+	if !ok || cached.listElement == nil {
+		return
 	}
+
+	// Remove element from list - O(1)
+	c.accessList.Remove(cached.listElement)
+	cached.listElement = nil
 }
 
 // Put adds or updates cached attributes
@@ -109,13 +125,20 @@ func (c *AttrCache) Put(path string, attrs *NFSAttrs) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Check if entry already exists
+	existing, exists := c.cache[path]
+
 	// Check if we need to evict entries to make room
-	if len(c.cache) >= c.maxSize && c.cache[path] == nil {
-		// Need to evict the least recently used entry
-		if len(c.accessLog) > 0 {
-			lruPath := c.accessLog[len(c.accessLog)-1]
-			delete(c.cache, lruPath)
-			c.accessLog = c.accessLog[:len(c.accessLog)-1]
+	if len(c.cache) >= c.maxSize && !exists {
+		// Need to evict the least recently used entry - O(1) using list.Back()
+		if c.accessList.Len() > 0 {
+			// Get LRU element from back of list - O(1)
+			lruElement := c.accessList.Back()
+			if lruElement != nil {
+				lruPath := lruElement.Value.(string)
+				delete(c.cache, lruPath)
+				c.accessList.Remove(lruElement) // O(1)
+			}
 		}
 	}
 
@@ -128,12 +151,20 @@ func (c *AttrCache) Put(path string, attrs *NFSAttrs) {
 		Uid:   attrs.Uid,
 		Gid:   attrs.Gid,
 	}
-	c.cache[path] = &CachedAttrs{
-		attrs:    attrsCopy,
-		expireAt: time.Now().Add(c.ttl),
+
+	// Preserve the listElement reference when updating existing entry
+	var listElem *list.Element
+	if exists && existing != nil {
+		listElem = existing.listElement
 	}
-	
-	// Update access log to mark this as most recently used
+
+	c.cache[path] = &CachedAttrs{
+		attrs:       attrsCopy,
+		expireAt:    time.Now().Add(c.ttl),
+		listElement: listElem,
+	}
+
+	// Update access log to mark this as most recently used - O(1)
 	c.updateAccessLog(path)
 }
 
@@ -152,7 +183,7 @@ func (c *AttrCache) Clear() {
 	defer c.mu.Unlock()
 
 	c.cache = make(map[string]*CachedAttrs)
-	c.accessLog = make([]string, 0, c.maxSize)
+	c.accessList = list.New()
 }
 
 // Size returns the current number of entries in the cache
@@ -181,11 +212,12 @@ func (c *AttrCache) Stats() (int, int) {
 
 // FileBuffer represents a read-ahead buffer for a specific file
 type FileBuffer struct {
-	data    []byte
-	dataLen int
-	offset  int64
-	path    string
-	lastUse time.Time
+	data        []byte
+	dataLen     int
+	offset      int64
+	path        string
+	lastUse     time.Time
+	listElement *list.Element // Reference to position in LRU list for O(1) access
 }
 
 // ReadAheadBuffer implements a multi-file read-ahead buffer with memory management
@@ -193,10 +225,10 @@ type ReadAheadBuffer struct {
 	mu           sync.RWMutex
 	buffers      map[string]*FileBuffer
 	bufferSize   int
-	accessOrder  []string        // LRU tracking
-	maxFiles     int             // Maximum number of files that can have buffers
-	maxMemory    int64           // Maximum total memory for all buffers
-	currentUsage int64           // Current memory usage
+	accessList   *list.List // Doubly-linked list for O(1) LRU tracking
+	maxFiles     int        // Maximum number of files that can have buffers
+	maxMemory    int64      // Maximum total memory for all buffers
+	currentUsage int64      // Current memory usage
 }
 
 // NewReadAheadBuffer creates a new read-ahead buffer with specified size and limits
@@ -204,9 +236,9 @@ func NewReadAheadBuffer(size int) *ReadAheadBuffer {
 	return &ReadAheadBuffer{
 		buffers:    make(map[string]*FileBuffer),
 		bufferSize: size,
-		maxFiles:   100,          // Default, will be updated in Configure
-		maxMemory:  104857600,    // Default 100MB, will be updated in Configure
-		accessOrder: make([]string, 0, 100),
+		maxFiles:   100,       // Default, will be updated in Configure
+		maxMemory:  104857600, // Default 100MB, will be updated in Configure
+		accessList: list.New(),
 	}
 }
 
@@ -243,15 +275,18 @@ func (b *ReadAheadBuffer) Stats() (int, int64) {
 func (b *ReadAheadBuffer) enforceMemoryLimits() {
 	// We need to free up at least one slot for a new buffer
 	// Enforce file count limit
-	for (len(b.buffers) >= b.maxFiles || b.currentUsage+int64(b.bufferSize) > b.maxMemory) && len(b.accessOrder) > 0 {
+	for (len(b.buffers) >= b.maxFiles || b.currentUsage+int64(b.bufferSize) > b.maxMemory) && b.accessList.Len() > 0 {
 		// If we're at or above limits, we need to evict the LRU buffer
-		if len(b.accessOrder) == 0 {
+		if b.accessList.Len() == 0 {
 			break // No buffers to evict
 		}
-		
-		// Remove least recently used buffer
-		lruPath := b.accessOrder[len(b.accessOrder)-1]
-		b.evictBuffer(lruPath)
+
+		// Get least recently used buffer from back of list - O(1)
+		lruElement := b.accessList.Back()
+		if lruElement != nil {
+			lruPath := lruElement.Value.(string)
+			b.evictBuffer(lruPath)
+		}
 	}
 }
 
@@ -262,35 +297,36 @@ func (b *ReadAheadBuffer) evictBuffer(path string) {
 	if !exists {
 		return
 	}
-	
+
 	// Update memory usage
 	b.currentUsage -= int64(cap(buffer.data))
-	
+
 	// Remove from buffers map
 	delete(b.buffers, path)
-	
-	// Remove from access order
-	for i, p := range b.accessOrder {
-		if p == path {
-			b.accessOrder = append(b.accessOrder[:i], b.accessOrder[i+1:]...)
-			break
-		}
+
+	// Remove from access list - O(1)
+	if buffer.listElement != nil {
+		b.accessList.Remove(buffer.listElement)
+		buffer.listElement = nil
 	}
 }
 
 // updateAccessOrder moves a path to the front of the access order list
 // Must be called with lock held
+// This is now O(1) using doubly-linked list operations
 func (b *ReadAheadBuffer) updateAccessOrder(path string) {
-	// Remove from current position if exists
-	for i, p := range b.accessOrder {
-		if p == path {
-			b.accessOrder = append(b.accessOrder[:i], b.accessOrder[i+1:]...)
-			break
-		}
+	buffer, ok := b.buffers[path]
+	if !ok {
+		return
 	}
-	
-	// Add to front (most recently used)
-	b.accessOrder = append([]string{path}, b.accessOrder...)
+
+	if buffer.listElement != nil {
+		// Move existing element to front - O(1)
+		b.accessList.MoveToFront(buffer.listElement)
+	} else {
+		// Add new element to front - O(1)
+		buffer.listElement = b.accessList.PushFront(path)
+	}
 }
 
 // Fill fills the buffer for a file with data from the given offset
@@ -419,7 +455,7 @@ func (b *ReadAheadBuffer) Clear() {
 	defer b.mu.Unlock()
 
 	b.buffers = make(map[string]*FileBuffer)
-	b.accessOrder = make([]string, 0, b.maxFiles)
+	b.accessList = list.New()
 	b.currentUsage = 0
 }
 

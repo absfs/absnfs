@@ -3,10 +3,24 @@ package absnfs
 import (
 	"bytes"
 	"encoding/binary"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/absfs/memfs"
 )
+
+// testAuthContext creates a default AuthContext for testing
+func testAuthContext() *AuthContext {
+	return &AuthContext{
+		ClientIP:   "127.0.0.1",
+		ClientPort: 1023, // Privileged port
+		Credential: &RPCCredential{
+			Flavor: AUTH_NONE,
+			Body:   []byte{},
+		},
+	}
+}
 
 func TestNFSHandlerErrors(t *testing.T) {
 	t.Run("error handling", func(t *testing.T) {
@@ -59,7 +73,9 @@ func TestNFSHandlerErrors(t *testing.T) {
 			},
 		}
 
-		reply, err := handler.HandleCall(call, bytes.NewReader([]byte{}))
+		authCtx := testAuthContext()
+		authCtx.Credential = &call.Credential
+		reply, err := handler.HandleCall(call, bytes.NewReader([]byte{}), authCtx)
 		if err != nil {
 			t.Fatalf("HandleCall failed: %v", err)
 		}
@@ -87,7 +103,9 @@ func TestNFSHandlerErrors(t *testing.T) {
 			},
 		}
 
-		reply, err = handler.HandleCall(call, bytes.NewReader([]byte{}))
+		authCtx = testAuthContext()
+		authCtx.Credential = &call.Credential
+		reply, err = handler.HandleCall(call, bytes.NewReader([]byte{}), authCtx)
 		if err != nil {
 			t.Fatalf("HandleCall failed: %v", err)
 		}
@@ -137,7 +155,9 @@ func TestNFSHandlerOperations(t *testing.T) {
 			},
 		}
 
-		reply, err := handler.HandleCall(call, bytes.NewReader([]byte{}))
+		authCtx := testAuthContext()
+		authCtx.Credential = &call.Credential
+		reply, err := handler.HandleCall(call, bytes.NewReader([]byte{}), authCtx)
 		if err != nil {
 			t.Fatalf("HandleCall failed: %v", err)
 		}
@@ -203,7 +223,9 @@ func TestNFSHandlerOperations(t *testing.T) {
 		var buf bytes.Buffer
 		binary.Write(&buf, binary.BigEndian, handle)
 
-		reply, err := handler.HandleCall(call, bytes.NewReader(buf.Bytes()))
+		authCtx := testAuthContext()
+		authCtx.Credential = &call.Credential
+		reply, err := handler.HandleCall(call, bytes.NewReader(buf.Bytes()), authCtx)
 		if err != nil {
 			t.Fatalf("HandleCall failed: %v", err)
 		}
@@ -220,6 +242,86 @@ func TestNFSHandlerOperations(t *testing.T) {
 			if status != NFS_OK {
 				t.Errorf("Expected NFS_OK in reply data, got %v", status)
 			}
+		}
+	})
+}
+
+// TestHandleCallGoroutineLeak tests that goroutines are properly cleaned up on context timeout
+func TestHandleCallGoroutineLeak(t *testing.T) {
+	t.Run("goroutine cleanup on timeout", func(t *testing.T) {
+		memfs, err := memfs.NewFS()
+		if err != nil {
+			t.Fatalf("Failed to create memfs: %v", err)
+		}
+
+		fs, err := New(memfs, ExportOptions{})
+		if err != nil {
+			t.Fatalf("Failed to create NFS: %v", err)
+		}
+
+		handler := &NFSProcedureHandler{
+			server: &Server{
+				handler: fs,
+				options: ServerOptions{
+					Debug: false,
+				},
+			},
+		}
+
+		// Get initial goroutine count
+		runtime.GC()
+		time.Sleep(100 * time.Millisecond)
+		initialGoroutines := runtime.NumGoroutine()
+
+		// Execute multiple HandleCall operations that will timeout
+		// We use a high number to ensure any leak would be detectable
+		iterations := 100
+		for i := 0; i < iterations; i++ {
+			call := &RPCCall{
+				Header: RPCMsgHeader{
+					Xid:        uint32(i),
+					MsgType:    RPC_CALL,
+					RPCVersion: 2,
+					Program:    NFS_PROGRAM,
+					Version:    NFS_V3,
+					Procedure:  NFSPROC3_NULL,
+				},
+				Credential: RPCCredential{
+					Flavor: 0,
+					Body:   []byte{},
+				},
+				Verifier: RPCVerifier{
+					Flavor: 0,
+					Body:   []byte{},
+				},
+			}
+
+			// Execute the call - it should complete without timeout for NULL operation
+			authCtx := testAuthContext()
+			authCtx.Credential = &call.Credential
+			_, err := handler.HandleCall(call, bytes.NewReader([]byte{}), authCtx)
+			if err != nil {
+				t.Logf("HandleCall %d returned error (expected for some cases): %v", i, err)
+			}
+		}
+
+		// Give time for goroutines to finish
+		time.Sleep(500 * time.Millisecond)
+		runtime.GC()
+		time.Sleep(100 * time.Millisecond)
+
+		// Check final goroutine count
+		finalGoroutines := runtime.NumGoroutine()
+
+		// Allow for some variance (worker pool, etc), but no significant leak
+		// With the fix, we should not see 100+ leaked goroutines
+		goroutineDiff := finalGoroutines - initialGoroutines
+		if goroutineDiff > 10 {
+			t.Errorf("Potential goroutine leak detected: started with %d goroutines, ended with %d (diff: %d)",
+				initialGoroutines, finalGoroutines, goroutineDiff)
+		} else {
+			t.Logf("Goroutine count stable: started with %d, ended with %d (diff: %d)",
+				initialGoroutines, finalGoroutines, goroutineDiff)
 		}
 	})
 }

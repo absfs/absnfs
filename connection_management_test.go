@@ -171,7 +171,7 @@ func TestIdleConnectionCleanup(t *testing.T) {
 	
 	// Set the connection's activity time to be in the past
 	server.connMutex.Lock()
-	server.activeConns[conn] = time.Now().Add(-100 * time.Millisecond)
+	server.activeConns[conn].lastActivity = time.Now().Add(-100 * time.Millisecond)
 	server.connMutex.Unlock()
 	
 	// Run idle connection cleanup
@@ -210,9 +210,9 @@ func TestCloseAllConnections(t *testing.T) {
 	
 	// Register connections directly
 	server.connMutex.Lock()
-	server.activeConns[conn1] = time.Now()
-	server.activeConns[conn2] = time.Now()
-	server.activeConns[conn3] = time.Now()
+	server.activeConns[conn1] = &connectionState{lastActivity: time.Now()}
+	server.activeConns[conn2] = &connectionState{lastActivity: time.Now()}
+	server.activeConns[conn3] = &connectionState{lastActivity: time.Now()}
 	server.connCount = 3
 	server.connMutex.Unlock()
 	

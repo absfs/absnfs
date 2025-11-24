@@ -199,9 +199,22 @@ func (p *WorkerPool) Resize(maxWorkers int) {
 	// Check if the pool is running
 	wasRunning := atomic.LoadInt32(&p.running) == 1
 
+	// Save reference to old queue before stopping
+	oldQueue := p.taskQueue
+
 	// Stop the pool if it's running
+	// This will close the old queue and wait for all workers to finish
 	if wasRunning {
 		p.Stop()
+	}
+
+	// Drain any remaining tasks from the old queue (if it wasn't running, it won't be closed)
+	if !wasRunning && oldQueue != nil {
+		close(oldQueue)
+		// Drain the channel to prevent goroutine leaks
+		for range oldQueue {
+			// Discard remaining tasks
+		}
 	}
 
 	// Update the max workers

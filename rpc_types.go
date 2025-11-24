@@ -12,6 +12,26 @@ const (
 	RPC_REPLY = 1
 )
 
+// RPC authentication flavors (RFC 1831)
+const (
+	AUTH_NONE  = 0 // No authentication
+	AUTH_SYS   = 1 // UNIX-style authentication (formerly AUTH_UNIX)
+	AUTH_SHORT = 2 // Short hand UNIX-style
+	AUTH_DH    = 3 // Diffie-Hellman authentication
+)
+
+// Maximum sizes for XDR data structures to prevent DoS attacks
+const (
+	// MAX_XDR_STRING_LENGTH is the maximum allowed length for XDR strings (8KB)
+	// This prevents memory exhaustion attacks where malicious clients send
+	// extremely large length values
+	MAX_XDR_STRING_LENGTH = 8192
+
+	// MAX_RPC_AUTH_LENGTH is the maximum allowed length for RPC authentication
+	// credentials and verifiers (400 bytes as per RFC 1831)
+	MAX_RPC_AUTH_LENGTH = 400
+)
+
 // RPC reply status
 const (
 	MSG_ACCEPTED  = 0
@@ -86,8 +106,16 @@ func xdrEncodeString(w io.Writer, s string) error {
 	if err := xdrEncodeUint32(w, uint32(len(s))); err != nil {
 		return err
 	}
-	_, err := w.Write([]byte(s))
-	return err
+	if _, err := w.Write([]byte(s)); err != nil {
+		return err
+	}
+	// XDR strings must be padded to 4-byte boundaries
+	padding := (4 - (len(s) % 4)) % 4
+	if padding > 0 {
+		_, err := w.Write(make([]byte, padding))
+		return err
+	}
+	return nil
 }
 
 func xdrDecodeString(r io.Reader) (string, error) {
@@ -96,10 +124,25 @@ func xdrDecodeString(r io.Reader) (string, error) {
 		return "", err
 	}
 
+	// Validate length to prevent DoS attacks via memory exhaustion
+	if length > MAX_XDR_STRING_LENGTH {
+		return "", fmt.Errorf("XDR string length %d exceeds maximum allowed length %d", length, MAX_XDR_STRING_LENGTH)
+	}
+
 	buf := make([]byte, length)
 	_, err = io.ReadFull(r, buf)
 	if err != nil {
 		return "", err
+	}
+
+	// XDR strings are padded to 4-byte boundaries, skip the padding
+	padding := (4 - (length % 4)) % 4
+	if padding > 0 {
+		padBuf := make([]byte, padding)
+		_, err = io.ReadFull(r, padBuf)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	return string(buf), nil
@@ -124,6 +167,15 @@ type RPCVerifier struct {
 	Body   []byte
 }
 
+// AuthSysCredential represents AUTH_SYS credentials (RFC 1831)
+type AuthSysCredential struct {
+	Stamp      uint32   // Arbitrary ID which the client may generate
+	MachineName string  // Name of the client machine (or empty string)
+	UID        uint32   // Caller's effective user ID
+	GID        uint32   // Caller's effective group ID
+	AuxGIDs    []uint32 // Auxiliary group IDs
+}
+
 // RPCReply represents an RPC reply message
 type RPCReply struct {
 	Header   RPCMsgHeader
@@ -139,13 +191,13 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 	// Decode header
 	xid, err := xdrDecodeUint32(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode XID: %v", err)
+		return nil, fmt.Errorf("failed to decode XID: %w", err)
 	}
 	call.Header.Xid = xid
 
 	msgType, err := xdrDecodeUint32(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode message type: %v", err)
+		return nil, fmt.Errorf("failed to decode message type: %w", err)
 	}
 	if msgType != RPC_CALL {
 		return nil, fmt.Errorf("expected RPC call, got message type %d", msgType)
@@ -154,42 +206,50 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 
 	// Decode RPC version, program, version, and procedure
 	if call.Header.RPCVersion, err = xdrDecodeUint32(r); err != nil {
-		return nil, fmt.Errorf("failed to decode RPC version: %v", err)
+		return nil, fmt.Errorf("failed to decode RPC version: %w", err)
 	}
 	if call.Header.Program, err = xdrDecodeUint32(r); err != nil {
-		return nil, fmt.Errorf("failed to decode program: %v", err)
+		return nil, fmt.Errorf("failed to decode program: %w", err)
 	}
 	if call.Header.Version, err = xdrDecodeUint32(r); err != nil {
-		return nil, fmt.Errorf("failed to decode version: %v", err)
+		return nil, fmt.Errorf("failed to decode version: %w", err)
 	}
 	if call.Header.Procedure, err = xdrDecodeUint32(r); err != nil {
-		return nil, fmt.Errorf("failed to decode procedure: %v", err)
+		return nil, fmt.Errorf("failed to decode procedure: %w", err)
 	}
 
 	// Decode credential
 	if call.Credential.Flavor, err = xdrDecodeUint32(r); err != nil {
-		return nil, fmt.Errorf("failed to decode credential flavor: %v", err)
+		return nil, fmt.Errorf("failed to decode credential flavor: %w", err)
 	}
 	credLen, err := xdrDecodeUint32(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode credential length: %v", err)
+		return nil, fmt.Errorf("failed to decode credential length: %w", err)
+	}
+	// Validate credential length to prevent DoS attacks via memory exhaustion
+	if credLen > MAX_RPC_AUTH_LENGTH {
+		return nil, fmt.Errorf("credential length %d exceeds maximum allowed length %d", credLen, MAX_RPC_AUTH_LENGTH)
 	}
 	call.Credential.Body = make([]byte, credLen)
 	if _, err = io.ReadFull(r, call.Credential.Body); err != nil {
-		return nil, fmt.Errorf("failed to read credential body: %v", err)
+		return nil, fmt.Errorf("failed to read credential body: %w", err)
 	}
 
 	// Decode verifier
 	if call.Verifier.Flavor, err = xdrDecodeUint32(r); err != nil {
-		return nil, fmt.Errorf("failed to decode verifier flavor: %v", err)
+		return nil, fmt.Errorf("failed to decode verifier flavor: %w", err)
 	}
 	verLen, err := xdrDecodeUint32(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode verifier length: %v", err)
+		return nil, fmt.Errorf("failed to decode verifier length: %w", err)
+	}
+	// Validate verifier length to prevent DoS attacks via memory exhaustion
+	if verLen > MAX_RPC_AUTH_LENGTH {
+		return nil, fmt.Errorf("verifier length %d exceeds maximum allowed length %d", verLen, MAX_RPC_AUTH_LENGTH)
 	}
 	call.Verifier.Body = make([]byte, verLen)
 	if _, err = io.ReadFull(r, call.Verifier.Body); err != nil {
-		return nil, fmt.Errorf("failed to read verifier body: %v", err)
+		return nil, fmt.Errorf("failed to read verifier body: %w", err)
 	}
 
 	return call, nil
@@ -199,26 +259,26 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 func EncodeRPCReply(w io.Writer, reply *RPCReply) error {
 	// Encode header
 	if err := xdrEncodeUint32(w, reply.Header.Xid); err != nil {
-		return fmt.Errorf("failed to encode XID: %v", err)
+		return fmt.Errorf("failed to encode XID: %w", err)
 	}
 	if err := xdrEncodeUint32(w, RPC_REPLY); err != nil {
-		return fmt.Errorf("failed to encode message type: %v", err)
+		return fmt.Errorf("failed to encode message type: %w", err)
 	}
 
 	// Encode reply status
 	if err := xdrEncodeUint32(w, reply.Status); err != nil {
-		return fmt.Errorf("failed to encode reply status: %v", err)
+		return fmt.Errorf("failed to encode reply status: %w", err)
 	}
 
 	// Encode verifier
 	if err := xdrEncodeUint32(w, reply.Verifier.Flavor); err != nil {
-		return fmt.Errorf("failed to encode verifier flavor: %v", err)
+		return fmt.Errorf("failed to encode verifier flavor: %w", err)
 	}
 	if err := xdrEncodeUint32(w, uint32(len(reply.Verifier.Body))); err != nil {
-		return fmt.Errorf("failed to encode verifier length: %v", err)
+		return fmt.Errorf("failed to encode verifier length: %w", err)
 	}
 	if _, err := w.Write(reply.Verifier.Body); err != nil {
-		return fmt.Errorf("failed to write verifier body: %v", err)
+		return fmt.Errorf("failed to write verifier body: %w", err)
 	}
 
 	// Encode reply data based on procedure type
@@ -247,4 +307,99 @@ func EncodeRPCReply(w io.Writer, reply *RPCReply) error {
 	}
 
 	return nil
+}
+
+// ParseAuthSysCredential parses AUTH_SYS credential data from raw bytes
+func ParseAuthSysCredential(body []byte) (*AuthSysCredential, error) {
+	if len(body) == 0 {
+		return nil, fmt.Errorf("empty AUTH_SYS credential body")
+	}
+
+	r := &byteReader{data: body, pos: 0}
+	cred := &AuthSysCredential{}
+
+	// Read stamp (4 bytes)
+	var err error
+	cred.Stamp, err = r.readUint32()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read stamp: %w", err)
+	}
+
+	// Read machine name
+	cred.MachineName, err = r.readString()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read machine name: %w", err)
+	}
+
+	// Read UID
+	cred.UID, err = r.readUint32()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read UID: %w", err)
+	}
+
+	// Read GID
+	cred.GID, err = r.readUint32()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read GID: %w", err)
+	}
+
+	// Read auxiliary GIDs count
+	gidCount, err := r.readUint32()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read GID count: %w", err)
+	}
+
+	// Validate GID count to prevent DoS
+	if gidCount > 16 {
+		return nil, fmt.Errorf("too many auxiliary GIDs: %d (max 16)", gidCount)
+	}
+
+	// Read auxiliary GIDs
+	cred.AuxGIDs = make([]uint32, gidCount)
+	for i := uint32(0); i < gidCount; i++ {
+		cred.AuxGIDs[i], err = r.readUint32()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read auxiliary GID %d: %w", i, err)
+		}
+	}
+
+	return cred, nil
+}
+
+// byteReader is a simple helper for reading XDR-encoded data from a byte slice
+type byteReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *byteReader) readUint32() (uint32, error) {
+	if r.pos+4 > len(r.data) {
+		return 0, fmt.Errorf("not enough data for uint32")
+	}
+	val := binary.BigEndian.Uint32(r.data[r.pos : r.pos+4])
+	r.pos += 4
+	return val, nil
+}
+
+func (r *byteReader) readString() (string, error) {
+	length, err := r.readUint32()
+	if err != nil {
+		return "", err
+	}
+
+	// Validate length
+	if length > MAX_XDR_STRING_LENGTH {
+		return "", fmt.Errorf("string length %d exceeds maximum %d", length, MAX_XDR_STRING_LENGTH)
+	}
+
+	// Calculate padded length (XDR strings are padded to 4-byte boundaries)
+	paddedLength := (length + 3) &^ 3
+
+	if r.pos+int(paddedLength) > len(r.data) {
+		return "", fmt.Errorf("not enough data for string")
+	}
+
+	str := string(r.data[r.pos : r.pos+int(length)])
+	r.pos += int(paddedLength)
+	return str, nil
 }

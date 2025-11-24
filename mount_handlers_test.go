@@ -55,7 +55,8 @@ func TestHandleMountCall(t *testing.T) {
 			Status: MSG_ACCEPTED,
 		}
 
-		result, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleMountCall failed: %v", err)
 		}
@@ -108,7 +109,8 @@ func TestHandleMountCall(t *testing.T) {
 			Status: MSG_ACCEPTED,
 		}
 
-		result, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleMountCall failed: %v", err)
 		}
@@ -164,7 +166,8 @@ func TestHandleMountCall(t *testing.T) {
 		// Test with invalid path encoding
 		var buf bytes.Buffer
 		binary.Write(&buf, binary.BigEndian, uint32(1)) // Invalid length
-		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleMountCall failed: %v", err)
 		}
@@ -222,8 +225,14 @@ func TestHandleMountCall(t *testing.T) {
 		path := "/nonexistent"
 		binary.Write(&buf, binary.BigEndian, uint32(len(path)))
 		buf.WriteString(path)
+		// Add XDR padding
+		padding := (4 - (len(path) % 4)) % 4
+		if padding > 0 {
+			buf.Write(make([]byte, padding))
+		}
 
-		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleMountCall failed: %v", err)
 		}
@@ -290,7 +299,8 @@ func TestHandleMountCall(t *testing.T) {
 		// Test with invalid path encoding
 		var buf bytes.Buffer
 		binary.Write(&buf, binary.BigEndian, uint32(1)) // Invalid length
-		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleMountCall failed: %v", err)
 		}
@@ -348,8 +358,14 @@ func TestHandleMountCall(t *testing.T) {
 		path := "/"
 		binary.Write(&buf, binary.BigEndian, uint32(len(path)))
 		buf.WriteString(path)
+		// Add XDR padding
+		padding := (4 - (len(path) % 4)) % 4
+		if padding > 0 {
+			buf.Write(make([]byte, padding))
+		}
 
-		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleMountCall failed: %v", err)
 		}
@@ -420,7 +436,8 @@ func TestHandleMountCall(t *testing.T) {
 			Status: MSG_ACCEPTED,
 		}
 
-		result, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleMountCall failed: %v", err)
 		}
@@ -492,8 +509,14 @@ func TestHandleMountCall(t *testing.T) {
 		path := "/"
 		binary.Write(&buf, binary.BigEndian, uint32(len(path)))
 		buf.WriteString(path)
+		// Add XDR padding
+		padding := (4 - (len(path) % 4)) % 4
+		if padding > 0 {
+			buf.Write(make([]byte, padding))
+		}
 
-		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply)
+		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+		result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleMountCall failed: %v", err)
 		}

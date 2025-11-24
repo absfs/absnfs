@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/absfs/absfs"
@@ -44,6 +46,44 @@ func toFileAttribute(info os.FileInfo) FileAttribute {
 	}
 }
 
+// sanitizePath validates and sanitizes a path to prevent directory traversal attacks.
+// It ensures the resulting path is within the base directory and rejects paths containing ".." components.
+func sanitizePath(basePath, name string) (string, error) {
+	// Reject empty names
+	if name == "" {
+		return "", fmt.Errorf("empty name")
+	}
+
+	// Reject names containing path separators or parent directory references
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return "", fmt.Errorf("invalid name: contains path separator")
+	}
+
+	if name == ".." || name == "." {
+		return "", fmt.Errorf("invalid name: parent or current directory reference")
+	}
+
+	// Construct the path
+	path := filepath.Join(basePath, name)
+
+	// Clean the path to resolve any ".." or "." components
+	cleanPath := filepath.Clean(path)
+
+	// Ensure the cleaned path is still within the base directory
+	// by checking if it starts with the base path
+	cleanBase := filepath.Clean(basePath)
+	if !strings.HasPrefix(cleanPath, cleanBase) {
+		return "", fmt.Errorf("invalid path: traversal attempt detected")
+	}
+
+	// Additional check: ensure no ".." components remain after cleaning
+	if strings.Contains(cleanPath, "..") {
+		return "", fmt.Errorf("invalid path: contains parent directory reference")
+	}
+
+	return cleanPath, nil
+}
+
 // Lookup implements the LOOKUP operation
 func (s *AbsfsNFS) Lookup(path string) (*NFSNode, error) {
 	if path == "" {
@@ -63,9 +103,17 @@ func (s *AbsfsNFS) Lookup(path string) (*NFSNode, error) {
 		return node, nil
 	}
 
-	info, err := s.fs.Stat(path)
+	// Try Lstat first if filesystem supports it (to get symlink info without following)
+	var info os.FileInfo
+	var err error
+	if symlinkFS, ok := s.fs.(SymlinkFileSystem); ok {
+		info, err = symlinkFS.Lstat(path)
+	} else {
+		info, err = s.fs.Stat(path)
+	}
+
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("lookup: failed to stat %s: %w", path, err)
 	}
 
 	attrs := &NFSAttrs{
@@ -104,19 +152,32 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 		return attrs, nil
 	}
 
-	// Get fresh attributes
-	info, err := s.fs.Stat(node.path)
-	if err != nil {
-		return nil, err
+	// Get fresh attributes using Lstat if available (to handle symlinks properly)
+	var info os.FileInfo
+	var err error
+	if symlinkFS, ok := s.fs.(SymlinkFileSystem); ok {
+		info, err = symlinkFS.Lstat(node.path)
+	} else {
+		info, err = s.fs.Stat(node.path)
 	}
+
+	if err != nil {
+		return nil, fmt.Errorf("getattr: failed to stat %s: %w", node.path, err)
+	}
+
+	// Read Uid/Gid from node.attrs with lock protection
+	node.mu.RLock()
+	uid := node.attrs.Uid
+	gid := node.attrs.Gid
+	node.mu.RUnlock()
 
 	attrs := &NFSAttrs{
 		Mode:  info.Mode(),
 		Size:  info.Size(),
 		Mtime: info.ModTime(),
 		Atime: info.ModTime(),
-		Uid:   node.attrs.Uid,
-		Gid:   node.attrs.Gid,
+		Uid:   uid,
+		Gid:   gid,
 	}
 	attrs.Refresh() // Initialize cache validity
 
@@ -137,29 +198,42 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 	// Check if file exists first
 	_, err := s.fs.Stat(node.path)
 	if err != nil {
-		return err
+		return fmt.Errorf("setattr: %w", err)
 	}
 
-	if attrs.Mode != node.attrs.Mode {
+	// Read current attrs with lock protection to compare
+	node.mu.RLock()
+	currentMode := node.attrs.Mode
+	currentUid := node.attrs.Uid
+	currentGid := node.attrs.Gid
+	currentMtime := node.attrs.Mtime
+	currentAtime := node.attrs.Atime
+	node.mu.RUnlock()
+
+	if attrs.Mode != currentMode {
 		if err := s.fs.Chmod(node.path, attrs.Mode); err != nil {
-			return err
+			return fmt.Errorf("setattr: chmod failed: %w", err)
 		}
 	}
 
-	if attrs.Uid != node.attrs.Uid || attrs.Gid != node.attrs.Gid {
+	if attrs.Uid != currentUid || attrs.Gid != currentGid {
 		if err := s.fs.Chown(node.path, int(attrs.Uid), int(attrs.Gid)); err != nil {
-			return err
+			return fmt.Errorf("setattr: chown failed: %w", err)
 		}
 	}
 
-	if attrs.Mtime != node.attrs.Mtime || attrs.Atime != node.attrs.Atime {
+	if attrs.Mtime != currentMtime || attrs.Atime != currentAtime {
 		if err := s.fs.Chtimes(node.path, attrs.Atime, attrs.Mtime); err != nil {
-			return err
+			return fmt.Errorf("setattr: chtimes failed: %w", err)
 		}
 	}
 
+	// Update attrs with lock protection
+	node.mu.Lock()
 	node.attrs = attrs
 	node.attrs.Refresh() // Initialize cache validity
+	node.mu.Unlock()
+
 	// Invalidate cache after attribute changes
 	s.attrCache.Invalidate(node.path)
 	return nil
@@ -187,8 +261,9 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 		return data, nil
 	}
 	
-	// Get the file handle for this node
+	// Get the file handle for this node and use batch processing if enabled
 	var fileHandle uint64
+	var useBatch bool
 	s.fileMap.RLock()
 	for handle, file := range s.fileMap.handles {
 		if nodeFile, ok := file.(*NFSNode); ok && nodeFile.path == node.path {
@@ -196,11 +271,19 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 			break
 		}
 	}
-	s.fileMap.RUnlock()
-	
-	// If we found a file handle and batching is enabled, try to use batch processing
+	// Check if we should use batch processing while still holding the lock
+	// This prevents a race where the handle could be removed after we release the lock
 	if fileHandle != 0 && s.options.BatchOperations && s.batchProc != nil {
-		data, err, status := s.batchProc.BatchRead(context.Background(), fileHandle, offset, int(count))
+		// Verify handle still exists in map before using it
+		if _, exists := s.fileMap.handles[fileHandle]; exists {
+			useBatch = true
+		}
+	}
+	s.fileMap.RUnlock()
+
+	// Use batch processing if we determined it's safe to do so
+	if useBatch {
+		data, status, err := s.batchProc.BatchRead(context.Background(), fileHandle, offset, int(count))
 		if err == nil && status == NFS_OK {
 			return data, nil
 		}
@@ -215,14 +298,14 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 	// Standard read path
 	f, err := s.fs.OpenFile(node.path, os.O_RDONLY, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read: failed to open %s: %w", node.path, err)
 	}
 	defer f.Close()
 
 	// Get file size
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read: failed to stat %s: %w", node.path, err)
 	}
 
 	// Adjust count if it would read beyond EOF
@@ -238,7 +321,7 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 	buf := make([]byte, count)
 	n, err := f.ReadAt(buf, offset)
 	if err != nil && err != io.EOF {
-		return nil, err
+		return nil, fmt.Errorf("read: failed to read from %s at offset %d: %w", node.path, offset, err)
 	}
 
 	// Only attempt read-ahead if enabled and we got all requested data and there's more to read
@@ -289,8 +372,9 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 		data = data[:s.options.TransferSize]
 	}
 	
-	// Get the file handle for this node
+	// Get the file handle for this node and use batch processing if enabled
 	var fileHandle uint64
+	var useBatch bool
 	s.fileMap.RLock()
 	for handle, file := range s.fileMap.handles {
 		if nodeFile, ok := file.(*NFSNode); ok && nodeFile.path == node.path {
@@ -298,25 +382,35 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 			break
 		}
 	}
-	s.fileMap.RUnlock()
-	
-	// If we found a file handle and batching is enabled, try to use batch processing
+	// Check if we should use batch processing while still holding the lock
+	// This prevents a race where the handle could be removed after we release the lock
 	if fileHandle != 0 && s.options.BatchOperations && s.batchProc != nil {
-		err, status := s.batchProc.BatchWrite(context.Background(), fileHandle, offset, data)
+		// Verify handle still exists in map before using it
+		if _, exists := s.fileMap.handles[fileHandle]; exists {
+			useBatch = true
+		}
+	}
+	s.fileMap.RUnlock()
+
+	// Use batch processing if we determined it's safe to do so
+	if useBatch {
+		status, err := s.batchProc.BatchWrite(context.Background(), fileHandle, offset, data)
 		if err == nil && status == NFS_OK {
 			// Invalidate cache after successful write
 			s.attrCache.Invalidate(node.path)
 			// Clear only the specific file's buffer, not all buffers
 			s.readBuf.ClearPath(node.path)
-			
+
 			// Update node attributes to reflect changes
 			info, statErr := s.fs.Stat(node.path)
 			if statErr == nil {
+				node.mu.Lock()
 				node.attrs.Size = info.Size()
 				node.attrs.Mtime = info.ModTime()
 				node.attrs.Refresh() // Initialize cache validity
+				node.mu.Unlock()
 			}
-			
+
 			return int64(len(data)), nil
 		}
 		// If batch processing failed but not because of a file error, fall back to normal write
@@ -330,9 +424,13 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 	// Standard write path
 	f, err := s.fs.OpenFile(node.path, os.O_WRONLY, 0)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("write: failed to open %s: %w", node.path, err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	n, err := f.WriteAt(data, offset)
 	if err == nil {
@@ -350,9 +448,11 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 		// Update node attributes to reflect new size and time
 		info, statErr := s.fs.Stat(node.path)
 		if statErr == nil {
+			node.mu.Lock()
 			node.attrs.Size = info.Size()
 			node.attrs.Mtime = info.ModTime()
 			node.attrs.Refresh() // Initialize cache validity
+			node.mu.Unlock()
 		}
 	}
 	return int64(n), err
@@ -374,16 +474,24 @@ func (s *AbsfsNFS) Create(dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode,
 		return nil, os.ErrPermission
 	}
 
-	path := dir.path + "/" + name
+	// Sanitize the path to prevent directory traversal attacks
+	path, err := sanitizePath(dir.path, name)
+	if err != nil {
+		return nil, fmt.Errorf("create: failed to sanitize path: %w", err)
+	}
+
 	f, err := s.fs.Create(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create: failed to create %s: %w", path, err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		s.fs.Remove(path)
+		return nil, fmt.Errorf("create: failed to close %s: %w", path, err)
+	}
 
 	if err := s.fs.Chmod(path, attrs.Mode); err != nil {
 		s.fs.Remove(path)
-		return nil, err
+		return nil, fmt.Errorf("create: failed to chmod %s: %w", path, err)
 	}
 
 	// Invalidate parent directory cache
@@ -404,14 +512,20 @@ func (s *AbsfsNFS) Remove(dir *NFSNode, name string) error {
 		return os.ErrPermission
 	}
 
-	path := dir.path + "/" + name
-	err := s.fs.Remove(path)
-	if err == nil {
-		// Invalidate caches
-		s.attrCache.Invalidate(path)
-		s.attrCache.Invalidate(dir.path)
+	// Sanitize the path to prevent directory traversal attacks
+	path, err := sanitizePath(dir.path, name)
+	if err != nil {
+		return fmt.Errorf("remove: failed to sanitize path: %w", err)
 	}
-	return err
+
+	err = s.fs.Remove(path)
+	if err != nil {
+		return fmt.Errorf("remove: failed to remove %s: %w", path, err)
+	}
+	// Invalidate caches
+	s.attrCache.Invalidate(path)
+	s.attrCache.Invalidate(dir.path)
+	return nil
 }
 
 // Rename implements the RENAME operation
@@ -427,18 +541,27 @@ func (s *AbsfsNFS) Rename(oldDir *NFSNode, oldName string, newDir *NFSNode, newN
 		return os.ErrPermission
 	}
 
-	oldPath := oldDir.path + "/" + oldName
-	newPath := newDir.path + "/" + newName
-
-	err := s.fs.Rename(oldPath, newPath)
-	if err == nil {
-		// Invalidate caches
-		s.attrCache.Invalidate(oldPath)
-		s.attrCache.Invalidate(newPath)
-		s.attrCache.Invalidate(oldDir.path)
-		s.attrCache.Invalidate(newDir.path)
+	// Sanitize both paths to prevent directory traversal attacks
+	oldPath, err := sanitizePath(oldDir.path, oldName)
+	if err != nil {
+		return fmt.Errorf("rename: failed to sanitize old path: %w", err)
 	}
-	return err
+
+	newPath, err := sanitizePath(newDir.path, newName)
+	if err != nil {
+		return fmt.Errorf("rename: failed to sanitize new path: %w", err)
+	}
+
+	err = s.fs.Rename(oldPath, newPath)
+	if err != nil {
+		return fmt.Errorf("rename: failed to rename %s to %s: %w", oldPath, newPath, err)
+	}
+	// Invalidate caches
+	s.attrCache.Invalidate(oldPath)
+	s.attrCache.Invalidate(newPath)
+	s.attrCache.Invalidate(oldDir.path)
+	s.attrCache.Invalidate(newDir.path)
+	return nil
 }
 
 // ReadDir implements the READDIR operation
@@ -449,7 +572,7 @@ func (s *AbsfsNFS) ReadDir(dir *NFSNode) ([]*NFSNode, error) {
 
 	f, err := s.fs.OpenFile(dir.path, os.O_RDONLY, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("readdir: failed to open directory %s: %w", dir.path, err)
 	}
 	defer f.Close()
 
@@ -462,7 +585,7 @@ func (s *AbsfsNFS) ReadDir(dir *NFSNode) ([]*NFSNode, error) {
 	// Read directory entries
 	entries, err := dirFile.Readdir(-1)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("readdir: failed to read entries from %s: %w", dir.path, err)
 	}
 
 	var nodes []*NFSNode
@@ -472,7 +595,12 @@ func (s *AbsfsNFS) ReadDir(dir *NFSNode) ([]*NFSNode, error) {
 		if name == "." || name == ".." {
 			continue
 		}
-		entryPath := dir.path + "/" + name
+		// Sanitize the path to prevent directory traversal attacks
+		entryPath, err := sanitizePath(dir.path, name)
+		if err != nil {
+			// Skip entries with invalid names
+			continue
+		}
 		node, err := s.Lookup(entryPath)
 		if err != nil {
 			continue
@@ -543,6 +671,68 @@ func (s *AbsfsNFS) Export(mountPath string, port int) error {
 
 	server.SetHandler(s)
 	return server.Listen()
+}
+
+// Symlink implements the SYMLINK operation
+func (s *AbsfsNFS) Symlink(dir *NFSNode, name string, target string, attrs *NFSAttrs) (*NFSNode, error) {
+	if dir == nil {
+		return nil, fmt.Errorf("nil directory node")
+	}
+	if name == "" {
+		return nil, fmt.Errorf("empty name")
+	}
+	if target == "" {
+		return nil, fmt.Errorf("empty target")
+	}
+	if attrs == nil {
+		return nil, fmt.Errorf("nil attrs")
+	}
+
+	if s.options.ReadOnly {
+		return nil, os.ErrPermission
+	}
+
+	// Check if filesystem supports symlinks
+	symlinkFS, ok := s.fs.(SymlinkFileSystem)
+	if !ok {
+		return nil, fmt.Errorf("symlink: filesystem does not support symbolic links")
+	}
+
+	// Sanitize the path to prevent directory traversal attacks
+	path, err := sanitizePath(dir.path, name)
+	if err != nil {
+		return nil, fmt.Errorf("symlink: failed to sanitize path: %w", err)
+	}
+
+	// Create the symlink
+	err = symlinkFS.Symlink(target, path)
+	if err != nil {
+		return nil, fmt.Errorf("symlink: failed to create symlink at %s pointing to %s: %w", path, target, err)
+	}
+
+	// Invalidate parent directory cache
+	s.attrCache.Invalidate(dir.path)
+	return s.Lookup(path)
+}
+
+// Readlink implements the READLINK operation
+func (s *AbsfsNFS) Readlink(node *NFSNode) (string, error) {
+	if node == nil {
+		return "", fmt.Errorf("nil node")
+	}
+
+	// Check if filesystem supports symlinks
+	symlinkFS, ok := s.fs.(SymlinkFileSystem)
+	if !ok {
+		return "", fmt.Errorf("readlink: filesystem does not support symbolic links")
+	}
+
+	target, err := symlinkFS.Readlink(node.path)
+	if err != nil {
+		return "", fmt.Errorf("readlink: failed to read symlink %s: %w", node.path, err)
+	}
+
+	return target, nil
 }
 
 // Unexport stops serving the NFS export

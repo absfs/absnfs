@@ -61,6 +61,9 @@ func TestMetricsCollection(t *testing.T) {
 		server.RecordReadAheadMiss()
 	}
 
+	// Wait to ensure uptime is at least 1 second
+	time.Sleep(1 * time.Second)
+
 	// Get metrics
 	metrics := server.GetMetrics()
 

@@ -186,6 +186,7 @@ func TestServerHandleConnection(t *testing.T) {
 
 		done := make(chan struct{})
 		go func() {
+			defer close(done)
 			// Write valid RPC call header
 			header := RPCMsgHeader{
 				Xid:        1,
@@ -207,39 +208,48 @@ func TestServerHandleConnection(t *testing.T) {
 				},
 			}
 			if err := xdrEncodeUint32(srv, call.Header.Xid); err != nil {
-				t.Fatalf("Failed to encode XID: %v", err)
+				t.Errorf("Failed to encode XID: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.MsgType); err != nil {
-				t.Fatalf("Failed to encode message type: %v", err)
+				t.Errorf("Failed to encode message type: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.RPCVersion); err != nil {
-				t.Fatalf("Failed to encode RPC version: %v", err)
+				t.Errorf("Failed to encode RPC version: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.Program); err != nil {
-				t.Fatalf("Failed to encode program: %v", err)
+				t.Errorf("Failed to encode program: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.Version); err != nil {
-				t.Fatalf("Failed to encode version: %v", err)
+				t.Errorf("Failed to encode version: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.Procedure); err != nil {
-				t.Fatalf("Failed to encode procedure: %v", err)
+				t.Errorf("Failed to encode procedure: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Credential.Flavor); err != nil {
-				t.Fatalf("Failed to encode credential flavor: %v", err)
+				t.Errorf("Failed to encode credential flavor: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, 0); err != nil { // credential body length
-				t.Fatalf("Failed to encode credential length: %v", err)
+				t.Errorf("Failed to encode credential length: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, call.Verifier.Flavor); err != nil {
-				t.Fatalf("Failed to encode verifier flavor: %v", err)
+				t.Errorf("Failed to encode verifier flavor: %v", err)
+					return
 			}
 			if err := xdrEncodeUint32(srv, 0); err != nil { // verifier body length
-				t.Fatalf("Failed to encode verifier length: %v", err)
+				t.Errorf("Failed to encode verifier length: %v", err)
+					return
 			}
 			// Block on read to trigger write timeout
 			buf := make([]byte, 1024)
 			srv.Read(buf)
-			close(done)
 		}()
 
 		procHandler := &NFSProcedureHandler{server: server}
@@ -278,6 +288,7 @@ func TestServerHandleConnection(t *testing.T) {
 
 				done := make(chan struct{})
 				go func() {
+					defer close(done)
 					// Write valid RPC call header
 					header := RPCMsgHeader{
 						Xid:        1,
@@ -299,36 +310,43 @@ func TestServerHandleConnection(t *testing.T) {
 						},
 					}
 					if err := xdrEncodeUint32(srv, call.Header.Xid); err != nil {
-						t.Fatalf("Failed to encode XID: %v", err)
+						t.Errorf("Failed to encode XID: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.MsgType); err != nil {
-						t.Fatalf("Failed to encode message type: %v", err)
+						t.Errorf("Failed to encode message type: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.RPCVersion); err != nil {
-						t.Fatalf("Failed to encode RPC version: %v", err)
+						t.Errorf("Failed to encode RPC version: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.Program); err != nil {
-						t.Fatalf("Failed to encode program: %v", err)
+						t.Errorf("Failed to encode program: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.Version); err != nil {
-						t.Fatalf("Failed to encode version: %v", err)
+						t.Errorf("Failed to encode version: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.Procedure); err != nil {
-						t.Fatalf("Failed to encode procedure: %v", err)
+						t.Errorf("Failed to encode procedure: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, call.Credential.Flavor); err != nil {
-						t.Fatalf("Failed to encode credential flavor: %v", err)
+						t.Errorf("Failed to encode credential flavor: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, 0); err != nil { // credential body length
-						t.Fatalf("Failed to encode credential length: %v", err)
 					}
 					if err := xdrEncodeUint32(srv, call.Verifier.Flavor); err != nil {
-						t.Fatalf("Failed to encode verifier flavor: %v", err)
+						t.Errorf("Failed to encode verifier flavor: %v", err)
+							return
 					}
 					if err := xdrEncodeUint32(srv, 0); err != nil { // verifier body length
-						t.Fatalf("Failed to encode verifier length: %v", err)
+						t.Errorf("Failed to encode verifier length: %v", err)
+							return
 					}
-					close(done)
 				}()
 
 				procHandler := &NFSProcedureHandler{server: server}
@@ -389,7 +407,7 @@ func TestServerHandleConnection(t *testing.T) {
 		server.cancel()
 		<-done
 
-		if server.acceptErrs < 3 {
+		if server.acceptErrs.Load() < 3 {
 			t.Error("Expected accept errors to be counted")
 		}
 	})
@@ -433,7 +451,11 @@ func TestServerPortBinding(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to get random port: %v", err)
 		}
-		port := listener.Addr().(*net.TCPAddr).Port
+		tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+		if !ok {
+			t.Fatalf("Failed to get TCP address from listener")
+		}
+		port := tcpAddr.Port
 		listener.Close()
 
 		// First server should bind successfully
@@ -527,7 +549,10 @@ func TestServerPortBinding(t *testing.T) {
 		}
 
 		// Force connection reset
-		tcpConn := conn.(*net.TCPConn)
+		tcpConn, ok := conn.(*net.TCPConn)
+		if !ok {
+			t.Fatalf("Failed to get TCP connection")
+		}
 		tcpConn.SetLinger(0)
 		tcpConn.Close()
 
@@ -656,6 +681,265 @@ func TestServerErrorHandling(t *testing.T) {
 			}
 		case <-time.After(testStopTimeout):
 			t.Error("Server stop timed out")
+		}
+	})
+}
+
+// TestAllowedIPsEnforcement tests that the AllowedIPs security control is properly enforced
+func TestAllowedIPsEnforcement(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatalf("Failed to create memfs: %v", err)
+	}
+
+	t.Run("individual IP allowed", func(t *testing.T) {
+		nfs, err := New(fs, ExportOptions{
+			AllowedIPs: []string{"127.0.0.1"},
+		})
+		if err != nil {
+			t.Fatalf("Failed to create NFS: %v", err)
+		}
+
+		server, err := NewServer(ServerOptions{
+			Port:     0,
+			Hostname: "localhost",
+			Debug:    true,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+		server.SetHandler(nfs)
+
+		// Test that 127.0.0.1 is allowed
+		if !server.isIPAllowed("127.0.0.1") {
+			t.Error("Expected 127.0.0.1 to be allowed")
+		}
+
+		// Test that other IPs are blocked
+		if server.isIPAllowed("192.168.1.100") {
+			t.Error("Expected 192.168.1.100 to be blocked")
+		}
+		if server.isIPAllowed("10.0.0.1") {
+			t.Error("Expected 10.0.0.1 to be blocked")
+		}
+	})
+
+	t.Run("CIDR notation", func(t *testing.T) {
+		nfs, err := New(fs, ExportOptions{
+			AllowedIPs: []string{"192.168.1.0/24", "10.0.0.0/8"},
+		})
+		if err != nil {
+			t.Fatalf("Failed to create NFS: %v", err)
+		}
+
+		server, err := NewServer(ServerOptions{
+			Port:     0,
+			Hostname: "localhost",
+			Debug:    true,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+		server.SetHandler(nfs)
+
+		// Test IPs in the 192.168.1.0/24 subnet
+		if !server.isIPAllowed("192.168.1.1") {
+			t.Error("Expected 192.168.1.1 to be allowed")
+		}
+		if !server.isIPAllowed("192.168.1.100") {
+			t.Error("Expected 192.168.1.100 to be allowed")
+		}
+		if !server.isIPAllowed("192.168.1.254") {
+			t.Error("Expected 192.168.1.254 to be allowed")
+		}
+
+		// Test IPs in the 10.0.0.0/8 subnet
+		if !server.isIPAllowed("10.0.0.1") {
+			t.Error("Expected 10.0.0.1 to be allowed")
+		}
+		if !server.isIPAllowed("10.255.255.255") {
+			t.Error("Expected 10.255.255.255 to be allowed")
+		}
+
+		// Test IPs outside allowed subnets
+		if server.isIPAllowed("192.168.2.1") {
+			t.Error("Expected 192.168.2.1 to be blocked")
+		}
+		if server.isIPAllowed("172.16.0.1") {
+			t.Error("Expected 172.16.0.1 to be blocked")
+		}
+		if server.isIPAllowed("127.0.0.1") {
+			t.Error("Expected 127.0.0.1 to be blocked")
+		}
+	})
+
+	t.Run("empty AllowedIPs allows all", func(t *testing.T) {
+		nfs, err := New(fs, ExportOptions{
+			AllowedIPs: []string{},
+		})
+		if err != nil {
+			t.Fatalf("Failed to create NFS: %v", err)
+		}
+
+		server, err := NewServer(ServerOptions{
+			Port:     0,
+			Hostname: "localhost",
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+		server.SetHandler(nfs)
+
+		// All IPs should be allowed when AllowedIPs is empty
+		if !server.isIPAllowed("127.0.0.1") {
+			t.Error("Expected 127.0.0.1 to be allowed when AllowedIPs is empty")
+		}
+		if !server.isIPAllowed("192.168.1.1") {
+			t.Error("Expected 192.168.1.1 to be allowed when AllowedIPs is empty")
+		}
+		if !server.isIPAllowed("10.0.0.1") {
+			t.Error("Expected 10.0.0.1 to be allowed when AllowedIPs is empty")
+		}
+	})
+
+	t.Run("nil AllowedIPs allows all", func(t *testing.T) {
+		nfs, err := New(fs, ExportOptions{
+			AllowedIPs: nil,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create NFS: %v", err)
+		}
+
+		server, err := NewServer(ServerOptions{
+			Port:     0,
+			Hostname: "localhost",
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+		server.SetHandler(nfs)
+
+		// All IPs should be allowed when AllowedIPs is nil
+		if !server.isIPAllowed("127.0.0.1") {
+			t.Error("Expected 127.0.0.1 to be allowed when AllowedIPs is nil")
+		}
+		if !server.isIPAllowed("192.168.1.1") {
+			t.Error("Expected 192.168.1.1 to be allowed when AllowedIPs is nil")
+		}
+	})
+
+	t.Run("invalid IP address rejected", func(t *testing.T) {
+		nfs, err := New(fs, ExportOptions{
+			AllowedIPs: []string{"127.0.0.1"},
+		})
+		if err != nil {
+			t.Fatalf("Failed to create NFS: %v", err)
+		}
+
+		server, err := NewServer(ServerOptions{
+			Port:     0,
+			Hostname: "localhost",
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+		server.SetHandler(nfs)
+
+		// Invalid IP addresses should be rejected
+		if server.isIPAllowed("invalid") {
+			t.Error("Expected invalid IP to be rejected")
+		}
+		if server.isIPAllowed("999.999.999.999") {
+			t.Error("Expected malformed IP to be rejected")
+		}
+	})
+
+	t.Run("invalid CIDR notation handled", func(t *testing.T) {
+		nfs, err := New(fs, ExportOptions{
+			AllowedIPs: []string{"127.0.0.1", "invalid/24", "192.168.1.0/24"},
+		})
+		if err != nil {
+			t.Fatalf("Failed to create NFS: %v", err)
+		}
+
+		server, err := NewServer(ServerOptions{
+			Port:     0,
+			Hostname: "localhost",
+			Debug:    true,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+		server.SetHandler(nfs)
+
+		// Valid entries should still work
+		if !server.isIPAllowed("127.0.0.1") {
+			t.Error("Expected 127.0.0.1 to be allowed")
+		}
+		if !server.isIPAllowed("192.168.1.50") {
+			t.Error("Expected 192.168.1.50 to be allowed")
+		}
+
+		// IPs not in valid entries should be blocked
+		if server.isIPAllowed("10.0.0.1") {
+			t.Error("Expected 10.0.0.1 to be blocked")
+		}
+	})
+
+	t.Run("mixed IPs and CIDR notation", func(t *testing.T) {
+		nfs, err := New(fs, ExportOptions{
+			AllowedIPs: []string{"127.0.0.1", "192.168.1.0/24", "10.5.5.5"},
+		})
+		if err != nil {
+			t.Fatalf("Failed to create NFS: %v", err)
+		}
+
+		server, err := NewServer(ServerOptions{
+			Port:     0,
+			Hostname: "localhost",
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+		server.SetHandler(nfs)
+
+		// Individual IPs should be allowed
+		if !server.isIPAllowed("127.0.0.1") {
+			t.Error("Expected 127.0.0.1 to be allowed")
+		}
+		if !server.isIPAllowed("10.5.5.5") {
+			t.Error("Expected 10.5.5.5 to be allowed")
+		}
+
+		// IPs in CIDR range should be allowed
+		if !server.isIPAllowed("192.168.1.100") {
+			t.Error("Expected 192.168.1.100 to be allowed")
+		}
+
+		// Other IPs should be blocked
+		if server.isIPAllowed("10.5.5.6") {
+			t.Error("Expected 10.5.5.6 to be blocked")
+		}
+		if server.isIPAllowed("192.168.2.1") {
+			t.Error("Expected 192.168.2.1 to be blocked")
+		}
+	})
+
+	t.Run("no handler allows all", func(t *testing.T) {
+		server, err := NewServer(ServerOptions{
+			Port:     0,
+			Hostname: "localhost",
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+
+		// Without a handler, all IPs should be allowed
+		if !server.isIPAllowed("127.0.0.1") {
+			t.Error("Expected 127.0.0.1 to be allowed when no handler")
+		}
+		if !server.isIPAllowed("192.168.1.1") {
+			t.Error("Expected 192.168.1.1 to be allowed when no handler")
 		}
 	})
 }

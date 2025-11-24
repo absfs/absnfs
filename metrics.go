@@ -1,6 +1,7 @@
 package absnfs
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,17 +44,24 @@ type NFSMetrics struct {
 	TotalConnections     uint64
 	RejectedConnections  uint64
 
+	// TLS metrics
+	TLSHandshakes           uint64 // Successful TLS handshakes
+	TLSHandshakeFailures    uint64 // Failed TLS handshakes
+	TLSClientCertProvided   uint64 // Connections with client certificates
+	TLSClientCertValidated  uint64 // Successfully validated client certificates
+	TLSClientCertRejected   uint64 // Rejected client certificates
+	TLSSessionReused        uint64 // TLS session resumptions
+	TLSVersion12            uint64 // Connections using TLS 1.2
+	TLSVersion13            uint64 // Connections using TLS 1.3
+
 	// Error metrics
 	ErrorCount       uint64
 	AuthFailures     uint64
 	AccessViolations uint64
 	StaleHandles     uint64
 	ResourceErrors   uint64
+	RateLimitExceeded uint64
 
-	// Internal metrics for calculating averages and percentiles
-	readLatencies  []time.Duration
-	writeLatencies []time.Duration
-	
 	// Time-based metrics
 	StartTime time.Time
 	UptimeSeconds int64
@@ -159,11 +167,10 @@ func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) 
 			m.metrics.AvgReadLatency = sum / time.Duration(len(m.readLatencies))
 			
 			// Calculate 95th percentile
-			// This is a simple implementation - for production, consider using a more efficient algorithm
 			if len(m.readLatencies) >= 20 { // Need enough samples for meaningful percentile
 				sorted := make([]time.Duration, len(m.readLatencies))
 				copy(sorted, m.readLatencies)
-				sort(sorted)
+				sortDurations(sorted)
 				idx := int(float64(len(sorted)) * 0.95)
 				m.metrics.P95ReadLatency = sorted[idx]
 			}
@@ -200,7 +207,7 @@ func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) 
 			if len(m.writeLatencies) >= 20 { // Need enough samples for meaningful percentile
 				sorted := make([]time.Duration, len(m.writeLatencies))
 				copy(sorted, m.writeLatencies)
-				sort(sorted)
+				sortDurations(sorted)
 				idx := int(float64(len(sorted)) * 0.95)
 				m.metrics.P95WriteLatency = sorted[idx]
 			}
@@ -247,7 +254,7 @@ func (m *MetricsCollector) RecordDirCacheMiss() {
 // RecordError records an error
 func (m *MetricsCollector) RecordError(errorType string) {
 	atomic.AddUint64(&m.metrics.ErrorCount, 1)
-	
+
 	switch errorType {
 	case "AUTH":
 		atomic.AddUint64(&m.metrics.AuthFailures, 1)
@@ -257,7 +264,14 @@ func (m *MetricsCollector) RecordError(errorType string) {
 		atomic.AddUint64(&m.metrics.StaleHandles, 1)
 	case "RESOURCE":
 		atomic.AddUint64(&m.metrics.ResourceErrors, 1)
+	case "RATELIMIT":
+		atomic.AddUint64(&m.metrics.RateLimitExceeded, 1)
 	}
+}
+
+// RecordRateLimitExceeded records a rate limit rejection
+func (m *MetricsCollector) RecordRateLimitExceeded() {
+	atomic.AddUint64(&m.metrics.RateLimitExceeded, 1)
 }
 
 // RecordConnection records a new connection
@@ -281,6 +295,41 @@ func (m *MetricsCollector) RecordConnectionClosed() {
 // RecordRejectedConnection records a rejected connection
 func (m *MetricsCollector) RecordRejectedConnection() {
 	atomic.AddUint64(&m.metrics.RejectedConnections, 1)
+}
+
+// RecordTLSHandshake records a successful TLS handshake
+func (m *MetricsCollector) RecordTLSHandshake() {
+	atomic.AddUint64(&m.metrics.TLSHandshakes, 1)
+}
+
+// RecordTLSHandshakeFailure records a failed TLS handshake
+func (m *MetricsCollector) RecordTLSHandshakeFailure() {
+	atomic.AddUint64(&m.metrics.TLSHandshakeFailures, 1)
+}
+
+// RecordTLSClientCert records a connection with a client certificate
+func (m *MetricsCollector) RecordTLSClientCert(validated bool) {
+	atomic.AddUint64(&m.metrics.TLSClientCertProvided, 1)
+	if validated {
+		atomic.AddUint64(&m.metrics.TLSClientCertValidated, 1)
+	} else {
+		atomic.AddUint64(&m.metrics.TLSClientCertRejected, 1)
+	}
+}
+
+// RecordTLSSessionReused records a TLS session resumption
+func (m *MetricsCollector) RecordTLSSessionReused() {
+	atomic.AddUint64(&m.metrics.TLSSessionReused, 1)
+}
+
+// RecordTLSVersion records the TLS version used for a connection
+func (m *MetricsCollector) RecordTLSVersion(version uint16) {
+	switch version {
+	case 0x0303: // TLS 1.2
+		atomic.AddUint64(&m.metrics.TLSVersion12, 1)
+	case 0x0304: // TLS 1.3
+		atomic.AddUint64(&m.metrics.TLSVersion13, 1)
+	}
 }
 
 // updateCacheHitRate updates the attribute cache hit rate
@@ -368,17 +417,14 @@ func (m *MetricsCollector) GetMetrics() NFSMetrics {
 	return metricsCopy
 }
 
-// sort is a helper function to sort duration slices
-func sort(durations []time.Duration) {
-	// Simple bubble sort implementation
-	n := len(durations)
-	for i := 0; i < n-1; i++ {
-		for j := 0; j < n-i-1; j++ {
-			if durations[j] > durations[j+1] {
-				durations[j], durations[j+1] = durations[j+1], durations[j]
-			}
-		}
-	}
+// sortDurations is a helper function to sort duration slices using efficient O(n log n) algorithm
+func sortDurations(durations []time.Duration) {
+	// Use Go's built-in sort.Slice which uses an optimized O(n log n) algorithm
+	// This is significantly faster than bubble sort, especially for large datasets
+	// For 1000 samples: O(n log n) ≈ 10,000 operations vs O(n²) ≈ 1,000,000 operations
+	sort.Slice(durations, func(i, j int) bool {
+		return durations[i] < durations[j]
+	})
 }
 
 // IsHealthy checks if the server is in a healthy state

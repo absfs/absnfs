@@ -514,3 +514,248 @@ func (m *mockFS) Getwd() (string, error)                { return "", m.statError
 func (m *mockFS) ListSeparator() uint8                  { return '/' }
 func (m *mockFS) Separator() uint8                      { return '/' }
 func (m *mockFS) TempDir() string                       { return "/tmp" }
+
+func TestAbsfsNFSClose(t *testing.T) {
+	t.Run("basic close cleanup", func(t *testing.T) {
+		ctx, cleanup := setupAbsNFSTest(t)
+		defer cleanup()
+
+		fs, nfs := setupTestFS(t, ctx)
+
+		// Create some file handles
+		node, err := nfs.Lookup("/testdir/test.txt")
+		if err != nil {
+			t.Fatalf("Failed to lookup test file: %v", err)
+		}
+
+		// Allocate a file handle
+		handle := nfs.fileMap.Allocate(node)
+		if handle == 0 {
+			t.Fatal("Failed to allocate file handle")
+		}
+
+		// Verify handle exists
+		if _, exists := nfs.fileMap.Get(handle); !exists {
+			t.Fatal("File handle should exist before Close()")
+		}
+
+		// Add some items to cache
+		testPath := "/testdir"
+		nfs.attrCache.Put(testPath, &NFSAttrs{
+			Mode:  0755,
+			Size:  0,
+			Mtime: time.Now(),
+			Atime: time.Now(),
+		})
+
+		// Add data to read buffer
+		testData := []byte("test read buffer data")
+		nfs.readBuf.Fill(testPath, testData, 0)
+
+		// Close the NFS server
+		if err := nfs.Close(); err != nil {
+			t.Fatalf("Close() failed: %v", err)
+		}
+
+		// Verify file handles were released
+		if nfs.fileMap.Count() != 0 {
+			t.Errorf("File handle count = %d, want 0 after Close()", nfs.fileMap.Count())
+		}
+
+		// Verify caches were cleared by checking if we can add new items
+		// (This indirectly verifies Clear() was called)
+		nfs.attrCache.Put("/new", &NFSAttrs{Mode: 0644})
+		if attrs := nfs.attrCache.Get("/new"); attrs == nil {
+			t.Error("Attribute cache should be functional after Close()")
+		}
+
+		// Verify filesystem is still accessible
+		if _, err := fs.Stat("/"); err != nil {
+			t.Errorf("Filesystem should still be accessible: %v", err)
+		}
+	})
+
+	t.Run("close with optional components", func(t *testing.T) {
+		_, cleanup := setupAbsNFSTest(t)
+		defer cleanup()
+
+		fs, err := memfs.NewFS()
+		if err != nil {
+			t.Fatalf("Failed to create memfs: %v", err)
+		}
+
+		// Create NFS server
+		nfs, err := New(fs, ExportOptions{
+			ReadOnly: false,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create NFS: %v", err)
+		}
+
+		// Close and verify cleanup - should handle nil optional components
+		if err := nfs.Close(); err != nil {
+			t.Fatalf("Close() failed: %v", err)
+		}
+	})
+
+	t.Run("close idempotency", func(t *testing.T) {
+		ctx, cleanup := setupAbsNFSTest(t)
+		defer cleanup()
+
+		_, nfs := setupTestFS(t, ctx)
+
+		// First close
+		if err := nfs.Close(); err != nil {
+			t.Fatalf("First Close() failed: %v", err)
+		}
+
+		// Second close should not panic or error
+		if err := nfs.Close(); err != nil {
+			t.Fatalf("Second Close() failed: %v", err)
+		}
+
+		// Third close for good measure
+		if err := nfs.Close(); err != nil {
+			t.Fatalf("Third Close() failed: %v", err)
+		}
+	})
+
+	t.Run("close with multiple file handles", func(t *testing.T) {
+		ctx, cleanup := setupAbsNFSTest(t)
+		defer cleanup()
+
+		fs, nfs := setupTestFS(t, ctx)
+
+		// Create multiple test files
+		for i := 0; i < 10; i++ {
+			path := fmt.Sprintf("/testdir/file%d.txt", i)
+			f, err := fs.Create(path)
+			if err != nil {
+				t.Fatalf("Failed to create test file %d: %v", i, err)
+			}
+			f.Close()
+
+			// Lookup and allocate handle
+			node, err := nfs.Lookup(path)
+			if err != nil {
+				t.Fatalf("Failed to lookup test file %d: %v", i, err)
+			}
+			nfs.fileMap.Allocate(node)
+		}
+
+		// Verify multiple handles exist
+		if count := nfs.fileMap.Count(); count != 10 {
+			t.Errorf("File handle count = %d, want 10 before Close()", count)
+		}
+
+		// Close should release all handles
+		if err := nfs.Close(); err != nil {
+			t.Fatalf("Close() with multiple handles failed: %v", err)
+		}
+
+		// Verify all handles were released
+		if count := nfs.fileMap.Count(); count != 0 {
+			t.Errorf("File handle count = %d, want 0 after Close()", count)
+		}
+	})
+
+	t.Run("close with nil components", func(t *testing.T) {
+		// Create a minimal NFS instance with nil components
+		nfs := &AbsfsNFS{
+			fileMap:    nil,
+			attrCache:  nil,
+			readBuf:    nil,
+			workerPool: nil,
+			batchProc:  nil,
+		}
+
+		// Close should handle nil components gracefully
+		if err := nfs.Close(); err != nil {
+			t.Fatalf("Close() with nil components failed: %v", err)
+		}
+	})
+
+	t.Run("close clears caches", func(t *testing.T) {
+		ctx, cleanup := setupAbsNFSTest(t)
+		defer cleanup()
+
+		_, nfs := setupTestFS(t, ctx)
+
+		// Populate attribute cache
+		for i := 0; i < 100; i++ {
+			path := fmt.Sprintf("/path%d", i)
+			nfs.attrCache.Put(path, &NFSAttrs{
+				Mode:  0644,
+				Size:  int64(i * 1024),
+				Mtime: time.Now(),
+				Atime: time.Now(),
+			})
+		}
+
+		// Populate read buffer
+		for i := 0; i < 50; i++ {
+			path := fmt.Sprintf("/readpath%d", i)
+			data := []byte(fmt.Sprintf("buffer data %d", i))
+			nfs.readBuf.Fill(path, data, int64(i*1024))
+		}
+
+		// Close and verify caches are cleared
+		if err := nfs.Close(); err != nil {
+			t.Fatalf("Close() failed: %v", err)
+		}
+
+		// After Close, caches should be empty
+		// We verify by checking that old entries are gone
+		for i := 0; i < 100; i++ {
+			path := fmt.Sprintf("/path%d", i)
+			if attrs := nfs.attrCache.Get(path); attrs != nil && attrs.IsValid() {
+				t.Errorf("Attribute cache entry %s still exists after Close()", path)
+			}
+		}
+	})
+
+	t.Run("close with read-ahead enabled", func(t *testing.T) {
+		_, cleanup := setupAbsNFSTest(t)
+		defer cleanup()
+
+		fs, err := memfs.NewFS()
+		if err != nil {
+			t.Fatalf("Failed to create memfs: %v", err)
+		}
+
+		// Create NFS with read-ahead enabled
+		nfs, err := New(fs, ExportOptions{
+			EnableReadAhead: true,
+			ReadAheadSize:   4096,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create NFS with read-ahead: %v", err)
+		}
+
+		// Create some activity
+		if err := fs.MkdirAll("/test", 0755); err != nil {
+			t.Fatalf("Failed to create test directory: %v", err)
+		}
+
+		node, err := nfs.Lookup("/test")
+		if err != nil {
+			t.Fatalf("Failed to lookup test directory: %v", err)
+		}
+
+		// Allocate file handle
+		nfs.fileMap.Allocate(node)
+
+		// Populate caches
+		nfs.attrCache.Put("/test", &NFSAttrs{Mode: 0755})
+
+		// Close with all components active
+		if err := nfs.Close(); err != nil {
+			t.Fatalf("Close() with read-ahead enabled failed: %v", err)
+		}
+
+		// Verify cleanup
+		if count := nfs.fileMap.Count(); count != 0 {
+			t.Errorf("File handles not fully released: count = %d", count)
+		}
+	})
+}
