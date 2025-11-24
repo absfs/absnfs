@@ -221,6 +221,50 @@ type ExportOptions struct {
 	// When nil, logging is disabled (no-op logger is used)
 	// When provided, enables structured logging with configurable level, format, and output
 	Log *LogConfig
+
+	// Timeouts controls operation-specific timeout durations
+	// When nil, default timeouts are used for all operations
+	// Allows fine-grained control over how long each operation type can take
+	Timeouts *TimeoutConfig
+}
+
+// TimeoutConfig defines timeout durations for various NFS operations
+type TimeoutConfig struct {
+	// ReadTimeout is the maximum time allowed for read operations
+	// Default: 30 seconds
+	ReadTimeout time.Duration
+
+	// WriteTimeout is the maximum time allowed for write operations
+	// Default: 60 seconds
+	WriteTimeout time.Duration
+
+	// LookupTimeout is the maximum time allowed for lookup operations
+	// Default: 10 seconds
+	LookupTimeout time.Duration
+
+	// ReaddirTimeout is the maximum time allowed for readdir operations
+	// Default: 30 seconds
+	ReaddirTimeout time.Duration
+
+	// CreateTimeout is the maximum time allowed for create operations
+	// Default: 15 seconds
+	CreateTimeout time.Duration
+
+	// RemoveTimeout is the maximum time allowed for remove operations
+	// Default: 15 seconds
+	RemoveTimeout time.Duration
+
+	// RenameTimeout is the maximum time allowed for rename operations
+	// Default: 20 seconds
+	RenameTimeout time.Duration
+
+	// HandleTimeout is the maximum time allowed for file handle operations
+	// Default: 5 seconds
+	HandleTimeout time.Duration
+
+	// DefaultTimeout is the fallback timeout for operations without a specific timeout
+	// Default: 30 seconds
+	DefaultTimeout time.Duration
 }
 
 // LogConfig defines the logging configuration for the NFS server
@@ -423,6 +467,50 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		options.RateLimitConfig = &config
 		// Enable rate limiting by default (secure by default)
 		options.EnableRateLimiting = true
+	}
+
+	// Set timeout defaults if not specified
+	if options.Timeouts == nil {
+		options.Timeouts = &TimeoutConfig{
+			ReadTimeout:    30 * time.Second,
+			WriteTimeout:   60 * time.Second,
+			LookupTimeout:  10 * time.Second,
+			ReaddirTimeout: 30 * time.Second,
+			CreateTimeout:  15 * time.Second,
+			RemoveTimeout:  15 * time.Second,
+			RenameTimeout:  20 * time.Second,
+			HandleTimeout:  5 * time.Second,
+			DefaultTimeout: 30 * time.Second,
+		}
+	} else {
+		// Fill in any zero values with defaults
+		if options.Timeouts.ReadTimeout <= 0 {
+			options.Timeouts.ReadTimeout = 30 * time.Second
+		}
+		if options.Timeouts.WriteTimeout <= 0 {
+			options.Timeouts.WriteTimeout = 60 * time.Second
+		}
+		if options.Timeouts.LookupTimeout <= 0 {
+			options.Timeouts.LookupTimeout = 10 * time.Second
+		}
+		if options.Timeouts.ReaddirTimeout <= 0 {
+			options.Timeouts.ReaddirTimeout = 30 * time.Second
+		}
+		if options.Timeouts.CreateTimeout <= 0 {
+			options.Timeouts.CreateTimeout = 15 * time.Second
+		}
+		if options.Timeouts.RemoveTimeout <= 0 {
+			options.Timeouts.RemoveTimeout = 15 * time.Second
+		}
+		if options.Timeouts.RenameTimeout <= 0 {
+			options.Timeouts.RenameTimeout = 20 * time.Second
+		}
+		if options.Timeouts.HandleTimeout <= 0 {
+			options.Timeouts.HandleTimeout = 5 * time.Second
+		}
+		if options.Timeouts.DefaultTimeout <= 0 {
+			options.Timeouts.DefaultTimeout = 30 * time.Second
+		}
 	}
 
 	// Create server object with configured caches
