@@ -380,6 +380,48 @@ func isChildOf(path, dirPath string) bool {
 	return true
 }
 
+// Resize changes the maximum size of the attribute cache
+// If the new size is smaller than current entries, LRU entries will be evicted
+func (c *AttrCache) Resize(newSize int) {
+	if newSize <= 0 {
+		newSize = 10000 // Default size if invalid
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Only resize if the size actually changed
+	if c.maxSize == newSize {
+		return
+	}
+
+	c.maxSize = newSize
+
+	// If the new size is smaller than current entries, evict LRU entries
+	for len(c.cache) > c.maxSize && c.accessList.Len() > 0 {
+		lruElement := c.accessList.Back()
+		if lruElement == nil {
+			break
+		}
+		lruPath := lruElement.Value.(string)
+		delete(c.cache, lruPath)
+		c.accessList.Remove(lruElement)
+	}
+}
+
+// UpdateTTL changes the time-to-live for cached attributes
+// This affects new entries and does not retroactively change existing entries
+func (c *AttrCache) UpdateTTL(newTTL time.Duration) {
+	if newTTL <= 0 {
+		newTTL = 5 * time.Second // Default TTL if invalid
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.ttl = newTTL
+}
+
 // FileBuffer represents a read-ahead buffer for a specific file
 type FileBuffer struct {
 	data        []byte
@@ -662,6 +704,27 @@ func (b *ReadAheadBuffer) ClearPath(path string) {
 	b.evictBuffer(path)
 }
 
+// Resize changes the maximum number of files and total memory for the read-ahead buffer
+// If the new limits are smaller, buffers will be evicted to meet the new limits
+func (b *ReadAheadBuffer) Resize(maxFiles int, maxMemory int64) {
+	if maxFiles <= 0 {
+		maxFiles = 100 // Default if invalid
+	}
+	if maxMemory <= 0 {
+		maxMemory = 104857600 // Default 100MB if invalid
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Update the limits
+	b.maxFiles = maxFiles
+	b.maxMemory = maxMemory
+
+	// Enforce new limits by evicting buffers if necessary
+	b.enforceMemoryLimits()
+}
+
 // DirCache provides caching for directory entries
 type DirCache struct {
 	entries     map[string]*CachedDirEntry
@@ -846,4 +909,46 @@ func (c *DirCache) Stats() (int, int64, int64) {
 	defer c.mu.RUnlock()
 
 	return len(c.entries), int64(atomic.LoadUint64(&c.hits)), int64(atomic.LoadUint64(&c.misses))
+}
+
+// Resize changes the maximum number of entries in the directory cache
+// If the new size is smaller than current entries, LRU entries will be evicted
+func (c *DirCache) Resize(newMaxEntries int) {
+	if newMaxEntries <= 0 {
+		newMaxEntries = 1000 // Default size if invalid
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Only resize if the size actually changed
+	if c.maxEntries == newMaxEntries {
+		return
+	}
+
+	c.maxEntries = newMaxEntries
+
+	// If the new size is smaller than current entries, evict LRU entries
+	for len(c.entries) > c.maxEntries && c.accessList.Len() > 0 {
+		lruElement := c.accessList.Back()
+		if lruElement == nil {
+			break
+		}
+		lruPath := lruElement.Value.(string)
+		delete(c.entries, lruPath)
+		c.accessList.Remove(lruElement)
+	}
+}
+
+// UpdateTTL changes the timeout duration for directory cache entries
+// This affects new entries and does not retroactively change existing entries
+func (c *DirCache) UpdateTTL(newTimeout time.Duration) {
+	if newTimeout <= 0 {
+		newTimeout = 10 * time.Second // Default timeout if invalid
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.timeout = newTimeout
 }
