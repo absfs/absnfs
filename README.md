@@ -62,7 +62,7 @@ func main() {
     }
 
     // Export the filesystem
-    if err := server.Export("/export/test"); err != nil {
+    if err := server.Export("/export/test", 2049); err != nil {
         log.Fatal(err)
     }
 
