@@ -67,7 +67,7 @@ The metrics returned by `GetMetrics()` include:
 - `AttrCacheSize`: Number of entries in the attribute cache
 - `AttrCacheCapacity`: Maximum capacity of the attribute cache
 - `ReadAheadBufferSize`: Current size of all read-ahead buffers
-- `DirCacheHitRate`: Percentage of directory lookups served from cache
+- `DirCacheHitRate`: Percentage of directory lookups served from cache (calculated from DirCacheHits and DirCacheMisses)
 
 **Connection Metrics**:
 - `ActiveConnections`: Number of currently active client connections

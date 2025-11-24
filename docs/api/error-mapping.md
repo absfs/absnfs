@@ -60,7 +60,6 @@ The error mapping logic considers several factors:
 | ABSFS/Go Error | NFS Error | Description |
 |----------------|-----------|-------------|
 | `*InvalidFileHandleError` | `NFS3ERR_BADHANDLE` | Invalid file handle not found in map |
-| `*StaleFileHandleError` | `NFS3ERR_STALE` | Stale file handle (was valid but no longer) |
 | Invalid cookie | `NFS3ERR_BAD_COOKIE` | READDIR cookie is stale |
 
 ### Operation Errors
@@ -91,7 +90,6 @@ func mapToNFSError(err error, op string) nfsv3.NFSStatus {
     // Check custom errors first
     var invalidHandle *InvalidFileHandleError
     var notSupported *NotSupportedError
-    var staleHandle *StaleFileHandleError
 
     switch {
     case err == nil:
@@ -100,8 +98,6 @@ func mapToNFSError(err error, op string) nfsv3.NFSStatus {
         return nfsv3.NFS3ERR_BADHANDLE
     case errors.As(err, &notSupported):
         return nfsv3.NFS3ERR_NOTSUPP
-    case errors.As(err, &staleHandle):
-        return nfsv3.NFS3ERR_STALE
     case errors.Is(err, fs.ErrNotExist) || os.IsNotExist(err):
         return nfsv3.NFS3ERR_NOENT
     case errors.Is(err, fs.ErrPermission) || os.IsPermission(err):
