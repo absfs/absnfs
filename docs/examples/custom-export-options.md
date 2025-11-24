@@ -434,22 +434,31 @@ options := absnfs.ExportOptions{
 
 ## Dynamic Configuration Updates
 
-You can update some export options dynamically without restarting the server:
+You can update some export options dynamically without restarting the server using the `GetExportOptions` and `UpdateExportOptions` methods:
 
 ```go
-// Get current options
+// Get current options (returns a deep copy)
 currentOptions := server.GetExportOptions()
 
-// Update options
+// Modify options as needed
 currentOptions.ReadOnly = true // Switch to read-only mode
+currentOptions.AttrCacheTimeout = 30 * time.Second // Increase cache timeout
+currentOptions.MaxConnections = 200 // Allow more connections
 
 // Apply updates
 if err := server.UpdateExportOptions(currentOptions); err != nil {
     log.Printf("Failed to update options: %v", err)
 }
+
+log.Println("Export options updated successfully")
 ```
 
-Note that some options may require clients to reconnect to take effect.
+**Important Notes:**
+- `GetExportOptions()` returns a deep copy of the current options, so modifications won't affect the server until you call `UpdateExportOptions()`
+- Some options cannot be changed at runtime (e.g., `Squash` mode requires a server restart)
+- Changes to cache sizes and timeouts take effect immediately
+- Changes to connection limits apply to new connections
+- Some options may require clients to reconnect to see the full effect
 
 ## Monitoring Configuration Effects
 

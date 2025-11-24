@@ -53,7 +53,6 @@ ABSNFS maps Go error types to appropriate NFS error codes. The following table s
 | syscall.ENAMETOOLONG | NFSERR_NAMETOOLONG | Filename too long |
 | syscall.EROFS | NFSERR_ROFS | Read-only file system |
 | syscall.ENOSPC | NFSERR_NOSPC | No space left on device |
-| *StaleFileHandleError | NFSERR_STALE | Stale file handle |
 | *InvalidFileHandleError | NFSERR_BADHANDLE | Invalid file handle |
 | *NotSupportedError | NFSERR_NOTSUPP | Operation not supported |
 
@@ -62,16 +61,6 @@ Any error that doesn't match a specific mapping is mapped to `NFSERR_IO` (I/O er
 ## Custom Error Types
 
 ABSNFS defines custom error types to represent specific NFS error conditions:
-
-### StaleFileHandleError
-
-This error is returned when a client provides a file handle that was once valid but is no longer valid (e.g., the file was deleted).
-
-```go
-type StaleFileHandleError struct {
-    Handle []byte
-}
-```
 
 ### InvalidFileHandleError
 

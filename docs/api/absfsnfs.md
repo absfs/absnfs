@@ -59,6 +59,84 @@ func (nfs *AbsfsNFS) IsHealthy() bool
 
 Returns whether the server is in a healthy state based on error rates and latency metrics. The server is considered unhealthy if the error rate exceeds 50% or if the 95th percentile read/write latency exceeds 5 seconds.
 
+### SetLogger
+
+```go
+func (nfs *AbsfsNFS) SetLogger(logger Logger) error
+```
+
+Sets the logger for the NFS server. When `logger` is `nil`, a no-op logger is used (logging disabled). This method can be called at any time to change the logging configuration, including after the server has started.
+
+Returns an error if the server instance is nil.
+
+**Example:**
+
+```go
+// Create a custom logger
+logger := NewDefaultLogger(LogLevelInfo, "json", os.Stdout)
+
+// Set the logger on the server
+if err := nfsServer.SetLogger(logger); err != nil {
+    log.Fatalf("Failed to set logger: %v", err)
+}
+
+// To disable logging
+if err := nfsServer.SetLogger(nil); err != nil {
+    log.Fatalf("Failed to disable logging: %v", err)
+}
+```
+
+### GetExportOptions
+
+```go
+func (nfs *AbsfsNFS) GetExportOptions() ExportOptions
+```
+
+Returns a deep copy of the current export options. The returned copy can be safely modified without affecting the server's configuration. Use `UpdateExportOptions` to apply changes.
+
+**Example:**
+
+```go
+// Get current options
+opts := nfsServer.GetExportOptions()
+
+// Check current settings
+fmt.Printf("ReadOnly: %v\n", opts.ReadOnly)
+fmt.Printf("MaxConnections: %d\n", opts.MaxConnections)
+```
+
+### UpdateExportOptions
+
+```go
+func (nfs *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error
+```
+
+Updates the export options for the running server. Not all options can be changed at runtime. Some options (like `Squash` mode) require a server restart and will return an error if you attempt to change them.
+
+Returns an error if:
+- The server instance is nil
+- An attempt is made to change an immutable option
+- The new options are invalid
+
+**Example:**
+
+```go
+// Get current options
+opts := nfsServer.GetExportOptions()
+
+// Modify options
+opts.ReadOnly = true
+opts.AttrCacheTimeout = 30 * time.Second
+opts.MaxConnections = 200
+
+// Apply updates
+if err := nfsServer.UpdateExportOptions(opts); err != nil {
+    log.Fatalf("Failed to update options: %v", err)
+}
+
+log.Println("Options updated successfully")
+```
+
 ## Example Usage
 
 ```go

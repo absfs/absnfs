@@ -263,7 +263,7 @@ This will only allow connections from the specified IP addresses or ranges.
 
 ### Temporary Read-Only Mode
 
-You might want to temporarily switch a filesystem to read-only mode:
+You might want to temporarily switch a filesystem to read-only mode using runtime configuration updates:
 
 ```go
 // Start in read-write mode
@@ -271,14 +271,41 @@ options := absnfs.ExportOptions{
     ReadOnly: false,
 }
 server, err := absnfs.New(fs, options)
+if err != nil {
+    log.Fatalf("Failed to create server: %v", err)
+}
 
-// Later, switch to read-only
+// Export the filesystem
+if err := server.Export("/export/data", 2049); err != nil {
+    log.Fatalf("Failed to export: %v", err)
+}
+
+// Later, switch to read-only without restarting the server
+log.Println("Switching to read-only mode...")
 newOptions := server.GetExportOptions()
 newOptions.ReadOnly = true
 if err := server.UpdateExportOptions(newOptions); err != nil {
     log.Printf("Failed to update options: %v", err)
+} else {
+    log.Println("Successfully switched to read-only mode")
+}
+
+// To switch back to read-write mode
+log.Println("Switching back to read-write mode...")
+newOptions = server.GetExportOptions()
+newOptions.ReadOnly = false
+if err := server.UpdateExportOptions(newOptions); err != nil {
+    log.Printf("Failed to update options: %v", err)
+} else {
+    log.Println("Successfully switched to read-write mode")
 }
 ```
+
+This approach is useful for:
+- Performing maintenance without disconnecting clients
+- Creating scheduled read-only windows
+- Responding to emergencies (e.g., detecting corruption)
+- Implementing approval workflows (read-only until approved)
 
 ### Read-Only with Attribute Caching
 
