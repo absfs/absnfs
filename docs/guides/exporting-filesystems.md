@@ -43,8 +43,8 @@ if err := nfsServer.Export(mountPath, port); err != nil {
 // Keep the server running until shutdown
 // ...
 
-// When shutting down, unexport the filesystem
-if err := nfsServer.Unexport(); err != nil {
+// When shutting down, close the filesystem export
+if err := nfsServer.Close(); err != nil {
     log.Printf("Error during shutdown: %v", err)
 }
 ```
@@ -99,9 +99,9 @@ func main() {
     sigChan := make(chan os.Signal, 1)
     signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
     <-sigChan
-    
-    // Unexport when shutting down
-    if err := nfsServer.Unexport(); err != nil {
+
+    // Close when shutting down
+    if err := nfsServer.Close(); err != nil {
         log.Printf("Error during shutdown: %v", err)
     }
 }
@@ -147,9 +147,9 @@ func main() {
     sigChan := make(chan os.Signal, 1)
     signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
     <-sigChan
-    
-    // Unexport when shutting down
-    if err := nfsServer.Unexport(); err != nil {
+
+    // Close when shutting down
+    if err := nfsServer.Close(); err != nil {
         log.Printf("Error during shutdown: %v", err)
     }
 }
@@ -203,9 +203,9 @@ func main() {
     sigChan := make(chan os.Signal, 1)
     signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
     <-sigChan
-    
-    // Unexport when shutting down
-    if err := nfsServer.Unexport(); err != nil {
+
+    // Close when shutting down
+    if err := nfsServer.Close(); err != nil {
         log.Printf("Error during shutdown: %v", err)
     }
 }
@@ -266,9 +266,9 @@ func main() {
     sigChan := make(chan os.Signal, 1)
     signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
     <-sigChan
-    
-    // Unexport when shutting down
-    if err := nfsServer.Unexport(); err != nil {
+
+    // Close when shutting down
+    if err := nfsServer.Close(); err != nil {
         log.Printf("Error during shutdown: %v", err)
     }
 }
@@ -382,7 +382,7 @@ When exporting filesystems, follow these best practices:
 1. **Use Meaningful Mount Paths**: Choose mount paths that clearly indicate the content or purpose of the filesystem
 2. **Consider Security**: Use read-only mode for reference data and restrict access by IP where appropriate
 3. **Monitor Performance**: Keep an eye on performance metrics to identify bottlenecks
-4. **Implement Proper Shutdown**: Always unexport filesystems cleanly when shutting down
+4. **Implement Proper Shutdown**: Always close filesystem exports cleanly when shutting down
 5. **Test Client Compatibility**: Test with different NFS clients to ensure compatibility
 6. **Document Exports**: Maintain documentation of your exports for users and administrators
 
