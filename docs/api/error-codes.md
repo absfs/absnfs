@@ -32,6 +32,8 @@ The NFS protocol defines a set of error codes that are returned to clients. The 
 | NFSERR_DQUOT | 69 | Disk quota exceeded |
 | NFSERR_STALE | 70 | Stale file handle |
 | NFSERR_WFLUSH | 99 | Write cache flushed |
+| NFSERR_BADHANDLE | 10001 | Invalid file handle |
+| NFSERR_NOTSUPP | 10004 | Operation not supported |
 | NFSERR_DELAY | 10013 | Server is temporarily busy (rate limit exceeded) |
 
 ## Error Mapping
@@ -52,6 +54,8 @@ ABSNFS maps Go error types to appropriate NFS error codes. The following table s
 | syscall.EROFS | NFSERR_ROFS | Read-only file system |
 | syscall.ENOSPC | NFSERR_NOSPC | No space left on device |
 | *StaleFileHandleError | NFSERR_STALE | Stale file handle |
+| *InvalidFileHandleError | NFSERR_BADHANDLE | Invalid file handle |
+| *NotSupportedError | NFSERR_NOTSUPP | Operation not supported |
 
 Any error that doesn't match a specific mapping is mapped to `NFSERR_IO` (I/O error) depending on the context.
 
@@ -66,6 +70,28 @@ This error is returned when a client provides a file handle that was once valid 
 ```go
 type StaleFileHandleError struct {
     Handle []byte
+}
+```
+
+### InvalidFileHandleError
+
+This error is returned when a client provides a file handle that is invalid or not found in the file handle map.
+
+```go
+type InvalidFileHandleError struct {
+    Handle uint64
+    Reason string
+}
+```
+
+### NotSupportedError
+
+This error is returned when a client requests an operation that is not supported by the NFS implementation (e.g., hard links).
+
+```go
+type NotSupportedError struct {
+    Operation string
+    Reason    string
 }
 ```
 
@@ -103,11 +129,17 @@ Here's how error mapping is typically implemented in ABSNFS:
 
 ```go
 func mapError(err error) uint32 {
-    if err == nil {
-        return NFS_OK
-    }
+    // Check custom errors first
+    var invalidHandle *InvalidFileHandleError
+    var notSupported *NotSupportedError
 
     switch {
+    case err == nil:
+        return NFS_OK
+    case errors.As(err, &invalidHandle):
+        return NFSERR_BADHANDLE
+    case errors.As(err, &notSupported):
+        return NFSERR_NOTSUPP
     case os.IsNotExist(err):
         return NFSERR_NOENT
     case os.IsPermission(err):

@@ -34,6 +34,22 @@ func (fm *FileHandleMap) Get(handle uint64) (absfs.File, bool) {
 	return f, exists
 }
 
+// GetOrError retrieves the absfs.File associated with the given handle
+// Returns an InvalidFileHandleError if the handle is not found
+func (fm *FileHandleMap) GetOrError(handle uint64) (absfs.File, error) {
+	fm.RLock()
+	defer fm.RUnlock()
+
+	f, exists := fm.handles[handle]
+	if !exists {
+		return nil, &InvalidFileHandleError{
+			Handle: handle,
+			Reason: "handle not found in file handle map",
+		}
+	}
+	return f, nil
+}
+
 // Release removes the file handle mapping and closes the associated file
 func (fm *FileHandleMap) Release(handle uint64) {
 	fm.Lock()

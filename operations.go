@@ -2,6 +2,7 @@ package absnfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,9 +15,17 @@ import (
 
 // mapError converts absfs errors to NFS status codes
 func mapError(err error) uint32 {
+	// Check custom errors first
+	var invalidHandle *InvalidFileHandleError
+	var notSupported *NotSupportedError
+
 	switch {
 	case err == nil:
 		return NFS_OK
+	case errors.As(err, &invalidHandle):
+		return NFSERR_BADHANDLE
+	case errors.As(err, &notSupported):
+		return NFSERR_NOTSUPP
 	case os.IsNotExist(err):
 		return NFSERR_NOENT
 	case os.IsPermission(err):
