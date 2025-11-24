@@ -792,6 +792,12 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return nil, err
 		}
 
+		// Invalidate parent directory caches
+		h.server.handler.attrCache.Invalidate(node.path)
+		if h.server.handler.dirCache != nil {
+			h.server.handler.dirCache.Invalidate(node.path)
+		}
+
 		// Lookup the new directory
 		newNode, err := h.server.handler.Lookup(node.path + "/" + name)
 		if err != nil {
@@ -1820,6 +1826,12 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			}
 			reply.Data = buf.Bytes()
 			return reply, nil
+		}
+
+		// Invalidate parent directory caches
+		h.server.handler.attrCache.Invalidate(node.path)
+		if h.server.handler.dirCache != nil {
+			h.server.handler.dirCache.Invalidate(node.path)
 		}
 
 		// Get updated directory attributes

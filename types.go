@@ -62,6 +62,7 @@ type AbsfsNFS struct {
 	mountPath     string            // Export path
 	options       ExportOptions     // NFS export options
 	attrCache     *AttrCache        // Cache for file attributes
+	dirCache      *DirCache         // Cache for directory entries
 	readBuf       *ReadAheadBuffer  // Read-ahead buffer
 	memoryMonitor *MemoryMonitor    // Monitors system memory usage (optional)
 	workerPool    *WorkerPool       // Worker pool for concurrent operations
@@ -113,7 +114,30 @@ type ExportOptions struct {
 	// Larger values improve performance but consume more memory
 	// Default: 10000 entries
 	AttrCacheSize int
-	
+
+	// EnableDirCache enables caching of directory entries for improved performance
+	// When enabled, directory listings are cached to reduce filesystem calls
+	// Default: false (disabled)
+	EnableDirCache bool
+
+	// DirCacheTimeout controls how long directory entries are cached
+	// Longer timeouts improve performance but may cause clients to see stale directory listings
+	// Only applicable when EnableDirCache is true
+	// Default: 10 * time.Second
+	DirCacheTimeout time.Duration
+
+	// DirCacheMaxEntries controls the maximum number of directories that can be cached
+	// Helps limit memory usage by directory entry caching
+	// Only applicable when EnableDirCache is true
+	// Default: 1000 directories
+	DirCacheMaxEntries int
+
+	// DirCacheMaxDirSize controls the maximum number of entries in a single directory that will be cached
+	// Directories with more entries than this will not be cached to prevent memory issues
+	// Only applicable when EnableDirCache is true
+	// Default: 10000 entries per directory
+	DirCacheMaxDirSize int
+
 	// AdaptToMemoryPressure enables automatic cache reduction when system memory is under pressure
 	// When enabled, the server will periodically check system memory usage and reduce cache sizes
 	// when memory usage exceeds MemoryHighWatermark, until usage falls below MemoryLowWatermark
@@ -340,11 +364,24 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	if options.AttrCacheTimeout <= 0 {
 		options.AttrCacheTimeout = 5 * time.Second
 	}
-	
+
 	if options.AttrCacheSize <= 0 {
 		options.AttrCacheSize = 10000
 	}
-	
+
+	// Set directory cache defaults
+	if options.DirCacheTimeout <= 0 {
+		options.DirCacheTimeout = 10 * time.Second
+	}
+
+	if options.DirCacheMaxEntries <= 0 {
+		options.DirCacheMaxEntries = 1000
+	}
+
+	if options.DirCacheMaxDirSize <= 0 {
+		options.DirCacheMaxDirSize = 10000
+	}
+
 	// Set memory pressure detection defaults
 	if options.MemoryHighWatermark <= 0 || options.MemoryHighWatermark > 1.0 {
 		options.MemoryHighWatermark = 0.8 // Default: 80% of total memory
@@ -434,6 +471,11 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		structuredLogger: structuredLogger,
 		attrCache:        NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
 		readBuf:          NewReadAheadBuffer(options.ReadAheadSize),
+	}
+
+	// Initialize directory cache if enabled
+	if options.EnableDirCache {
+		server.dirCache = NewDirCache(options.DirCacheTimeout, options.DirCacheMaxEntries, options.DirCacheMaxDirSize)
 	}
 	
 	// Configure read-ahead buffer with size limits
@@ -549,6 +591,10 @@ func (n *AbsfsNFS) Close() error {
 	// Clear caches to free memory
 	if n.attrCache != nil {
 		n.attrCache.Clear()
+	}
+
+	if n.dirCache != nil {
+		n.dirCache.Clear()
 	}
 
 	if n.readBuf != nil {
