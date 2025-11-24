@@ -20,50 +20,39 @@ import (
 
 func main() {
     // Create filesystem (export /tmp directory)
-    fs := osfs.NewFileSystem()
+    fs, err := osfs.NewFS("/tmp")
+    if err != nil {
+        log.Fatalf("Failed to create filesystem: %v", err)
+    }
 
     // Configure TLS
-    tlsConfig := absnfs.DefaultTLSConfig()
-    tlsConfig.Enabled = true
-    tlsConfig.CertFile = "server.crt"
-    tlsConfig.KeyFile = "server.key"
-    tlsConfig.MinVersion = tls.VersionTLS12  // Minimum TLS 1.2
-    tlsConfig.MaxVersion = tls.VersionTLS13  // Allow TLS 1.3
+    tlsConfig := &absnfs.TLSConfig{
+        Enabled:    true,
+        CertFile:   "server.crt",
+        KeyFile:    "server.key",
+        MinVersion: tls.VersionTLS12,  // Minimum TLS 1.2
+        MaxVersion: tls.VersionTLS13,  // Allow TLS 1.3
+    }
 
     // Create NFS server with TLS
     options := absnfs.ExportOptions{
-        ReadOnly:    false,
-        Secure:      false, // Don't require privileged ports
-        AllowedIPs:  []string{"192.168.1.0/24"}, // Allow local network
-        TLS:         tlsConfig,
+        ReadOnly:   false,
+        Secure:     false, // Don't require privileged ports
+        AllowedIPs: []string{"192.168.1.0/24"}, // Allow local network
+        TLS:        tlsConfig,
     }
 
     nfs, err := absnfs.New(fs, options)
     if err != nil {
         log.Fatalf("Failed to create NFS handler: %v", err)
     }
-    defer nfs.Close()
-
-    // Create server
-    server, err := absnfs.NewServer(absnfs.ServerOptions{
-        Port:     2049,
-        Hostname: "0.0.0.0",
-        Debug:    true,
-    })
-    if err != nil {
-        log.Fatalf("Failed to create server: %v", err)
-    }
-
-    server.SetHandler(nfs)
 
     // Start server
     log.Println("Starting NFS server with TLS encryption on port 2049")
-    log.Printf("TLS Configuration: MinVersion=%s, MaxVersion=%s",
-        absnfs.TLSVersionString(tlsConfig.MinVersion),
-        absnfs.TLSVersionString(tlsConfig.MaxVersion))
+    log.Printf("TLS Configuration: MinVersion=TLS1.2, MaxVersion=TLS1.3")
 
-    if err := server.Listen(); err != nil {
-        log.Fatalf("Failed to start server: %v", err)
+    if err := nfs.Export("/export", 2049); err != nil {
+        log.Fatalf("Failed to export filesystem: %v", err)
     }
 
     // Wait for interrupt signal
@@ -72,7 +61,9 @@ func main() {
     <-sigChan
 
     log.Println("Shutting down NFS server...")
-    server.Shutdown()
+    if err := nfs.Unexport(); err != nil {
+        log.Printf("Error during shutdown: %v", err)
+    }
 }
 ```
 
@@ -98,58 +89,51 @@ import (
 
 func main() {
     // Create in-memory filesystem for secure data
-    fs := memfs.NewMemFS()
+    fs, err := memfs.NewFS()
+    if err != nil {
+        log.Fatal(err)
+    }
 
     // Pre-populate with some test data
-    if err := fs.WriteFile("/secure-data.txt", []byte("Confidential information"), 0644); err != nil {
+    file, err := fs.Create("/secure-data.txt")
+    if err != nil {
+        log.Fatal(err)
+    }
+    _, err = file.Write([]byte("Confidential information"))
+    file.Close()
+    if err != nil {
         log.Fatal(err)
     }
 
     // Configure TLS with client certificate verification
-    tlsConfig := absnfs.DefaultTLSConfig()
-    tlsConfig.Enabled = true
-    tlsConfig.CertFile = "server.crt"
-    tlsConfig.KeyFile = "server.key"
-    tlsConfig.CAFile = "ca.crt"  // CA for verifying client certificates
-    tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert  // Mutual TLS
-    tlsConfig.MinVersion = tls.VersionTLS12
+    tlsConfig := &absnfs.TLSConfig{
+        Enabled:    true,
+        CertFile:   "server.crt",
+        KeyFile:    "server.key",
+        CAFile:     "ca.crt",  // CA for verifying client certificates
+        ClientAuth: tls.RequireAndVerifyClientCert,  // Mutual TLS
+        MinVersion: tls.VersionTLS12,
+    }
 
     // Create NFS server with strict security
     options := absnfs.ExportOptions{
-        ReadOnly:           false,
-        Secure:             true,  // Require privileged ports
-        AllowedIPs:         []string{"10.0.0.0/8", "192.168.0.0/16"},
-        TLS:                tlsConfig,
-        EnableRateLimiting: true,
+        ReadOnly:   false,
+        Secure:     true,  // Require privileged ports
+        AllowedIPs: []string{"10.0.0.0/8", "192.168.0.0/16"},
+        TLS:        tlsConfig,
     }
 
     nfs, err := absnfs.New(fs, options)
     if err != nil {
         log.Fatalf("Failed to create NFS handler: %v", err)
     }
-    defer nfs.Close()
-
-    // Create server
-    server, err := absnfs.NewServer(absnfs.ServerOptions{
-        Port:     2049,
-        Hostname: "0.0.0.0",
-        Debug:    true,
-    })
-    if err != nil {
-        log.Fatalf("Failed to create server: %v", err)
-    }
-
-    server.SetHandler(nfs)
-
-    // Start metrics reporting
-    go reportMetrics(nfs)
 
     // Start server
     log.Println("Starting secure NFS server with mutual TLS")
     log.Println("Client certificates will be verified against CA")
 
-    if err := server.Listen(); err != nil {
-        log.Fatalf("Failed to start server: %v", err)
+    if err := nfs.Export("/export", 2049); err != nil {
+        log.Fatalf("Failed to export filesystem: %v", err)
     }
 
     // Wait for interrupt signal
@@ -158,28 +142,8 @@ func main() {
     <-sigChan
 
     log.Println("Shutting down NFS server...")
-    server.Shutdown()
-}
-
-func reportMetrics(nfs *absnfs.AbsfsNFS) {
-    ticker := time.NewTicker(30 * time.Second)
-    defer ticker.Stop()
-
-    for range ticker.C {
-        metrics := nfs.GetMetrics()
-
-        log.Println("=== TLS Metrics ===")
-        log.Printf("Total Connections: %d", metrics.TotalConnections)
-        log.Printf("Active Connections: %d", metrics.ActiveConnections)
-        log.Printf("TLS Handshakes: %d (Failures: %d)",
-            metrics.TLSHandshakes, metrics.TLSHandshakeFailures)
-        log.Printf("Client Certs: Provided=%d, Validated=%d, Rejected=%d",
-            metrics.TLSClientCertProvided,
-            metrics.TLSClientCertValidated,
-            metrics.TLSClientCertRejected)
-        log.Printf("TLS Versions: TLS1.2=%d, TLS1.3=%d",
-            metrics.TLSVersion12, metrics.TLSVersion13)
-        log.Println("==================")
+    if err := nfs.Unexport(); err != nil {
+        log.Printf("Error during shutdown: %v", err)
     }
 }
 ```
@@ -205,14 +169,18 @@ import (
 
 func main() {
     // Create filesystem
-    fs := osfs.NewFileSystem()
+    fs, err := osfs.NewFS("/tmp")
+    if err != nil {
+        log.Fatalf("Failed to create filesystem: %v", err)
+    }
 
     // Configure TLS
-    tlsConfig := absnfs.DefaultTLSConfig()
-    tlsConfig.Enabled = true
-    tlsConfig.CertFile = "server.crt"
-    tlsConfig.KeyFile = "server.key"
-    tlsConfig.MinVersion = tls.VersionTLS12
+    tlsConfig := &absnfs.TLSConfig{
+        Enabled:    true,
+        CertFile:   "server.crt",
+        KeyFile:    "server.key",
+        MinVersion: tls.VersionTLS12,
+    }
 
     // Create NFS server
     options := absnfs.ExportOptions{
@@ -223,26 +191,11 @@ func main() {
     if err != nil {
         log.Fatalf("Failed to create NFS handler: %v", err)
     }
-    defer nfs.Close()
-
-    // Create server
-    server, err := absnfs.NewServer(absnfs.ServerOptions{
-        Port:  2049,
-        Debug: true,
-    })
-    if err != nil {
-        log.Fatalf("Failed to create server: %v", err)
-    }
-
-    server.SetHandler(nfs)
-
-    // Start certificate rotation monitor
-    go monitorCertificates(tlsConfig)
 
     // Start server
-    log.Println("Starting NFS server with automatic certificate rotation")
-    if err := server.Listen(); err != nil {
-        log.Fatalf("Failed to start server: %v", err)
+    log.Println("Starting NFS server with TLS")
+    if err := nfs.Export("/export", 2049); err != nil {
+        log.Fatalf("Failed to export filesystem: %v", err)
     }
 
     // Wait for interrupt signal
@@ -251,34 +204,8 @@ func main() {
     <-sigChan
 
     log.Println("Shutting down NFS server...")
-    server.Shutdown()
-}
-
-func monitorCertificates(tlsConfig *absnfs.TLSConfig) {
-    ticker := time.NewTicker(1 * time.Hour)
-    defer ticker.Stop()
-
-    var lastModTime time.Time
-
-    for range ticker.C {
-        // Check if certificate file has been modified
-        fileInfo, err := os.Stat(tlsConfig.CertFile)
-        if err != nil {
-            log.Printf("Failed to check certificate file: %v", err)
-            continue
-        }
-
-        if fileInfo.ModTime().After(lastModTime) {
-            log.Printf("Certificate file modified, reloading...")
-
-            // Reload certificates
-            if err := tlsConfig.ReloadCertificates(); err != nil {
-                log.Printf("Failed to reload certificates: %v", err)
-            } else {
-                log.Printf("Certificates reloaded successfully")
-                lastModTime = fileInfo.ModTime()
-            }
-        }
+    if err := nfs.Unexport(); err != nil {
+        log.Printf("Error during shutdown: %v", err)
     }
 }
 ```
@@ -302,7 +229,10 @@ import (
 
 func main() {
     // Create filesystem
-    fs := memfs.NewMemFS()
+    fs, err := memfs.NewFS()
+    if err != nil {
+        log.Fatalf("Failed to create filesystem: %v", err)
+    }
 
     // Load TLS configuration from environment
     tlsConfig, err := loadTLSConfigFromEnv()
@@ -319,56 +249,67 @@ func main() {
     if err != nil {
         log.Fatalf("Failed to create NFS handler: %v", err)
     }
-    defer nfs.Close()
 
-    // Create and start server
-    server, err := absnfs.NewServer(absnfs.ServerOptions{
-        Port: getEnvInt("NFS_PORT", 2049),
-    })
-    if err != nil {
-        log.Fatalf("Failed to create server: %v", err)
-    }
-
-    server.SetHandler(nfs)
-
+    port := getEnvInt("NFS_PORT", 2049)
     log.Println("Starting NFS server with environment-based TLS configuration")
-    if err := server.Listen(); err != nil {
-        log.Fatalf("Failed to start server: %v", err)
+    if err := nfs.Export("/export", port); err != nil {
+        log.Fatalf("Failed to export filesystem: %v", err)
     }
 
-    select {}
+    // Wait for interrupt signal
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+    <-sigChan
+
+    log.Println("Shutting down NFS server...")
+    if err := nfs.Unexport(); err != nil {
+        log.Printf("Error during shutdown: %v", err)
+    }
 }
 
 func loadTLSConfigFromEnv() (*absnfs.TLSConfig, error) {
-    config := absnfs.DefaultTLSConfig()
-
     // Check if TLS is enabled
     if os.Getenv("TLS_ENABLED") != "true" {
-        config.Enabled = false
-        return config, nil
+        return &absnfs.TLSConfig{Enabled: false}, nil
     }
 
-    config.Enabled = true
-    config.CertFile = getEnv("TLS_CERT_FILE", "server.crt")
-    config.KeyFile = getEnv("TLS_KEY_FILE", "server.key")
-    config.CAFile = os.Getenv("TLS_CA_FILE") // Optional
+    config := &absnfs.TLSConfig{
+        Enabled:  true,
+        CertFile: getEnv("TLS_CERT_FILE", "server.crt"),
+        KeyFile:  getEnv("TLS_KEY_FILE", "server.key"),
+        CAFile:   os.Getenv("TLS_CA_FILE"), // Optional
+    }
 
     // Parse TLS version
     if minVer := os.Getenv("TLS_MIN_VERSION"); minVer != "" {
-        version, err := absnfs.ParseTLSVersion(minVer)
-        if err != nil {
-            return nil, fmt.Errorf("invalid TLS_MIN_VERSION: %w", err)
+        switch minVer {
+        case "1.2":
+            config.MinVersion = tls.VersionTLS12
+        case "1.3":
+            config.MinVersion = tls.VersionTLS13
+        default:
+            return nil, fmt.Errorf("invalid TLS_MIN_VERSION: %s (use 1.2 or 1.3)", minVer)
         }
-        config.MinVersion = version
+    } else {
+        config.MinVersion = tls.VersionTLS12 // Default
     }
 
     // Parse client auth mode
     if authMode := os.Getenv("TLS_CLIENT_AUTH"); authMode != "" {
-        auth, err := absnfs.ParseClientAuthType(authMode)
-        if err != nil {
-            return nil, fmt.Errorf("invalid TLS_CLIENT_AUTH: %w", err)
+        switch authMode {
+        case "none":
+            config.ClientAuth = tls.NoClientCert
+        case "request":
+            config.ClientAuth = tls.RequestClientCert
+        case "require-any":
+            config.ClientAuth = tls.RequireAnyClientCert
+        case "verify-if-given":
+            config.ClientAuth = tls.VerifyClientCertIfGiven
+        case "require-and-verify":
+            config.ClientAuth = tls.RequireAndVerifyClientCert
+        default:
+            return nil, fmt.Errorf("invalid TLS_CLIENT_AUTH: %s", authMode)
         }
-        config.ClientAuth = auth
     }
 
     return config, nil

@@ -716,19 +716,25 @@ func searchDocumentation(fs absfs.FileSystem, query string) ([]SearchResult, err
 
 // Walk filesystem recursively
 func walkFilesystem(fs absfs.FileSystem, path string, fn func(path string, info os.FileInfo) error) error {
-    entries, err := fs.ReadDir(path)
+    dir, err := fs.Open(path)
     if err != nil {
         return err
     }
-    
+    defer dir.Close()
+
+    entries, err := dir.Readdir(-1)
+    if err != nil {
+        return err
+    }
+
     for _, entry := range entries {
         entryPath := filepath.Join(path, entry.Name())
-        
+
         // Call function for this entry
         if err := fn(entryPath, entry); err != nil {
             return err
         }
-        
+
         // Recurse if directory
         if entry.IsDir() {
             if err := walkFilesystem(fs, entryPath, fn); err != nil {
@@ -736,7 +742,7 @@ func walkFilesystem(fs absfs.FileSystem, path string, fn func(path string, info 
             }
         }
     }
-    
+
     return nil
 }
 ```
@@ -1387,19 +1393,25 @@ func searchDocumentation(fs absfs.FileSystem, query string) ([]SearchResult, err
 
 // Walk filesystem recursively
 func walkFilesystem(fs absfs.FileSystem, path string, fn func(path string, info os.FileInfo) error) error {
-	entries, err := fs.ReadDir(path)
+	dir, err := fs.Open(path)
 	if err != nil {
 		return err
 	}
-	
+	defer dir.Close()
+
+	entries, err := dir.Readdir(-1)
+	if err != nil {
+		return err
+	}
+
 	for _, entry := range entries {
 		entryPath := filepath.Join(path, entry.Name())
-		
+
 		// Call function for this entry
 		if err := fn(entryPath, entry); err != nil {
 			return err
 		}
-		
+
 		// Recurse if directory
 		if entry.IsDir() {
 			if err := walkFilesystem(fs, entryPath, fn); err != nil {
@@ -1407,7 +1419,7 @@ func walkFilesystem(fs absfs.FileSystem, path string, fn func(path string, info 
 			}
 		}
 	}
-	
+
 	return nil
 }
 ```

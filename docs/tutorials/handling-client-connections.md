@@ -58,13 +58,10 @@ func main() {
 	options := absnfs.ExportOptions{
 		// Connection limits
 		MaxConnections: 100,           // Maximum simultaneous connections
-		
+
 		// Timeouts
 		IdleTimeout: 5 * time.Minute,  // How long to keep idle connections
-		
-		// Network settings
-		TCPOnly: false,                // Accept both TCP and UDP (default)
-		
+
 		// Security settings
 		Secure: true,                  // Enable security features
 		AllowedIPs: []string{},        // Empty means allow all (for now)
@@ -174,8 +171,6 @@ func main() {
 	options := absnfs.ExportOptions{
 		MaxConnections: 100,
 		IdleTimeout: 5 * time.Minute,
-		LogLevel: "Info",        // Enable detailed logging
-		LogClientIPs: true,      // Log client IP addresses
 	}
 	
 	// Create the NFS server
@@ -384,9 +379,7 @@ func main() {
 	options := absnfs.ExportOptions{
 		MaxConnections: 100,
 		IdleTimeout: 5 * time.Minute,
-		LogLevel: "Info",
-		LogClientIPs: true,
-		
+
 		// IP-based access control (if needed)
 		Secure: true,
 		AllowedIPs: []string{
@@ -819,16 +812,14 @@ func main() {
 	options := absnfs.ExportOptions{
 		MaxConnections: 100,
 		IdleTimeout: 5 * time.Minute,
-		LogLevel: "Info",
-		LogClientIPs: true,
-		
+
 		// IP-based access control
 		Secure: true,
 		AllowedIPs: []string{
 			"127.0.0.1",
 			"192.168.0.0/16",
 		},
-		
+
 		// Performance settings
 		EnableReadAhead: true,
 		ReadAheadSize: 262144, // 256KB

@@ -151,115 +151,171 @@ struct authsys_parms {
 
 ## XDR Implementation
 
-eXternal Data Representation (XDR) is a standard for serializing data, enabling communication between different architectures. ABSNFS implements XDR encoding and decoding in pure Go:
+eXternal Data Representation (XDR) is a standard for serializing data, enabling communication between different architectures. ABSNFS implements XDR encoding and decoding as standalone functions that work with io.Reader and io.Writer:
 
 ```go
-// Example XDR encoder implementation (simplified)
-type XDREncoder struct {
-    buffer []byte
-    offset int
+// XDR encoding functions work with io.Writer
+func xdrEncodeUint32(w io.Writer, v uint32) error {
+    return binary.Write(w, binary.BigEndian, v)
 }
 
-func (e *XDREncoder) EncodeUint32(value uint32) {
-    binary.BigEndian.PutUint32(e.buffer[e.offset:], value)
-    e.offset += 4
+func xdrEncodeUint64(w io.Writer, v uint64) error {
+    return binary.Write(w, binary.BigEndian, v)
 }
 
-func (e *XDREncoder) EncodeString(value string) {
-    // Encode length
-    length := uint32(len(value))
-    e.EncodeUint32(length)
-    
-    // Encode string data
-    copy(e.buffer[e.offset:], value)
-    e.offset += int(length)
-    
-    // Pad to 4-byte boundary
+func xdrEncodeString(w io.Writer, s string) error {
+    length := uint32(len(s))
+    if err := xdrEncodeUint32(w, length); err != nil {
+        return err
+    }
+
+    if _, err := w.Write([]byte(s)); err != nil {
+        return err
+    }
+
+    // Add padding to align to 4-byte boundary
     padding := (4 - (length % 4)) % 4
-    e.offset += int(padding)
+    if padding > 0 {
+        pad := make([]byte, padding)
+        if _, err := w.Write(pad); err != nil {
+            return err
+        }
+    }
+
+    return nil
 }
 
-// Similar methods for other data types...
+func xdrEncodeBytes(w io.Writer, b []byte) error {
+    length := uint32(len(b))
+    if err := xdrEncodeUint32(w, length); err != nil {
+        return err
+    }
+
+    if _, err := w.Write(b); err != nil {
+        return err
+    }
+
+    // Add padding
+    padding := (4 - (length % 4)) % 4
+    if padding > 0 {
+        pad := make([]byte, padding)
+        if _, err := w.Write(pad); err != nil {
+            return err
+        }
+    }
+
+    return nil
+}
 ```
 
 ```go
-// Example XDR decoder implementation (simplified)
-type XDRDecoder struct {
-    buffer []byte
-    offset int
+// XDR decoding functions work with io.Reader
+func xdrDecodeUint32(r io.Reader) (uint32, error) {
+    var v uint32
+    err := binary.Read(r, binary.BigEndian, &v)
+    return v, err
 }
 
-func (d *XDRDecoder) DecodeUint32() (uint32, error) {
-    if d.offset+4 > len(d.buffer) {
-        return 0, errors.New("buffer overflow")
-    }
-    value := binary.BigEndian.Uint32(d.buffer[d.offset:])
-    d.offset += 4
-    return value, nil
+func xdrDecodeUint64(r io.Reader) (uint64, error) {
+    var v uint64
+    err := binary.Read(r, binary.BigEndian, &v)
+    return v, err
 }
 
-func (d *XDRDecoder) DecodeString() (string, error) {
-    // Decode length
-    length, err := d.DecodeUint32()
+func xdrDecodeString(r io.Reader) (string, error) {
+    length, err := xdrDecodeUint32(r)
     if err != nil {
         return "", err
     }
-    
-    // Decode string data
-    if d.offset+int(length) > len(d.buffer) {
-        return "", errors.New("buffer overflow")
+
+    // Security check: prevent excessive memory allocation
+    if length > MAX_XDR_STRING_LENGTH {
+        return "", fmt.Errorf("string length %d exceeds maximum %d",
+            length, MAX_XDR_STRING_LENGTH)
     }
-    value := string(d.buffer[d.offset:d.offset+int(length)])
-    d.offset += int(length)
-    
+
+    buf := make([]byte, length)
+    if _, err := io.ReadFull(r, buf); err != nil {
+        return "", err
+    }
+
     // Skip padding
     padding := (4 - (length % 4)) % 4
-    d.offset += int(padding)
-    
-    return value, nil
+    if padding > 0 {
+        pad := make([]byte, padding)
+        if _, err := io.ReadFull(r, pad); err != nil {
+            return "", err
+        }
+    }
+
+    return string(buf), nil
 }
 
-// Similar methods for other data types...
+func xdrDecodeBytes(r io.Reader, maxLen int) ([]byte, error) {
+    length, err := xdrDecodeUint32(r)
+    if err != nil {
+        return nil, err
+    }
+
+    // Security check
+    if length > uint32(maxLen) {
+        return nil, fmt.Errorf("byte array length %d exceeds maximum %d",
+            length, maxLen)
+    }
+
+    buf := make([]byte, length)
+    if _, err := io.ReadFull(r, buf); err != nil {
+        return nil, err
+    }
+
+    // Skip padding
+    padding := (4 - (length % 4)) % 4
+    if padding > 0 {
+        pad := make([]byte, padding)
+        if _, err := io.ReadFull(r, pad); err != nil {
+            return nil, err
+        }
+    }
+
+    return buf, nil
+}
 ```
 
-## Program Registry
+Note that ABSNFS uses standalone functions rather than encoder/decoder objects. This approach is simpler and more flexible, allowing the functions to work directly with network connections and buffers.
 
-ABSNFS maintains a registry of RPC programs and handlers:
+## RPC Handler
+
+ABSNFS uses a simple NFSProcedureHandler that dispatches RPC calls based on program and procedure numbers:
 
 ```go
-// Program handler interface
-type RPCHandler interface {
-    // Handle an RPC call and return the result
-    HandleCall(proc uint32, params []byte) ([]byte, error)
-    
-    // Get the program details
-    GetProgramInfo() ProgramInfo
+type NFSProcedureHandler struct {
+    server *Server
 }
 
-// Program registry
-type ProgramRegistry struct {
-    programs map[uint32]map[uint32]RPCHandler // prog -> vers -> handler
-}
-
-// Register a program handler
-func (r *ProgramRegistry) Register(prog, vers uint32, handler RPCHandler) {
-    if _, ok := r.programs[prog]; !ok {
-        r.programs[prog] = make(map[uint32]RPCHandler)
+func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx *AuthContext) (*RPCReply, error) {
+    reply := &RPCReply{
+        Header: call.Header,
+        Status: MSG_ACCEPTED,
+        Verifier: RPCVerifier{
+            Flavor: 0,
+            Body:   []byte{},
+        },
     }
-    r.programs[prog][vers] = handler
-}
 
-// Look up a program handler
-func (r *ProgramRegistry) Lookup(prog, vers uint32) (RPCHandler, error) {
-    if progMap, ok := r.programs[prog]; ok {
-        if handler, ok := progMap[vers]; ok {
-            return handler, nil
-        }
-        return nil, fmt.Errorf("program version not supported: %d.%d", prog, vers)
+    // Dispatch based on program number
+    switch call.Header.Program {
+    case MOUNT_PROGRAM:
+        return h.handleMountCall(call, body, reply, authCtx)
+    case NFS_PROGRAM:
+        return h.handleNFSCall(call, body, reply, authCtx)
+    default:
+        reply.Status = PROG_UNAVAIL
+        return reply, nil
     }
-    return nil, fmt.Errorf("program not supported: %d", prog)
 }
 ```
+
+The handler directly checks the program number and routes to the appropriate handler function (handleMountCall or handleNFSCall). This is simpler than maintaining a registry and perfectly adequate for the two programs that NFS needs to support.
 
 ## Transport Handling
 
@@ -350,100 +406,85 @@ func writeRPCMessageUDP(conn *net.UDPConn, message []byte, addr net.Addr) error 
 
 ## Connection Management
 
-ABSNFS manages RPC connections with several strategies:
+ABSNFS manages TCP connections through the Server component. Note that ABSNFS currently only supports TCP, not UDP.
 
-1. **Connection Pooling**: Reuses TCP connections for better performance
-2. **Timeouts**: Implements read and write timeouts to prevent hangs
-3. **Graceful Shutdown**: Properly closes connections during shutdown
-4. **Error Handling**: Recovers from connection errors and continues serving
+Key connection management features:
+
+1. **Connection Tracking**: Maintains a map of active connections with state tracking
+2. **Connection Limits**: Enforces maximum connection limits if configured
+3. **Idle Timeout**: Automatically closes idle connections after a timeout period
+4. **Timeouts**: Read and write timeouts prevent hung connections
+5. **Graceful Shutdown**: Properly closes all connections during server shutdown
 
 ```go
-// Example connection manager (simplified)
-type ConnectionManager struct {
-    tcpListener net.Listener
-    udpConn     *net.UDPConn
-    connections map[net.Conn]bool
-    mutex       sync.Mutex
-    wg          sync.WaitGroup
-    shutdown    bool
+type Server struct {
+    listener    net.Listener
+    activeConns map[net.Conn]*connectionState
+    connCount   int
+    connMutex   sync.Mutex
+    // ... other fields
 }
 
-// Accept and handle TCP connections
-func (cm *ConnectionManager) acceptTCP() {
-    for !cm.shutdown {
-        conn, err := cm.tcpListener.Accept()
+type connectionState struct {
+    lastActivity   time.Time
+    unregisterOnce sync.Once // Ensures connection is only unregistered once
+}
+
+// Accept loop creates a goroutine for each connection
+func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
+    for {
+        conn, err := s.listener.Accept()
         if err != nil {
-            if !cm.shutdown {
-                log.Printf("TCP accept error: %v", err)
-            }
+            // Handle errors and check for shutdown
             continue
         }
-        
-        cm.mutex.Lock()
-        cm.connections[conn] = true
-        cm.mutex.Unlock()
-        
-        cm.wg.Add(1)
+
+        // Register and track the connection
+        if !s.registerConnection(conn) {
+            conn.Close() // Connection limit reached
+            continue
+        }
+
+        s.wg.Add(1)
         go func() {
-            defer cm.wg.Done()
-            defer conn.Close()
-            defer func() {
-                cm.mutex.Lock()
-                delete(cm.connections, conn)
-                cm.mutex.Unlock()
-            }()
-            
-            cm.handleTCPConnection(conn)
+            defer s.wg.Done()
+            defer s.unregisterConnection(conn)
+            s.handleConnection(conn, procHandler)
         }()
     }
 }
 
-// Handle UDP packets
-func (cm *ConnectionManager) handleUDP() {
-    buffer := make([]byte, 65507)
-    for !cm.shutdown {
-        cm.udpConn.SetReadDeadline(time.Now().Add(1 * time.Second))
-        n, addr, err := cm.udpConn.ReadFromUDP(buffer)
-        if err != nil {
-            if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-                continue
-            }
-            if !cm.shutdown {
-                log.Printf("UDP read error: %v", err)
-            }
-            continue
-        }
-        
-        // Handle the packet
-        go cm.handleUDPPacket(buffer[:n], addr)
-    }
-}
+// Each connection is handled in its own goroutine
+func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandler) {
+    defer conn.Close()
 
-// Shutdown connections
-func (cm *ConnectionManager) Shutdown() error {
-    cm.shutdown = true
-    
-    // Close listeners
-    if cm.tcpListener != nil {
-        cm.tcpListener.Close()
+    for {
+        // Set read deadline
+        conn.SetReadDeadline(time.Now().Add(readTimeout))
+
+        // Read and process RPC call
+        call, body, err := s.readRPCCall(conn)
+        if err != nil {
+            return
+        }
+
+        // Update activity timestamp
+        s.updateConnectionActivity(conn)
+
+        // Handle with worker pool if available, otherwise directly
+        reply, err := procHandler.HandleCall(call, body, authCtx)
+
+        // Set write deadline and send reply
+        conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+        s.writeRPCReply(conn, reply)
+
+        // Update activity timestamp again
+        s.updateConnectionActivity(conn)
     }
-    if cm.udpConn != nil {
-        cm.udpConn.Close()
-    }
-    
-    // Close all connections
-    cm.mutex.Lock()
-    for conn := range cm.connections {
-        conn.Close()
-    }
-    cm.mutex.Unlock()
-    
-    // Wait for handlers to complete
-    cm.wg.Wait()
-    
-    return nil
 }
 ```
+
+The connection management is integrated directly into the Server rather than being a separate component.
 
 ## RPC Handler Implementation
 
@@ -451,63 +492,83 @@ ABSNFS implements handlers for the required RPC programs:
 
 ### MOUNT Program (100005)
 
-Handles mount requests from clients:
+The MOUNT protocol is handled by the handleMountCall method of NFSProcedureHandler:
 
 ```go
-type MountHandler struct {
-    server      *Server
-    exportPaths map[string]FileHandle
-}
+func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader,
+    reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 
-func (h *MountHandler) HandleCall(proc uint32, params []byte) ([]byte, error) {
-    switch proc {
-    case MOUNTPROC_NULL:
-        return []byte{}, nil
-        
-    case MOUNTPROC_MNT:
-        // Parse mount path
-        decoder := NewXDRDecoder(params)
-        path, err := decoder.DecodeString()
+    // Check version
+    if call.Header.Version != MOUNT_V3 {
+        reply.Status = PROG_MISMATCH
+        return reply, nil
+    }
+
+    switch call.Header.Procedure {
+    case 0: // NULL - ping operation
+        return reply, nil
+
+    case 1: // MNT - mount a filesystem
+        // Apply rate limiting for mount operations
+        if h.server.handler.rateLimiter != nil {
+            if !h.server.handler.rateLimiter.AllowOperation(
+                authCtx.ClientIP, OpTypeMount) {
+                var buf bytes.Buffer
+                xdrEncodeUint32(&buf, NFSERR_DELAY)
+                reply.Data = buf.Bytes()
+                return reply, nil
+            }
+        }
+
+        // Decode the mount path
+        mountPath, err := xdrDecodeString(body)
         if err != nil {
-            return nil, err
+            reply.Status = GARBAGE_ARGS
+            return reply, nil
         }
-        
-        // Check if path is exported
-        handle, ok := h.exportPaths[path]
-        if !ok {
-            // Return error: not exported
-            encoder := NewXDREncoder(bufferSize)
-            encoder.EncodeUint32(MOUNTSTAT_NOTEXPORTED)
-            return encoder.Bytes(), nil
+
+        // Look up the path in the filesystem
+        node, err := h.server.handler.Lookup(mountPath)
+        if err != nil {
+            var buf bytes.Buffer
+            xdrEncodeUint32(&buf, NFSERR_NOENT)
+            reply.Data = buf.Bytes()
+            return reply, nil
         }
-        
-        // Return success with file handle
-        encoder := NewXDREncoder(bufferSize)
-        encoder.EncodeUint32(MOUNTSTAT_OK)
-        encoder.EncodeBytes(handle)
-        return encoder.Bytes(), nil
-        
-    case MOUNTPROC_DUMP:
-        // Return list of mounted clients
-        // ...
-        
-    case MOUNTPROC_UMNT:
-        // Handle unmount request
-        // ...
-        
-    case MOUNTPROC_UMNTALL:
-        // Handle unmount all request
-        // ...
-        
-    case MOUNTPROC_EXPORT:
-        // Return list of exports
-        // ...
-        
+
+        // Allocate a file handle for the mounted directory
+        handle := h.server.handler.fileMap.Allocate(node)
+
+        // Encode the response with the file handle
+        var buf bytes.Buffer
+        xdrEncodeUint32(&buf, NFS_OK)
+        binary.Write(&buf, binary.BigEndian, handle)
+        reply.Data = buf.Bytes()
+        return reply, nil
+
+    case 2: // DUMP - list mounted filesystems
+        var buf bytes.Buffer
+        xdrEncodeUint32(&buf, 0) // No entries
+        reply.Data = buf.Bytes()
+        return reply, nil
+
+    case 3: // UMNT - unmount a filesystem
+        unmountPath, err := xdrDecodeString(body)
+        if err != nil {
+            reply.Status = GARBAGE_ARGS
+            return reply, nil
+        }
+        // In the actual implementation, we just acknowledge the unmount
+        return reply, nil
+
     default:
-        return nil, fmt.Errorf("unsupported MOUNT procedure: %d", proc)
+        reply.Status = PROC_UNAVAIL
+        return reply, nil
     }
 }
 ```
+
+Note that ABSNFS handles MOUNT operations directly in the NFSProcedureHandler rather than having a separate MountHandler class. This is simpler and sufficient for the relatively small number of MOUNT procedures.
 
 ### NFS Program (100003)
 
@@ -631,38 +692,14 @@ func (s *Server) handleRPCCall(call *RPCCall) *RPCReply {
 
 ABSNFS implements several optimizations for RPC performance:
 
-1. **Buffer Pooling**: Reuses buffers to reduce memory allocations
-2. **Concurrent Handling**: Processes requests concurrently
-3. **Batch Processing**: Batches multiple operations when possible
-4. **Connection Reuse**: Keeps TCP connections alive for multiple requests
-5. **Zero-Copy Design**: Minimizes data copying during processing
+1. **Worker Pool**: Optional worker pool for concurrent request handling (see worker_pool.go)
+2. **Batch Processing**: Optional batching of similar operations (see batch.go)
+3. **Connection Reuse**: Persistent TCP connections for multiple requests
+4. **Rate Limiting**: Token bucket rate limiting to prevent DoS attacks
+5. **Attribute Caching**: Caches file attributes to reduce filesystem access
+6. **Read-Ahead Buffering**: Prefetches data for sequential reads
 
-Example buffer pool implementation:
-
-```go
-// Buffer pool for XDR encoding/decoding
-type BufferPool struct {
-    pool sync.Pool
-}
-
-func NewBufferPool(size int) *BufferPool {
-    return &BufferPool{
-        pool: sync.Pool{
-            New: func() interface{} {
-                return make([]byte, size)
-            },
-        },
-    }
-}
-
-func (p *BufferPool) Get() []byte {
-    return p.pool.Get().([]byte)
-}
-
-func (p *BufferPool) Put(buf []byte) {
-    p.pool.Put(buf)
-}
-```
+The implementation focuses on practical optimizations that provide measurable benefits rather than premature optimization. For example, ABSNFS does not use buffer pools because Go's garbage collector handles short-lived allocations efficiently.
 
 ## RPC Security
 

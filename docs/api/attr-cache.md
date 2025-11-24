@@ -28,63 +28,87 @@ The `AttrCache` type is used internally by the `AbsfsNFS` type and is not typica
 
 ## Cached Attributes
 
-The `AttrCache` caches several types of file attributes:
+The `AttrCache` caches file attributes in an `NFSAttrs` structure:
 
 1. **Basic Attributes**:
-   - File type (regular file, directory, symlink, etc.)
-   - File size
-   - Number of hard links
    - File mode (permissions)
+   - File size
 
 2. **Timestamps**:
-   - Access time (atime)
-   - Modification time (mtime)
-   - Change time (ctime)
-   - Creation time (birthtime, if available)
+   - Access time (Atime)
+   - Modification time (Mtime)
 
 3. **Ownership**:
-   - User ID (UID)
-   - Group ID (GID)
-
-4. **NFS-specific Attributes**:
-   - File ID (fileid)
-   - File system ID (fsid)
+   - User ID (Uid)
+   - Group ID (Gid)
 
 ## Key Operations
 
 The `AttrCache` provides several key operations:
 
-### GetAttributes
+### NewAttrCache
 
 ```go
-func (ac *AttrCache) GetAttributes(path string) (*NFSAttributes, error)
+func NewAttrCache(ttl time.Duration, maxSize int) *AttrCache
 ```
 
-Retrieves the cached attributes for a file or directory. If the attributes are not in the cache or are expired, they are fetched from the filesystem.
+Creates a new attribute cache with the specified TTL (time-to-live) and maximum number of entries.
 
-### SetAttributes
+### Get
 
 ```go
-func (ac *AttrCache) SetAttributes(path string, attrs *NFSAttributes) error
+func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs
 ```
 
-Updates both the cache and the filesystem with new attributes.
+Retrieves the cached attributes for a file or directory. If the attributes are not in the cache or are expired, returns nil. Optionally accepts an `AbsfsNFS` server instance for recording cache hit/miss metrics.
 
-### InvalidateCache
+### Put
 
 ```go
-func (ac *AttrCache) InvalidateCache(path string)
+func (c *AttrCache) Put(path string, attrs *NFSAttrs)
 ```
 
-Invalidates the cached attributes for a file or directory, forcing the next `GetAttributes` call to fetch from the filesystem.
+Adds or updates cached attributes for the specified path. Uses LRU eviction when the cache is full.
 
-### InvalidateCachePrefix
+### Invalidate
 
 ```go
-func (ac *AttrCache) InvalidateCachePrefix(prefix string)
+func (c *AttrCache) Invalidate(path string)
 ```
 
-Invalidates the cached attributes for all files and directories with paths that start with a given prefix.
+Removes the cached attributes for a file or directory, forcing the next `Get` call to return nil.
+
+### Clear
+
+```go
+func (c *AttrCache) Clear()
+```
+
+Removes all entries from the cache.
+
+### Size
+
+```go
+func (c *AttrCache) Size() int
+```
+
+Returns the current number of entries in the cache.
+
+### MaxSize
+
+```go
+func (c *AttrCache) MaxSize() int
+```
+
+Returns the maximum size of the cache.
+
+### Stats
+
+```go
+func (c *AttrCache) Stats() (int, int)
+```
+
+Returns the current size and capacity of the cache as a tuple.
 
 ## Cache Lifecycle
 
@@ -159,39 +183,40 @@ While users don't typically interact with `AttrCache` directly, here's an exampl
 
 ```go
 // When a client requests file attributes
-func (nfs *AbsfsNFS) handleGetAttr(handle FileHandle) (*NFSAttributes, error) {
-    // Get the node for the handle
-    node, err := nfs.fileHandleMap.GetNode(handle)
-    if err != nil {
-        return nil, err
+func (nfs *AbsfsNFS) handleGetAttr(handle uint64) (*NFSAttrs, error) {
+    // Get the file for the handle
+    file, exists := nfs.fileHandleMap.Get(handle)
+    if !exists {
+        return nil, errors.New("invalid file handle")
     }
-    
+
     // Get the attributes using the cache
-    attrs, err := nfs.attrCache.GetAttributes(node.Path())
-    if err != nil {
-        return nil, err
+    attrs := nfs.attrCache.Get(file.Name(), nfs)
+    if attrs == nil {
+        // Not in cache, need to fetch from filesystem
+        return nil, errors.New("attributes not cached")
     }
-    
+
     return attrs, nil
 }
 
 // When a client modifies a file
-func (nfs *AbsfsNFS) handleWrite(handle FileHandle, offset uint64, data []byte) (int, error) {
-    // Get the node for the handle
-    node, err := nfs.fileHandleMap.GetNode(handle)
-    if err != nil {
-        return 0, err
+func (nfs *AbsfsNFS) handleWrite(handle uint64, offset int64, data []byte) (int, error) {
+    // Get the file for the handle
+    file, exists := nfs.fileHandleMap.Get(handle)
+    if !exists {
+        return 0, errors.New("invalid file handle")
     }
-    
+
     // Write the data
-    n, err := nfs.doWrite(node.Path(), offset, data)
+    n, err := file.WriteAt(data, offset)
     if err != nil {
         return 0, err
     }
-    
+
     // Invalidate the cached attributes since the file changed
-    nfs.attrCache.InvalidateCache(node.Path())
-    
+    nfs.attrCache.Invalidate(file.Name())
+
     return n, nil
 }
 ```
@@ -209,6 +234,6 @@ The `AttrCache` maintains statistics to help with monitoring and tuning:
 
 The `AttrCache` interacts closely with several other components in ABSNFS:
 
-- **AbsfsNFS**: Coordinates overall NFS operations
-- **NFSNode**: Provides paths for cache lookups
-- **FileHandleMap**: Maps file handles to nodes which are used for cache operations
+- **AbsfsNFS**: Coordinates overall NFS operations and provides metrics recording
+- **NFSAttrs**: The attribute structure that is cached
+- **FileHandleMap**: Maps file handles to files whose paths are used for cache operations

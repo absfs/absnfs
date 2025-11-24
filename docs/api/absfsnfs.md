@@ -27,45 +27,37 @@ Creates a new NFS server adapter for the provided filesystem with the specified 
 
 ## Methods
 
-### Export
+### Close
 
 ```go
-func (nfs *AbsfsNFS) Export(mountPath string, port int) error
+func (nfs *AbsfsNFS) Close() error
 ```
 
-Exports the filesystem at the specified mount path and port. This makes the filesystem accessible to NFS clients.
+Releases resources and stops any background processes including memory monitoring, worker pools, and batch processors. This should be called when the NFS adapter is no longer needed.
 
-### Unexport
+### ExecuteWithWorker
 
 ```go
-func (nfs *AbsfsNFS) Unexport() error
+func (nfs *AbsfsNFS) ExecuteWithWorker(task func() interface{}) interface{}
 ```
 
-Stops exporting the filesystem and shuts down the NFS server.
+Runs a task in the worker pool. If the worker pool is not available (disabled or full), it executes the task directly. This method is used internally for concurrent operation handling.
 
-### GetFileSystem
+### GetMetrics
 
 ```go
-func (nfs *AbsfsNFS) GetFileSystem() absfs.FileSystem
+func (nfs *AbsfsNFS) GetMetrics() NFSMetrics
 ```
 
-Returns the underlying ABSFS filesystem being exported.
+Returns a snapshot of the current NFS server metrics including operation counts, latency statistics, cache metrics, connection metrics, and error counts.
 
-### GetExportOptions
+### IsHealthy
 
 ```go
-func (nfs *AbsfsNFS) GetExportOptions() ExportOptions
+func (nfs *AbsfsNFS) IsHealthy() bool
 ```
 
-Returns the current export options for the NFS server.
-
-### UpdateExportOptions
-
-```go
-func (nfs *AbsfsNFS) UpdateExportOptions(options ExportOptions) error
-```
-
-Updates the export options for the NFS server. Some options may require restarting the server to take effect.
+Returns whether the server is in a healthy state based on error rates and latency metrics. The server is considered unhealthy if the error rate exceeds 50% or if the 95th percentile read/write latency exceeds 5 seconds.
 
 ## Example Usage
 
@@ -74,6 +66,9 @@ package main
 
 import (
     "log"
+    "os"
+    "os/signal"
+    "syscall"
 
     "github.com/absfs/absnfs"
     "github.com/absfs/memfs"
@@ -98,32 +93,62 @@ func main() {
         AllowedIPs: []string{"192.168.1.0/24"},
     }
 
-    // Create NFS server
-    server, err := absnfs.New(fs, options)
+    // Create NFS adapter
+    nfs, err := absnfs.New(fs, options)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer nfs.Close()
+
+    // Create and configure server
+    server, err := absnfs.NewServer(absnfs.ServerOptions{
+        Port: 2049,
+        ReadOnly: true,
+    })
     if err != nil {
         log.Fatal(err)
     }
 
-    // Export the filesystem
-    if err := server.Export("/export/test", 2049); err != nil {
+    server.SetHandler(nfs)
+
+    // Start the server
+    if err := server.Listen(); err != nil {
         log.Fatal(err)
     }
 
     log.Println("NFS server running. Press Ctrl+C to stop.")
-    
+
     // Wait for shutdown signal
-    // In a real application, you'd wait for an OS signal
-    select {}
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+    <-sigChan
+
+    log.Println("Shutting down...")
 }
 ```
 
-## Implementation Notes
+## Architecture Notes
 
-The `AbsfsNFS` type maintains several internal components:
+The `AbsfsNFS` type is an adapter that wraps an ABSFS filesystem and provides NFS protocol operations. It is separate from the `Server` type which handles network connections and protocol handling.
 
-- File handle mapping for translating between NFS file handles and filesystem paths
-- Attribute cache for improving performance of metadata operations
-- Read-ahead buffer for optimizing read performance
-- Root node representation of the filesystem hierarchy
+### Key Components
 
-These components work together to provide efficient NFS protocol handling while presenting a standard NFS interface to clients.
+The `AbsfsNFS` adapter maintains several internal components:
+
+- **File handle mapping**: Translates between NFS file handles and filesystem paths
+- **Attribute cache**: Improves performance of metadata operations with configurable timeout and size
+- **Read-ahead buffer**: Optimizes sequential read performance with prefetching
+- **Worker pool**: Handles concurrent operations using a configurable number of goroutines
+- **Batch processor**: Groups similar operations together for improved throughput
+- **Memory monitor**: Optionally monitors system memory and adjusts cache sizes under pressure
+- **Rate limiter**: Provides DoS protection with per-IP and global request limits
+- **Metrics collector**: Tracks operations, latency, cache performance, and errors
+
+### Usage Pattern
+
+1. Create an ABSFS filesystem implementation
+2. Create an `AbsfsNFS` adapter with `New()`, passing the filesystem and export options
+3. Create a `Server` with `NewServer()` and configure it
+4. Set the adapter as the server's handler with `SetHandler()`
+5. Start the server with `Listen()`
+6. Clean up resources with `Close()` when done

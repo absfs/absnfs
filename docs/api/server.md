@@ -29,13 +29,36 @@ The `Server` type is responsible for:
 
 ## Methods
 
+### NewServer
+
+```go
+func NewServer(options ServerOptions) (*Server, error)
+```
+
+Creates a new NFS server with the specified options. The `ServerOptions` type includes:
+- `Name`: Server name
+- `UID`: Server UID
+- `GID`: Server GID
+- `ReadOnly`: Read-only mode
+- `Port`: Port to listen on (default: 2049)
+- `Hostname`: Hostname to bind to (default: "localhost")
+- `Debug`: Enable debug logging
+
+### SetHandler
+
+```go
+func (s *Server) SetHandler(handler *AbsfsNFS)
+```
+
+Sets the filesystem handler for the server. This must be called before calling `Listen()`.
+
 ### Listen
 
 ```go
-func (s *Server) Listen(address string) error
+func (s *Server) Listen() error
 ```
 
-Starts listening for incoming connections at the specified address.
+Starts listening for incoming connections. The server will listen on the hostname and port specified in `ServerOptions`. If the port is already in use and the default port (2049) was specified, it will automatically try a random port.
 
 ### Stop
 
@@ -43,30 +66,53 @@ Starts listening for incoming connections at the specified address.
 func (s *Server) Stop() error
 ```
 
-Stops the server, closing all active connections and releasing resources.
-
-### RegisterHandler
-
-```go
-func (s *Server) RegisterHandler(program, version uint32, handler RPCHandler) error
-```
-
-Registers a handler for a specific RPC program and version. This is used internally to register NFS protocol handlers.
-
-### SetLogger
-
-```go
-func (s *Server) SetLogger(logger Logger) 
-```
-
-Sets a logger for the server to log events and errors.
+Stops the server, closing all active connections and releasing resources. This method waits for all goroutines to finish with a 5-second timeout.
 
 ## Example Usage
 
-The `Server` type is not typically used directly. Instead, it's used through the `AbsfsNFS` type:
+The `Server` type is typically used internally by the `AbsfsNFS` type, but can be created directly:
 
 ```go
-// Create NFS server
+// Create server with options
+serverOpts := absnfs.ServerOptions{
+    Name:     "my-nfs-server",
+    UID:      1000,
+    GID:      1000,
+    Port:     2049,
+    Hostname: "localhost",
+    Debug:    true,
+}
+
+server, err := absnfs.NewServer(serverOpts)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Create filesystem handler
+fs := ... // Your filesystem implementation
+nfsHandler, err := absnfs.New(fs, absnfs.NFSOptions{})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Set the handler
+server.SetHandler(nfsHandler)
+
+// Start listening
+if err := server.Listen(); err != nil {
+    log.Fatal(err)
+}
+
+// Later, stop the server
+if err := server.Stop(); err != nil {
+    log.Printf("Error during shutdown: %v", err)
+}
+```
+
+In most cases, you will use the `AbsfsNFS` type which manages the server lifecycle for you:
+
+```go
+// Create NFS server (this creates and manages a Server internally)
 nfsServer, err := absnfs.New(fs, options)
 if err != nil {
     log.Fatal(err)

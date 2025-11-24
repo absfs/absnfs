@@ -40,37 +40,69 @@ The read-ahead mechanism works through the following process:
 
 The `ReadAheadBuffer` provides several key operations:
 
+### NewReadAheadBuffer
+
+```go
+func NewReadAheadBuffer(size int) *ReadAheadBuffer
+```
+
+Creates a new read-ahead buffer with the specified buffer size per file. Default limits are 100 files and 100MB total memory.
+
+### Configure
+
+```go
+func (b *ReadAheadBuffer) Configure(maxFiles int, maxMemory int64)
+```
+
+Sets the maximum number of files that can have buffers and the maximum total memory usage. Enforces limits immediately by evicting buffers if necessary.
+
 ### Read
 
 ```go
-func (rab *ReadAheadBuffer) Read(path string, offset uint64, count uint32) ([]byte, error)
+func (b *ReadAheadBuffer) Read(path string, offset int64, count int, server ...*AbsfsNFS) ([]byte, bool)
 ```
 
-Attempts to fulfill a read request from the buffer. If the requested data is not in the buffer, it is read from the filesystem and future reads are prefetched.
+Attempts to fulfill a read request from the buffer. Returns the data and a boolean indicating whether the data was found in the buffer. Optionally accepts an `AbsfsNFS` server instance for recording cache hit/miss metrics.
 
-### Invalidate
+### Fill
 
 ```go
-func (rab *ReadAheadBuffer) Invalidate(path string)
+func (b *ReadAheadBuffer) Fill(path string, data []byte, offset int64)
 ```
 
-Invalidates the buffer for a specific file, typically called when the file is modified.
+Fills the buffer for a file with data from the given offset. Creates a new buffer if one doesn't exist, enforcing memory limits with LRU eviction.
 
-### TriggerReadAhead
+### ClearPath
 
 ```go
-func (rab *ReadAheadBuffer) TriggerReadAhead(path string, offset uint64, count uint32)
+func (b *ReadAheadBuffer) ClearPath(path string)
 ```
 
-Explicitly triggers read-ahead for a file, useful when sequential access is anticipated.
+Clears the buffer for a specific file, typically called when the file is modified.
 
-### SetReadAheadSize
+### Clear
 
 ```go
-func (rab *ReadAheadBuffer) SetReadAheadSize(size uint32)
+func (b *ReadAheadBuffer) Clear()
 ```
 
-Adjusts the amount of data that is prefetched.
+Clears all read-ahead buffers, resetting memory usage to zero.
+
+### Size
+
+```go
+func (b *ReadAheadBuffer) Size() int64
+```
+
+Returns the current memory usage of all read-ahead buffers.
+
+### Stats
+
+```go
+func (b *ReadAheadBuffer) Stats() (int, int64)
+```
+
+Returns the number of files with buffers and the total memory usage as a tuple.
 
 ## Buffer Lifecycle
 
@@ -148,43 +180,53 @@ While users don't typically interact with `ReadAheadBuffer` directly, here's an 
 
 ```go
 // When a client requests file data
-func (nfs *AbsfsNFS) handleRead(handle FileHandle, offset uint64, count uint32) ([]byte, error) {
-    // Get the node for the handle
-    node, err := nfs.fileHandleMap.GetNode(handle)
-    if err != nil {
-        return nil, err
+func (nfs *AbsfsNFS) handleRead(handle uint64, offset int64, count int) ([]byte, error) {
+    // Get the file for the handle
+    file, exists := nfs.fileHandleMap.Get(handle)
+    if !exists {
+        return nil, errors.New("invalid file handle")
     }
-    
+
+    path := file.Name()
+
     // Try to read from the read-ahead buffer first
-    data, err := nfs.readAheadBuffer.Read(node.Path(), offset, count)
-    if err == nil {
+    data, found := nfs.readAheadBuffer.Read(path, offset, count, nfs)
+    if found {
         // Data was successfully read from the buffer
         return data, nil
     }
-    
-    // If not in buffer or an error occurred, fall back to direct read
-    file, err := nfs.fs.Open(node.Path())
-    if err != nil {
-        return nil, err
-    }
-    defer file.Close()
-    
-    // Seek to the requested position
-    if _, err := file.Seek(int64(offset), io.SeekStart); err != nil {
-        return nil, err
-    }
-    
-    // Read the requested data
+
+    // If not in buffer, fall back to direct read
     data = make([]byte, count)
-    n, err := file.Read(data)
+    n, err := file.ReadAt(data, offset)
     if err != nil && err != io.EOF {
         return nil, err
     }
-    
-    // Trigger read-ahead for future reads
-    nfs.readAheadBuffer.TriggerReadAhead(node.Path(), offset+uint64(n), count)
-    
+
+    // Fill buffer with read data for future reads
+    nfs.readAheadBuffer.Fill(path, data[:n], offset)
+
     return data[:n], nil
+}
+
+// When a client writes to a file
+func (nfs *AbsfsNFS) handleWrite(handle uint64, offset int64, data []byte) (int, error) {
+    // Get the file for the handle
+    file, exists := nfs.fileHandleMap.Get(handle)
+    if !exists {
+        return 0, errors.New("invalid file handle")
+    }
+
+    // Write the data
+    n, err := file.WriteAt(data, offset)
+    if err != nil {
+        return 0, err
+    }
+
+    // Invalidate read-ahead buffer since file changed
+    nfs.readAheadBuffer.ClearPath(file.Name())
+
+    return n, nil
 }
 ```
 
@@ -217,6 +259,7 @@ It may be less beneficial or even counterproductive for:
 
 The `ReadAheadBuffer` interacts closely with several other components in ABSNFS:
 
-- **AbsfsNFS**: Coordinates overall NFS operations
-- **NFSNode**: Provides paths for buffer lookups
-- **AttrCache**: Provides file size information for buffer management
+- **AbsfsNFS**: Coordinates overall NFS operations and provides metrics recording
+- **FileHandleMap**: Maps file handles to files whose paths are used for buffer lookups
+- **FileBuffer**: Internal structure that holds the buffered data for each file
+- **Uint64MinHeap**: Similar LRU eviction pattern as used in other caching components
