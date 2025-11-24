@@ -57,10 +57,6 @@ func main() {
 		// Connection options
 		MaxConnections: 100,                      // Maximum simultaneous connections
 		IdleTimeout: 5 * time.Minute,             // Close idle connections after 5 minutes
-		
-		// Logging options
-		LogLevel: "Info",                         // Log level: Debug, Info, Warning, Error
-		LogClientIPs: true,                       // Log client IP addresses
 	}
 
 	// Create NFS server with custom options
@@ -276,18 +272,6 @@ These options manage client connections:
 - **MaxConnections**: Limits the number of simultaneous clients
 - **IdleTimeout**: Closes inactive connections to free resources
 
-### Logging Options
-
-```go
-// Logging options
-LogLevel: "Info",                         // Log level: Debug, Info, Warning, Error
-LogClientIPs: true,                       // Log client IP addresses
-```
-
-These options control server logging:
-
-- **LogLevel**: How verbose the logging should be
-- **LogClientIPs**: Whether to log client IP addresses
 
 ## Using the Configuration
 
@@ -400,10 +384,6 @@ options := absnfs.ExportOptions{
     // Limited connections
     MaxConnections: 20,
     IdleTimeout: 2 * time.Minute,
-    
-    // Detailed logging
-    LogLevel: "Debug",
-    LogClientIPs: true,
 }
 ```
 

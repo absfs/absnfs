@@ -83,9 +83,10 @@ The `Server` component handles network communication and RPC protocol details. I
 
 The `FileHandleMap` manages mappings between NFS file handles and filesystem objects. It:
 
-- Generates unique file handles
-- Maps handles to filesystem objects
-- Manages handle lifecycle (creation, lookups, release)
+- Maps uint64 handles to absfs.File objects
+- Reuses freed handles efficiently using a min-heap
+- Provides thread-safe operations with read-write mutexes
+- Handles creation, lookups, and release operations
 
 ### AttrCache
 
@@ -102,6 +103,55 @@ The `ReadAheadBuffer` improves read performance for sequential access patterns. 
 - Detects sequential read patterns
 - Prefetches data ahead of client requests
 - Manages buffer lifecycle and eviction
+
+### WorkerPool
+
+The `WorkerPool` manages concurrent request processing. It:
+
+- Maintains a pool of worker goroutines
+- Queues incoming tasks for processing
+- Provides configurable concurrency limits
+- Tracks active workers and queue depth
+- Supports dynamic resizing
+
+### BatchProcessor
+
+The `BatchProcessor` groups similar operations for efficiency. It:
+
+- Batches read, write, and getattr operations
+- Groups requests by file handle
+- Processes batches when they reach a size threshold or timeout
+- Reduces overhead for multiple small operations
+
+### RateLimiter
+
+The `RateLimiter` prevents denial-of-service attacks. It:
+
+- Implements token bucket rate limiting
+- Enforces global, per-IP, and per-connection limits
+- Provides operation-specific limits (e.g., large reads/writes)
+- Tracks file handle allocation limits
+- Supports sliding window rate limiting for mount operations
+
+### MemoryMonitor
+
+The `MemoryMonitor` manages memory usage. It:
+
+- Tracks system memory usage
+- Detects memory pressure conditions
+- Automatically reduces cache sizes when needed
+- Triggers garbage collection during high memory usage
+- Provides memory statistics
+
+### TLSConfig
+
+The `TLSConfig` manages TLS/SSL encryption. It:
+
+- Configures server certificates and keys
+- Supports client certificate authentication
+- Enforces minimum TLS versions (1.2+)
+- Manages cipher suite selection
+- Supports certificate reloading for rotation
 
 ## Request Flow
 
