@@ -54,6 +54,7 @@ type SymlinkFileSystem interface {
 
 // AbsfsNFS represents an NFS server that exports an absfs filesystem
 type AbsfsNFS struct {
+	mu            sync.RWMutex      // Protects options and related configuration
 	fs            absfs.FileSystem  // The wrapped absfs filesystem
 	root          *NFSNode          // Root directory node
 	logger        *log.Logger       // Deprecated: use structuredLogger instead
@@ -588,5 +589,147 @@ func (n *AbsfsNFS) SetLogger(logger Logger) error {
 	}
 
 	n.structuredLogger = logger
+	return nil
+}
+
+// GetExportOptions returns a copy of the current export options
+// This is thread-safe and returns a snapshot of the current configuration
+func (n *AbsfsNFS) GetExportOptions() ExportOptions {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	// Create a deep copy to prevent external modifications
+	opts := n.options
+
+	// Copy slice fields to prevent shared memory
+	if len(n.options.AllowedIPs) > 0 {
+		opts.AllowedIPs = make([]string, len(n.options.AllowedIPs))
+		copy(opts.AllowedIPs, n.options.AllowedIPs)
+	}
+
+	// Copy pointer fields to prevent external modifications
+	if n.options.RateLimitConfig != nil {
+		configCopy := *n.options.RateLimitConfig
+		opts.RateLimitConfig = &configCopy
+	}
+
+	if n.options.TLS != nil {
+		tlsCopy := *n.options.TLS
+		opts.TLS = &tlsCopy
+	}
+
+	if n.options.Log != nil {
+		logCopy := *n.options.Log
+		opts.Log = &logCopy
+	}
+
+	return opts
+}
+
+// UpdateExportOptions updates the server's export options at runtime
+// Some fields require a server restart and will return an error if changed
+// Returns an error if the update contains invalid values or changes to immutable fields
+func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
+	if n == nil {
+		return fmt.Errorf("nil server")
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// Validate immutable fields haven't changed
+	// These fields require server restart
+	if n.options.Squash != newOptions.Squash {
+		return fmt.Errorf("cannot change Squash mode at runtime (requires restart)")
+	}
+
+	// Validate and update safe-to-change fields
+
+	// Update basic boolean flags
+	n.options.ReadOnly = newOptions.ReadOnly
+	n.options.Async = newOptions.Async
+
+	// Update AllowedIPs
+	if len(newOptions.AllowedIPs) > 0 {
+		n.options.AllowedIPs = make([]string, len(newOptions.AllowedIPs))
+		copy(n.options.AllowedIPs, newOptions.AllowedIPs)
+	} else {
+		n.options.AllowedIPs = nil
+	}
+
+	// Update attribute cache settings
+	if newOptions.AttrCacheSize > 0 && newOptions.AttrCacheSize != n.options.AttrCacheSize {
+		n.options.AttrCacheSize = newOptions.AttrCacheSize
+		if n.attrCache != nil {
+			n.attrCache.Resize(newOptions.AttrCacheSize)
+		}
+	}
+
+	if newOptions.AttrCacheTimeout > 0 {
+		n.options.AttrCacheTimeout = newOptions.AttrCacheTimeout
+		if n.attrCache != nil {
+			n.attrCache.UpdateTTL(newOptions.AttrCacheTimeout)
+		}
+	}
+
+	// Update read-ahead settings
+	if newOptions.ReadAheadMaxMemory > 0 && newOptions.ReadAheadMaxMemory != n.options.ReadAheadMaxMemory {
+		n.options.ReadAheadMaxMemory = newOptions.ReadAheadMaxMemory
+		if n.readBuf != nil {
+			n.readBuf.Resize(newOptions.ReadAheadMaxFiles, newOptions.ReadAheadMaxMemory)
+		}
+	}
+
+	if newOptions.ReadAheadMaxFiles > 0 && newOptions.ReadAheadMaxFiles != n.options.ReadAheadMaxFiles {
+		n.options.ReadAheadMaxFiles = newOptions.ReadAheadMaxFiles
+		if n.readBuf != nil {
+			n.readBuf.Resize(newOptions.ReadAheadMaxFiles, n.options.ReadAheadMaxMemory)
+		}
+	}
+
+	// Update memory pressure settings
+	if newOptions.MemoryHighWatermark > 0 && newOptions.MemoryHighWatermark <= 1.0 {
+		n.options.MemoryHighWatermark = newOptions.MemoryHighWatermark
+	}
+
+	if newOptions.MemoryLowWatermark > 0 && newOptions.MemoryLowWatermark < n.options.MemoryHighWatermark {
+		n.options.MemoryLowWatermark = newOptions.MemoryLowWatermark
+	}
+
+	// Update worker pool settings
+	if newOptions.MaxWorkers > 0 && newOptions.MaxWorkers != n.options.MaxWorkers {
+		n.options.MaxWorkers = newOptions.MaxWorkers
+		if n.workerPool != nil {
+			n.workerPool.Resize(newOptions.MaxWorkers)
+		}
+	}
+
+	// Update batch operation settings
+	n.options.BatchOperations = newOptions.BatchOperations
+	if newOptions.MaxBatchSize > 0 {
+		n.options.MaxBatchSize = newOptions.MaxBatchSize
+	}
+
+	// Update logging configuration if provided
+	if newOptions.Log != nil {
+		// Create new logger with updated config
+		slogger, err := NewSlogLogger(newOptions.Log)
+		if err != nil {
+			return fmt.Errorf("failed to create logger with new config: %w", err)
+		}
+
+		// Close old logger if it exists
+		if oldLogger, ok := n.structuredLogger.(*SlogLogger); ok {
+			if err := oldLogger.Close(); err != nil {
+				n.logger.Printf("warning: failed to close old logger: %v", err)
+			}
+		}
+
+		n.structuredLogger = slogger
+		logCopy := *newOptions.Log
+		n.options.Log = &logCopy
+	}
+
+	n.logger.Printf("Export options updated successfully")
 	return nil
 }

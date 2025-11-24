@@ -43,6 +43,21 @@ func (nfs *AbsfsNFS) ExecuteWithWorker(task func() interface{}) interface{}
 
 Runs a task in the worker pool. If the worker pool is not available (disabled or full), it executes the task directly. This method is used internally for concurrent operation handling.
 
+### GetExportOptions
+
+```go
+func (nfs *AbsfsNFS) GetExportOptions() ExportOptions
+```
+
+Returns a thread-safe copy of the current export options. The returned copy is independent and modifications to it will not affect the server's configuration. This is useful for inspecting the current server configuration.
+
+**Example:**
+
+```go
+opts := server.GetExportOptions()
+log.Printf("ReadOnly: %v, AttrCacheSize: %d", opts.ReadOnly, opts.AttrCacheSize)
+```
+
 ### GetMetrics
 
 ```go
@@ -58,6 +73,54 @@ func (nfs *AbsfsNFS) IsHealthy() bool
 ```
 
 Returns whether the server is in a healthy state based on error rates and latency metrics. The server is considered unhealthy if the error rate exceeds 50% or if the 95th percentile read/write latency exceeds 5 seconds.
+
+### UpdateExportOptions
+
+```go
+func (nfs *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error
+```
+
+Updates the server's export options at runtime without requiring a restart. This method is thread-safe and can be called while the server is actively serving requests.
+
+**Safe to update at runtime:**
+- `ReadOnly` - Export read-only mode
+- `Async` - Asynchronous write mode
+- `AllowedIPs` - List of allowed client IPs/subnets
+- `AttrCacheSize` - Maximum number of cached attributes
+- `AttrCacheTimeout` - Time-to-live for cached attributes
+- `ReadAheadMaxMemory` - Maximum memory for read-ahead buffers
+- `ReadAheadMaxFiles` - Maximum number of read-ahead file buffers
+- `MemoryHighWatermark` - Memory pressure high threshold
+- `MemoryLowWatermark` - Memory pressure low threshold
+- `MaxWorkers` - Number of worker goroutines
+- `BatchOperations` - Enable/disable operation batching
+- `MaxBatchSize` - Maximum batch size
+- `Log` - Logging configuration
+
+**Requires restart (returns error if changed):**
+- `Squash` - User mapping mode (affects all operations)
+- `Port` - Network port (requires new listener)
+- `TLS` - TLS configuration (requires new listener)
+
+**Example:**
+
+```go
+// Update cache settings at runtime
+newOpts := server.GetExportOptions()
+newOpts.AttrCacheSize = 20000
+newOpts.AttrCacheTimeout = 10 * time.Second
+newOpts.MaxWorkers = 16
+
+if err := server.UpdateExportOptions(newOpts); err != nil {
+    log.Printf("Failed to update options: %v", err)
+}
+```
+
+**Notes:**
+- When updating cache sizes, LRU entries are automatically evicted if the new size is smaller than current usage
+- When updating worker pool size, the pool is gracefully restarted
+- When updating logging configuration, the old logger is properly closed before the new one is initialized
+- All updates are atomic and thread-safe
 
 ## Example Usage
 

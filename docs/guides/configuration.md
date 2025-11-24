@@ -279,6 +279,212 @@ Example `config.json`:
 }
 ```
 
+## Runtime Configuration Updates
+
+ABSNFS supports updating most configuration options at runtime without requiring a server restart. This is useful for:
+- Adapting to changing workload patterns
+- Adjusting cache sizes based on memory pressure
+- Enabling/disabling features for debugging
+- Modifying access control lists
+
+### Getting Current Configuration
+
+To retrieve the current server configuration:
+
+```go
+// Get a copy of current configuration
+currentOpts := nfsServer.GetExportOptions()
+
+// Inspect configuration values
+log.Printf("Current cache size: %d", currentOpts.AttrCacheSize)
+log.Printf("Current worker count: %d", currentOpts.MaxWorkers)
+log.Printf("Read-only mode: %v", currentOpts.ReadOnly)
+```
+
+The returned configuration is a deep copy, so modifying it won't affect the server's configuration.
+
+### Updating Configuration at Runtime
+
+To update configuration while the server is running:
+
+```go
+// Get current configuration
+opts := nfsServer.GetExportOptions()
+
+// Modify settings
+opts.AttrCacheSize = 20000
+opts.AttrCacheTimeout = 10 * time.Second
+opts.MaxWorkers = 16
+opts.ReadAheadMaxMemory = 200 * 1024 * 1024  // 200MB
+
+// Apply the updates
+if err := nfsServer.UpdateExportOptions(opts); err != nil {
+    log.Printf("Failed to update configuration: %v", err)
+}
+```
+
+### Fields That Can Be Updated
+
+The following fields can be safely updated at runtime:
+
+**Performance Settings:**
+- `AttrCacheSize` - Attribute cache maximum entries
+- `AttrCacheTimeout` - Attribute cache TTL
+- `ReadAheadMaxMemory` - Read-ahead buffer memory limit
+- `ReadAheadMaxFiles` - Read-ahead buffer file limit
+- `MaxWorkers` - Worker pool size
+- `BatchOperations` - Enable/disable batching
+- `MaxBatchSize` - Maximum batch size
+
+**Memory Management:**
+- `MemoryHighWatermark` - High memory threshold
+- `MemoryLowWatermark` - Low memory threshold
+
+**Access Control:**
+- `ReadOnly` - Enable/disable read-only mode
+- `AllowedIPs` - Allowed client IP addresses
+- `Async` - Asynchronous write mode
+
+**Logging:**
+- `Log` - Complete logging configuration
+
+### Fields That Require Restart
+
+Some fields cannot be changed at runtime and require a server restart:
+
+- `Squash` - User mapping mode (affects all operations)
+- `Port` - Network port (requires new listener)
+- `TLS` - TLS configuration (requires new listener)
+
+Attempting to change these fields will return an error:
+
+```go
+opts := nfsServer.GetExportOptions()
+opts.Squash = "all"  // Was "root"
+
+err := nfsServer.UpdateExportOptions(opts)
+if err != nil {
+    // Error: cannot change Squash mode at runtime (requires restart)
+    log.Printf("Update failed: %v", err)
+}
+```
+
+### Runtime Update Behavior
+
+When you update configuration at runtime:
+
+1. **Cache Resizing**: If you reduce cache sizes, LRU entries are automatically evicted
+2. **Worker Pool Resizing**: The pool is gracefully stopped and restarted with the new size
+3. **Memory Limits**: Read-ahead buffers are evicted if necessary to meet new limits
+4. **Logger Updates**: The old logger is properly closed before initializing the new one
+5. **Thread Safety**: All updates are atomic and thread-safe
+
+### Example: Dynamic Cache Adjustment
+
+Here's an example of adjusting cache settings based on workload:
+
+```go
+// Monitor metrics and adjust cache size
+ticker := time.NewTicker(1 * time.Minute)
+defer ticker.Stop()
+
+for range ticker.C {
+    metrics := nfsServer.GetMetrics()
+    opts := nfsServer.GetExportOptions()
+
+    // If cache hit rate is low, increase cache size
+    hitRate := float64(metrics.AttrCacheHits) / float64(metrics.AttrCacheHits + metrics.AttrCacheMisses)
+
+    if hitRate < 0.7 && opts.AttrCacheSize < 50000 {
+        opts.AttrCacheSize = int(float64(opts.AttrCacheSize) * 1.5)
+        if err := nfsServer.UpdateExportOptions(opts); err != nil {
+            log.Printf("Failed to increase cache size: %v", err)
+        } else {
+            log.Printf("Increased cache size to %d (hit rate: %.2f%%)", opts.AttrCacheSize, hitRate*100)
+        }
+    }
+}
+```
+
+### Example: Responding to Memory Pressure
+
+Adjust configuration when system memory is under pressure:
+
+```go
+import "runtime"
+
+func adjustForMemoryPressure(nfsServer *absnfs.AbsfsNFS) {
+    var m runtime.MemStats
+    runtime.ReadMemStats(&m)
+
+    // If using more than 80% of allocated memory
+    usagePercent := float64(m.Alloc) / float64(m.TotalAlloc)
+
+    if usagePercent > 0.8 {
+        opts := nfsServer.GetExportOptions()
+
+        // Reduce cache sizes by 50%
+        opts.AttrCacheSize = opts.AttrCacheSize / 2
+        opts.ReadAheadMaxMemory = opts.ReadAheadMaxMemory / 2
+        opts.ReadAheadMaxFiles = opts.ReadAheadMaxFiles / 2
+
+        if err := nfsServer.UpdateExportOptions(opts); err != nil {
+            log.Printf("Failed to reduce cache sizes: %v", err)
+        } else {
+            log.Printf("Reduced cache sizes due to memory pressure")
+        }
+    }
+}
+```
+
+### Example: Hot-Reloading Configuration Files
+
+Reload configuration from a file without restarting:
+
+```go
+import (
+    "encoding/json"
+    "os"
+    "os/signal"
+    "syscall"
+)
+
+func watchConfigFile(nfsServer *absnfs.AbsfsNFS, configPath string) {
+    // Set up signal handler for SIGHUP (reload config)
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, syscall.SIGHUP)
+
+    for range sigChan {
+        log.Println("Reloading configuration...")
+
+        // Read new configuration
+        configData, err := os.ReadFile(configPath)
+        if err != nil {
+            log.Printf("Error reading config file: %v", err)
+            continue
+        }
+
+        // Parse configuration
+        var newOpts absnfs.ExportOptions
+        if err := json.Unmarshal(configData, &newOpts); err != nil {
+            log.Printf("Error parsing config: %v", err)
+            continue
+        }
+
+        // Apply new configuration
+        if err := nfsServer.UpdateExportOptions(newOpts); err != nil {
+            log.Printf("Error updating configuration: %v", err)
+        } else {
+            log.Println("Configuration reloaded successfully")
+        }
+    }
+}
+
+// Usage:
+// go watchConfigFile(nfsServer, "config.json")
+// ... then send SIGHUP to reload: kill -HUP <pid>
+```
+
 ## Configuration Best Practices
 
 1. **Start Simple**: Begin with default options and adjust as needed
@@ -287,6 +493,9 @@ Example `config.json`:
 4. **Security First**: Prioritize security settings over performance for sensitive data
 5. **Document Your Configuration**: Maintain documentation of your configuration choices
 6. **Regular Review**: Periodically review and update your configuration
+7. **Use Runtime Updates**: Take advantage of runtime updates to avoid service interruptions
+8. **Validate Before Applying**: Always check for errors when updating configuration
+9. **Log Configuration Changes**: Track when and why configuration is changed
 
 ## Next Steps
 
