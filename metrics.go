@@ -38,6 +38,8 @@ type NFSMetrics struct {
 	AttrCacheCapacity   int
 	ReadAheadBufferSize int64
 	DirCacheHitRate     float64
+	NegativeCacheSize   int     // Number of negative cache entries
+	NegativeCacheHitRate float64 // Hit rate for negative cache lookups
 
 	// Connection metrics
 	ActiveConnections    int
@@ -73,11 +75,13 @@ type MetricsCollector struct {
 	metrics        NFSMetrics
 	attrCacheHits  uint64
 	attrCacheMisses uint64
-	readAheadHits  uint64
-	readAheadMisses uint64
-	dirCacheHits   uint64
-	dirCacheMisses uint64
-	
+	readAheadHits     uint64
+	readAheadMisses   uint64
+	dirCacheHits      uint64
+	dirCacheMisses    uint64
+	negativeCacheHits uint64
+	negativeCacheMisses uint64
+
 	// For latency tracking
 	latencyMutex   sync.Mutex
 	readLatencies  []time.Duration
@@ -251,6 +255,18 @@ func (m *MetricsCollector) RecordDirCacheMiss() {
 	m.updateDirCacheHitRate()
 }
 
+// RecordNegativeCacheHit records a hit in the negative cache
+func (m *MetricsCollector) RecordNegativeCacheHit() {
+	atomic.AddUint64(&m.negativeCacheHits, 1)
+	m.updateNegativeCacheHitRate()
+}
+
+// RecordNegativeCacheMiss records a miss in the negative cache
+func (m *MetricsCollector) RecordNegativeCacheMiss() {
+	atomic.AddUint64(&m.negativeCacheMisses, 1)
+	m.updateNegativeCacheHitRate()
+}
+
 // RecordError records an error
 func (m *MetricsCollector) RecordError(errorType string) {
 	atomic.AddUint64(&m.metrics.ErrorCount, 1)
@@ -367,12 +383,27 @@ func (m *MetricsCollector) updateDirCacheHitRate() {
 	hits := atomic.LoadUint64(&m.dirCacheHits)
 	misses := atomic.LoadUint64(&m.dirCacheMisses)
 	total := hits + misses
-	
+
 	if total > 0 {
 		hitRate := float64(hits) / float64(total)
-		
+
 		m.mutex.Lock()
 		m.metrics.DirCacheHitRate = hitRate
+		m.mutex.Unlock()
+	}
+}
+
+// updateNegativeCacheHitRate updates the negative cache hit rate
+func (m *MetricsCollector) updateNegativeCacheHitRate() {
+	hits := atomic.LoadUint64(&m.negativeCacheHits)
+	misses := atomic.LoadUint64(&m.negativeCacheMisses)
+	total := hits + misses
+
+	if total > 0 {
+		hitRate := float64(hits) / float64(total)
+
+		m.mutex.Lock()
+		m.metrics.NegativeCacheHitRate = hitRate
 		m.mutex.Unlock()
 	}
 }
@@ -382,18 +413,22 @@ func (m *MetricsCollector) updateCacheMetrics() {
 	if m.server == nil || m.server.attrCache == nil || m.server.readBuf == nil {
 		return
 	}
-	
+
 	// Get attribute cache metrics
 	attrSize, attrCapacity := m.server.attrCache.Stats()
-	
+
+	// Get negative cache size
+	negativeSize := m.server.attrCache.NegativeStats()
+
 	// Get read-ahead buffer size
 	readAheadSize := m.server.readBuf.Size()
-	
+
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
-	
+
 	m.metrics.AttrCacheSize = attrSize
 	m.metrics.AttrCacheCapacity = attrCapacity
+	m.metrics.NegativeCacheSize = negativeSize
 	m.metrics.ReadAheadBufferSize = readAheadSize
 }
 
