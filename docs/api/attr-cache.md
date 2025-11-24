@@ -15,6 +15,7 @@ File attribute retrieval is one of the most common operations in an NFS server. 
 2. **Latency Reduction**: Provides faster response times for attribute requests
 3. **Load Reduction**: Decreases the load on the underlying filesystem
 4. **Consistency Management**: Ensures clients see consistent attribute information
+5. **Negative Caching**: Reduces repeated lookups of non-existent files
 
 ## Type Definition
 
@@ -69,6 +70,38 @@ func (c *AttrCache) Put(path string, attrs *NFSAttrs)
 ```
 
 Adds or updates cached attributes for the specified path. Uses LRU eviction when the cache is full.
+
+### PutNegative
+
+```go
+func (c *AttrCache) PutNegative(path string)
+```
+
+Adds a negative cache entry for a non-existent file. Only stores the entry if negative caching is enabled. Negative entries use a shorter TTL than positive entries.
+
+### ConfigureNegativeCaching
+
+```go
+func (c *AttrCache) ConfigureNegativeCaching(enable bool, ttl time.Duration)
+```
+
+Configures negative lookup caching. When enabled, the cache will store failed lookups to reduce repeated filesystem queries for non-existent files.
+
+### NegativeStats
+
+```go
+func (c *AttrCache) NegativeStats() int
+```
+
+Returns the count of negative cache entries currently stored.
+
+### InvalidateNegativeInDir
+
+```go
+func (c *AttrCache) InvalidateNegativeInDir(dirPath string)
+```
+
+Invalidates all negative cache entries in a directory. This is called when a file is created in the directory to ensure newly created files are visible.
 
 ### Invalidate
 
@@ -165,15 +198,15 @@ The `AttrCache` can be configured through the `ExportOptions`:
 options := absnfs.ExportOptions{
     // How long attributes are considered valid in the cache
     AttrCacheTimeout: 5 * time.Second,
-    
+
     // Maximum number of entries in the cache
     AttrCacheSize: 10000,
-    
-    // Whether to cache negative lookups
-    AttrCacheNegative: true,
-    
-    // Timeout for negative cache entries
-    AttrCacheNegativeTimeout: 1 * time.Second,
+
+    // Whether to cache negative lookups (file not found)
+    CacheNegativeLookups: true,
+
+    // Timeout for negative cache entries (typically shorter than positive)
+    NegativeCacheTimeout: 5 * time.Second,
 }
 ```
 
@@ -227,8 +260,20 @@ The `AttrCache` maintains statistics to help with monitoring and tuning:
 
 1. **Hit Count**: Number of successful cache hits
 2. **Miss Count**: Number of cache misses requiring filesystem access
-3. **Invalidation Count**: Number of cache invalidations
-4. **Entry Count**: Current number of entries in the cache
+3. **Negative Cache Hit Count**: Number of successful negative cache hits
+4. **Negative Cache Miss Count**: Number of negative cache misses
+5. **Invalidation Count**: Number of cache invalidations
+6. **Entry Count**: Current number of entries in the cache
+7. **Negative Entry Count**: Current number of negative entries in the cache
+
+You can access these statistics through the metrics API:
+
+```go
+metrics := server.GetMetrics()
+fmt.Printf("Attribute cache hit rate: %.2f%%\n", metrics.CacheHitRate*100)
+fmt.Printf("Negative cache hit rate: %.2f%%\n", metrics.NegativeCacheHitRate*100)
+fmt.Printf("Negative cache size: %d\n", metrics.NegativeCacheSize)
+```
 
 ## Relation to Other Components
 
