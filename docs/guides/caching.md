@@ -12,9 +12,10 @@ This guide explains the caching mechanisms in ABSNFS and how to configure them f
 Caching is essential for NFS performance. Without caching, every operation would require a network round-trip, resulting in poor performance. ABSNFS implements several types of caching:
 
 1. **Attribute Caching**: Caches file metadata (size, permissions, timestamps, etc.)
-2. **Read-Ahead Buffering**: Prefetches data for sequential reads
-3. **Directory Entry Caching**: Caches directory listings
-4. **File Handle Caching**: Caches mappings between file handles and filesystem objects
+2. **Negative Caching**: Caches lookup failures to avoid repeated filesystem queries for non-existent files
+3. **Read-Ahead Buffering**: Prefetches data for sequential reads
+4. **Directory Entry Caching**: Caches directory listings
+5. **File Handle Caching**: Caches mappings between file handles and filesystem objects
 
 Each type of caching has different implications for performance, consistency, and resource usage.
 
@@ -56,6 +57,65 @@ To monitor attribute cache performance, check:
 - **Miss rate**: Percentage of attribute requests requiring filesystem operations
 - **Eviction rate**: How often entries are removed due to cache size limits
 - **Invalidation rate**: How often entries are invalidated due to modifications
+
+## Negative Caching
+
+Negative caching stores lookup failures for non-existent files, reducing repeated filesystem queries.
+
+### How Negative Caching Works
+
+1. When a lookup fails (file not found), the server stores a negative cache entry
+2. Subsequent lookups for the same path are served from the negative cache
+3. The cache entry expires after a configurable timeout (typically shorter than positive entries)
+4. Certain operations (like CREATE, MKDIR, RENAME) invalidate related negative cache entries
+
+### Configuring Negative Caching
+
+```go
+options := absnfs.ExportOptions{
+    // Enable negative lookup caching
+    CacheNegativeLookups: true,
+
+    // How long to cache negative entries (typically shorter than positive)
+    NegativeCacheTimeout: 5 * time.Second,
+}
+```
+
+### Negative Caching Tradeoffs
+
+- **Enabling** reduces filesystem load for repeated lookups of non-existent files
+- **Shorter timeouts** reduce the chance of stale negative entries
+- **Disabling** ensures immediate visibility of newly created files but increases load
+
+### When to Use Negative Caching
+
+Negative caching is particularly beneficial for:
+
+1. **Build systems**: Often probe for many files that may not exist
+2. **Package managers**: Check for dependencies in multiple locations
+3. **Application servers**: May look for configuration files in various paths
+4. **Development environments**: IDEs and tools frequently check for files
+
+### Monitoring Negative Cache Performance
+
+To monitor negative cache performance, check:
+
+- **Negative cache hit rate**: Percentage of not-found lookups served from cache
+- **Negative cache size**: Number of negative entries currently cached
+- **Invalidation rate**: How often negative entries are cleared due to file creation
+
+### Example: Enabling for Development
+
+For development environments with many probing lookups:
+
+```go
+options := absnfs.ExportOptions{
+    CacheNegativeLookups: true,
+    NegativeCacheTimeout: 5 * time.Second,  // Short timeout
+    AttrCacheTimeout: 10 * time.Second,     // Normal timeout
+    AttrCacheSize: 20000,
+}
+```
 
 ### Example: Balancing Freshness and Performance
 

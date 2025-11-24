@@ -6,20 +6,24 @@ import (
 	"time"
 )
 
-// AttrCache provides caching for file attributes
+// AttrCache provides caching for file attributes and negative lookups
 type AttrCache struct {
-	mu         sync.RWMutex
-	cache      map[string]*CachedAttrs
-	ttl        time.Duration
-	maxSize    int        // Maximum number of entries in the cache
-	accessList *list.List // Doubly-linked list for O(1) LRU tracking
+	mu              sync.RWMutex
+	cache           map[string]*CachedAttrs
+	ttl             time.Duration
+	negativeTTL     time.Duration // TTL for negative cache entries
+	maxSize         int           // Maximum number of entries in the cache
+	accessList      *list.List    // Doubly-linked list for O(1) LRU tracking
+	enableNegative  bool          // Enable negative caching
 }
 
 // CachedAttrs represents cached file attributes with expiration
+// When attrs is nil, this represents a negative cache entry (file not found)
 type CachedAttrs struct {
 	attrs       *NFSAttrs
 	expireAt    time.Time
 	listElement *list.Element // Reference to position in LRU list for O(1) access
+	isNegative  bool          // True if this is a negative cache entry
 }
 
 // NewAttrCache creates a new attribute cache with the specified TTL and maximum size
@@ -29,23 +33,64 @@ func NewAttrCache(ttl time.Duration, maxSize int) *AttrCache {
 	}
 
 	return &AttrCache{
-		cache:      make(map[string]*CachedAttrs),
-		ttl:        ttl,
-		maxSize:    maxSize,
-		accessList: list.New(),
+		cache:          make(map[string]*CachedAttrs),
+		ttl:            ttl,
+		negativeTTL:    5 * time.Second, // Default negative cache TTL
+		maxSize:        maxSize,
+		accessList:     list.New(),
+		enableNegative: false, // Disabled by default
+	}
+}
+
+// ConfigureNegativeCaching configures negative lookup caching
+func (c *AttrCache) ConfigureNegativeCaching(enable bool, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.enableNegative = enable
+	if ttl > 0 {
+		c.negativeTTL = ttl
 	}
 }
 
 // Get retrieves cached attributes if they exist and are not expired
+// Returns nil if the entry is not found or expired
+// For negative cache entries (file not found), it returns a special marker
 func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
 	var s *AbsfsNFS
 	if len(server) > 0 {
 		s = server[0]
 	}
-	
+
 	c.mu.RLock()
 	cached, ok := c.cache[path]
 	if ok && time.Now().Before(cached.expireAt) {
+		// Handle negative cache entry
+		if cached.isNegative {
+			c.mu.RUnlock()
+
+			// Update access log (LRU tracking)
+			c.mu.Lock()
+			if _, stillExists := c.cache[path]; stillExists {
+				c.updateAccessLog(path)
+			}
+			c.mu.Unlock()
+
+			// Record negative cache hit for metrics
+			if s != nil {
+				s.RecordNegativeCacheHit()
+
+				// Log negative cache hit if debug logging is enabled
+				if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+					s.structuredLogger.Debug("negative cache hit",
+						LogField{Key: "path", Value: path})
+				}
+			}
+
+			// Return nil to indicate "not found" but with a negative cache hit
+			return nil
+		}
+
 		// Copy attributes while holding RLock to prevent data races
 		attrs := &NFSAttrs{
 			Mode:  cached.attrs.Mode,
@@ -174,6 +219,56 @@ func (c *AttrCache) Put(path string, attrs *NFSAttrs) {
 		attrs:       attrsCopy,
 		expireAt:    time.Now().Add(c.ttl),
 		listElement: listElem,
+		isNegative:  false,
+	}
+
+	// Update access log to mark this as most recently used - O(1)
+	c.updateAccessLog(path)
+}
+
+// PutNegative adds a negative cache entry (file not found)
+func (c *AttrCache) PutNegative(path string) {
+	// Only store negative entries if enabled
+	c.mu.RLock()
+	enabled := c.enableNegative
+	negativeTTL := c.negativeTTL
+	c.mu.RUnlock()
+
+	if !enabled {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Check if entry already exists
+	existing, exists := c.cache[path]
+
+	// Check if we need to evict entries to make room
+	if len(c.cache) >= c.maxSize && !exists {
+		// Need to evict the least recently used entry - O(1) using list.Back()
+		if c.accessList.Len() > 0 {
+			// Get LRU element from back of list - O(1)
+			lruElement := c.accessList.Back()
+			if lruElement != nil {
+				lruPath := lruElement.Value.(string)
+				delete(c.cache, lruPath)
+				c.accessList.Remove(lruElement) // O(1)
+			}
+		}
+	}
+
+	// Preserve the listElement reference when updating existing entry
+	var listElem *list.Element
+	if exists && existing != nil {
+		listElem = existing.listElement
+	}
+
+	c.cache[path] = &CachedAttrs{
+		attrs:       nil, // No attributes for negative entry
+		expireAt:    time.Now().Add(negativeTTL),
+		listElement: listElem,
+		isNegative:  true,
 	}
 
 	// Update access log to mark this as most recently used - O(1)
@@ -218,8 +313,69 @@ func (c *AttrCache) MaxSize() int {
 func (c *AttrCache) Stats() (int, int) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	return len(c.cache), c.maxSize
+}
+
+// NegativeStats returns the count of negative cache entries
+func (c *AttrCache) NegativeStats() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	count := 0
+	for _, cached := range c.cache {
+		if cached.isNegative {
+			count++
+		}
+	}
+	return count
+}
+
+// InvalidateNegativeInDir invalidates all negative cache entries in a directory
+// This is called when a file is created in the directory
+func (c *AttrCache) InvalidateNegativeInDir(dirPath string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Find all negative entries that are children of this directory
+	toDelete := make([]string, 0)
+	for path, cached := range c.cache {
+		if cached.isNegative && isChildOf(path, dirPath) {
+			toDelete = append(toDelete, path)
+		}
+	}
+
+	// Delete the negative entries
+	for _, path := range toDelete {
+		delete(c.cache, path)
+		c.removeFromAccessLog(path)
+	}
+}
+
+// isChildOf checks if path is a direct child of dirPath
+func isChildOf(path, dirPath string) bool {
+	// Normalize paths
+	if dirPath == "/" {
+		// Everything except "/" itself is a child of root
+		return path != "/"
+	}
+
+	// Check if path starts with dirPath followed by a separator
+	if len(path) <= len(dirPath) {
+		return false
+	}
+
+	// Path must start with dirPath
+	if path[:len(dirPath)] != dirPath {
+		return false
+	}
+
+	// Must be followed by a separator
+	if len(path) > len(dirPath) && path[len(dirPath)] != '/' {
+		return false
+	}
+
+	return true
 }
 
 // FileBuffer represents a read-ahead buffer for a specific file

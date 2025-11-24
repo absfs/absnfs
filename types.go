@@ -113,7 +113,19 @@ type ExportOptions struct {
 	// Larger values improve performance but consume more memory
 	// Default: 10000 entries
 	AttrCacheSize int
-	
+
+	// CacheNegativeLookups enables caching of failed lookups (file not found)
+	// This can significantly reduce filesystem load for repeated lookups of non-existent files
+	// Negative cache entries use a shorter TTL than positive entries
+	// Default: false (disabled)
+	CacheNegativeLookups bool
+
+	// NegativeCacheTimeout controls how long negative cache entries are kept
+	// Shorter timeouts reduce the chance of stale negative cache entries
+	// Only applicable when CacheNegativeLookups is true
+	// Default: 5 * time.Second
+	NegativeCacheTimeout time.Duration
+
 	// AdaptToMemoryPressure enables automatic cache reduction when system memory is under pressure
 	// When enabled, the server will periodically check system memory usage and reduce cache sizes
 	// when memory usage exceeds MemoryHighWatermark, until usage falls below MemoryLowWatermark
@@ -344,7 +356,12 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	if options.AttrCacheSize <= 0 {
 		options.AttrCacheSize = 10000
 	}
-	
+
+	// Set negative cache defaults
+	if options.NegativeCacheTimeout <= 0 {
+		options.NegativeCacheTimeout = 5 * time.Second
+	}
+
 	// Set memory pressure detection defaults
 	if options.MemoryHighWatermark <= 0 || options.MemoryHighWatermark > 1.0 {
 		options.MemoryHighWatermark = 0.8 // Default: 80% of total memory
@@ -438,7 +455,10 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	
 	// Configure read-ahead buffer with size limits
 	server.readBuf.Configure(options.ReadAheadMaxFiles, options.ReadAheadMaxMemory)
-	
+
+	// Configure negative caching
+	server.attrCache.ConfigureNegativeCaching(options.CacheNegativeLookups, options.NegativeCacheTimeout)
+
 	// Initialize and start worker pool
 	server.workerPool = NewWorkerPool(options.MaxWorkers, server)
 	server.workerPool.Start()

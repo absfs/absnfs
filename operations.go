@@ -101,7 +101,7 @@ func (s *AbsfsNFS) Lookup(path string) (*NFSNode, error) {
 		}()
 	}
 
-	// Check cache first
+	// Check cache first (including negative cache)
 	if attrs := s.attrCache.Get(path, s); attrs != nil {
 		node := &NFSNode{
 			FileSystem: s.fs,
@@ -124,6 +124,11 @@ func (s *AbsfsNFS) Lookup(path string) (*NFSNode, error) {
 	}
 
 	if err != nil {
+		// Store negative cache entry if enabled and error is "not found"
+		if os.IsNotExist(err) {
+			s.attrCache.PutNegative(path)
+			s.RecordNegativeCacheMiss()
+		}
 		return nil, fmt.Errorf("lookup: failed to stat %s: %w", path, err)
 	}
 
@@ -552,8 +557,10 @@ func (s *AbsfsNFS) Create(dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode,
 		return nil, fmt.Errorf("create: failed to chmod %s: %w", path, err)
 	}
 
-	// Invalidate parent directory cache
+	// Invalidate parent directory cache and negative cache entries in the directory
 	s.attrCache.Invalidate(dir.path)
+	s.attrCache.InvalidateNegativeInDir(dir.path)
+	s.attrCache.Invalidate(path) // Also invalidate the specific path in case it was negatively cached
 	return s.Lookup(path)
 }
 
@@ -631,11 +638,14 @@ func (s *AbsfsNFS) Rename(oldDir *NFSNode, oldName string, newDir *NFSNode, newN
 	if err != nil {
 		return fmt.Errorf("rename: failed to rename %s to %s: %w", oldPath, newPath, err)
 	}
-	// Invalidate caches
+	// Invalidate caches and negative cache entries
 	s.attrCache.Invalidate(oldPath)
 	s.attrCache.Invalidate(newPath)
 	s.attrCache.Invalidate(oldDir.path)
 	s.attrCache.Invalidate(newDir.path)
+	// Invalidate negative cache entries in both directories
+	s.attrCache.InvalidateNegativeInDir(oldDir.path)
+	s.attrCache.InvalidateNegativeInDir(newDir.path)
 	return nil
 }
 
@@ -785,8 +795,10 @@ func (s *AbsfsNFS) Symlink(dir *NFSNode, name string, target string, attrs *NFSA
 		return nil, fmt.Errorf("symlink: failed to create symlink at %s pointing to %s: %w", path, target, err)
 	}
 
-	// Invalidate parent directory cache
+	// Invalidate parent directory cache and negative cache entries in the directory
 	s.attrCache.Invalidate(dir.path)
+	s.attrCache.InvalidateNegativeInDir(dir.path)
+	s.attrCache.Invalidate(path) // Also invalidate the specific path in case it was negatively cached
 	return s.Lookup(path)
 }
 

@@ -173,3 +173,19 @@ func (n *AbsfsNFS) RecordDirCacheMiss() {
 	}
 	n.metrics.RecordDirCacheMiss()
 }
+
+// RecordNegativeCacheHit records a hit in the negative cache
+func (n *AbsfsNFS) RecordNegativeCacheHit() {
+	if n.metrics == nil {
+		return
+	}
+	n.metrics.RecordNegativeCacheHit()
+}
+
+// RecordNegativeCacheMiss records a miss in the negative cache
+func (n *AbsfsNFS) RecordNegativeCacheMiss() {
+	if n.metrics == nil {
+		return
+	}
+	n.metrics.RecordNegativeCacheMiss()
+}
