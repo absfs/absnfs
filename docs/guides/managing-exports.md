@@ -30,12 +30,12 @@ if err := nfsServer.Export(mountPath, port); err != nil {
 
 ### Stopping an Export
 
-To stop serving an export, call the `Unexport` method:
+To stop serving an export, call the `Close` method:
 
 ```go
 // Stop the export
-if err := nfsServer.Unexport(); err != nil {
-    log.Printf("Error unexporting: %v", err)
+if err := nfsServer.Close(); err != nil {
+    log.Printf("Error closing: %v", err)
 }
 ```
 
@@ -44,25 +44,6 @@ This will:
 2. Close existing connections gracefully
 3. Release network resources
 4. Unregister from the portmapper (if applicable)
-
-### Updating Export Options
-
-To update the options for an existing export:
-
-```go
-// Get current options
-currentOptions := nfsServer.GetExportOptions()
-
-// Modify options
-currentOptions.ReadOnly = true // Switch to read-only mode
-
-// Update options
-if err := nfsServer.UpdateExportOptions(currentOptions); err != nil {
-    log.Printf("Error updating options: %v", err)
-}
-```
-
-Note that some option changes may require client reconnection to take full effect.
 
 ## Multiple Exports
 
@@ -87,11 +68,11 @@ server2, _ := absnfs.New(fs2, absnfs.ExportOptions{})
 server2.Export("/export/data", 2050) // Use a different port
 ```
 
-To shut down, unexport each server:
+To shut down, close each server:
 
 ```go
-server1.Unexport()
-server2.Unexport()
+server1.Close()
+server2.Close()
 ```
 
 ### Exporting Same Filesystem at Different Paths
@@ -201,8 +182,8 @@ func main() {
             return
         }
 
-        // Unexport
-        if err := server.Unexport(); err != nil {
+        // Close the export
+        if err := server.Close(); err != nil {
             http.Error(w, err.Error(), http.StatusInternalServerError)
             return
         }
@@ -327,27 +308,27 @@ func main() {
     <-sigChan
     log.Println("Shutdown signal received")
     
-    // Unexport with timeout
-    log.Println("Unexporting... (waiting for clients to disconnect)")
-    
+    // Close with timeout
+    log.Println("Closing... (waiting for clients to disconnect)")
+
     // Create a timeout channel
     timeout := time.After(30 * time.Second)
     done := make(chan struct{})
-    
-    // Unexport in a goroutine
+
+    // Close in a goroutine
     go func() {
-        if err := server.Unexport(); err != nil {
-            log.Printf("Error during unexport: %v", err)
+        if err := server.Close(); err != nil {
+            log.Printf("Error during close: %v", err)
         }
         close(done)
     }()
-    
-    // Wait for unexport or timeout
+
+    // Wait for close or timeout
     select {
     case <-done:
-        log.Println("Unexport completed successfully")
+        log.Println("Close completed successfully")
     case <-timeout:
-        log.Println("Unexport timed out, forcing exit")
+        log.Println("Close timed out, forcing exit")
     }
     
     log.Println("Shutdown complete")
@@ -402,9 +383,9 @@ func manageExport(server *absnfs.AbsfsNFS) {
         // This is a simplification - in a real implementation, you would
         // need a mechanism to detect when the export fails
         time.Sleep(60 * time.Second)
-        
-        // Try to unexport cleanly before restarting
-        server.Unexport()
+
+        // Try to close cleanly before restarting
+        server.Close()
     }
 }
 ```
@@ -481,15 +462,7 @@ For high availability:
 
 To effectively monitor exports:
 
-1. Implement logging:
-   ```go
-   options := absnfs.ExportOptions{
-       LogLevel: "Debug",
-       LogOperations: true,
-   }
-   ```
-
-2. Implement health endpoints:
+1. Implement health endpoints:
    ```go
    http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
        // Check if exports are functioning
@@ -498,7 +471,7 @@ To effectively monitor exports:
    })
    ```
 
-3. Use system monitoring tools:
+2. Use system monitoring tools:
    - Check network connections with `netstat`
    - Monitor filesystem usage with `df`
    - Track NFS statistics with `nfsstat`

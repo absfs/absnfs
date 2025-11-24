@@ -69,12 +69,9 @@ To configure attribute caching for improved performance:
 options := absnfs.ExportOptions{
     // How long attributes are cached
     AttrCacheTimeout: 10 * time.Second,
-    
+
     // Maximum number of entries in the cache
     AttrCacheSize: 10000,
-    
-    // Whether to cache negative lookups
-    CacheNegativeLookups: true,
 }
 ```
 
@@ -131,12 +128,6 @@ To configure various timeout values:
 options := absnfs.ExportOptions{
     // How long to wait for idle connections before closing
     IdleTimeout: 5 * time.Minute,
-    
-    // Maximum time to wait for a single operation
-    OperationTimeout: 30 * time.Second,
-    
-    // How long file handles remain valid when unused
-    HandleTimeout: 10 * time.Minute,
 }
 ```
 
@@ -147,25 +138,9 @@ Timeouts help manage:
 
 ### Logging
 
-To configure logging:
+ABSNFS uses standard Go logging. To configure logging, use Go's standard `log` package or integrate with your preferred logging framework.
 
-```go
-options := absnfs.ExportOptions{
-    // Log level (Debug, Info, Warning, Error)
-    LogLevel: "Info",
-    
-    // Whether to log client IP addresses
-    LogClientIPs: true,
-    
-    // Whether to log operation details
-    LogOperations: true,
-}
-
-// Set a custom logger
-nfsServer.SetLogger(myLogger)
-```
-
-Logging configuration helps with:
+Logging helps with:
 - Debugging NFS issues
 - Monitoring access patterns
 - Security auditing
@@ -185,10 +160,6 @@ options := absnfs.ExportOptions{
     // Reduce security slightly for performance
     Secure: true,
     AllowedIPs: []string{"192.168.0.0/16"}, // Trust local network
-    
-    // Minimize logging for performance
-    LogLevel: "Warning",
-    LogOperations: false,
 }
 ```
 
@@ -203,15 +174,9 @@ options := absnfs.ExportOptions{
     Secure: true,
     AllowedIPs: []string{"10.0.0.5", "10.0.0.6"}, // Only specific IPs
     Squash: "all", // Map all users to anonymous
-    
+
     // Short timeouts for security
     IdleTimeout: 1 * time.Minute,
-    HandleTimeout: 5 * time.Minute,
-    
-    // Extensive logging for auditing
-    LogLevel: "Debug",
-    LogClientIPs: true,
-    LogOperations: true,
 }
 ```
 
@@ -224,16 +189,16 @@ package main
 
 import (
     "encoding/json"
-    "io/ioutil"
     "log"
-    
+    "os"
+
     "github.com/absfs/absnfs"
     "github.com/absfs/memfs"
 )
 
 func main() {
     // Read configuration from file
-    configData, err := ioutil.ReadFile("config.json")
+    configData, err := os.ReadFile("config.json")
     if err != nil {
         log.Fatalf("Error reading config file: %v", err)
     }
@@ -277,8 +242,7 @@ Example `config.json`:
     "AttrCacheTimeout": 10000000000,  // 10 seconds in nanoseconds
     "EnableReadAhead": true,
     "ReadAheadSize": 524288,
-    "TransferSize": 131072,
-    "LogLevel": "Info"
+    "TransferSize": 131072
 }
 ```
 

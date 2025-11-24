@@ -103,9 +103,7 @@ func main() {
 	fs, _ := memfs.NewFS()
 
 	// Create NFS server
-	nfsServer, _ := absnfs.New(fs, absnfs.ExportOptions{
-		LogLevel: "Info",
-	})
+	nfsServer, _ := absnfs.New(fs, absnfs.ExportOptions{})
 
 	// Export the filesystem
 	nfsServer.Export("/export/test", 2049)
@@ -481,19 +479,7 @@ showmount -e localhost
 
 ## Log Monitoring
 
-Configure comprehensive logging in your ABSNFS server:
-
-```go
-options := absnfs.ExportOptions{
-    LogLevel: "Info",        // Options: Debug, Info, Warning, Error
-    LogFile: "/var/log/absnfs.log",
-    LogFormat: "json",       // Options: text, json
-    LogMaxSize: 100,         // Max size in MB before rotation
-    LogMaxBackups: 5,        // Number of log files to keep
-    LogMaxAge: 30,           // Max age in days
-    LogCompress: true,       // Compress rotated logs
-}
-```
+ABSNFS uses Go's standard logging. Configure logging using Go's `log` package or integrate with your preferred logging framework.
 
 ### Log Analysis
 
