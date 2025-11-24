@@ -98,6 +98,9 @@ type ExportOptions struct {
 
     // TLS holds the TLS/SSL configuration for encrypted connections
     TLS *TLSConfig
+
+    // Timeouts controls operation-specific timeout durations
+    Timeouts *TimeoutConfig
 }
 ```
 
@@ -401,7 +404,49 @@ Holds the TLS/SSL configuration for encrypted connections. When `TLS.Enabled` is
 
 **Default:** `nil` (TLS disabled)
 
+### Timeouts
+
+```go
+Timeouts *TimeoutConfig
+```
+
+Controls operation-specific timeout durations. When nil, default timeouts are used for all operations. Allows fine-grained control over how long each operation type can take before returning a timeout error.
+
+When an operation times out, the NFS server returns `NFSERR_DELAY` to the client, indicating that the server is temporarily busy and the client should retry the operation.
+
+**Default:** `nil` (uses default configuration)
+
+The `TimeoutConfig` type provides the following fields:
+
+```go
+type TimeoutConfig struct {
+    ReadTimeout    time.Duration // Default: 30s
+    WriteTimeout   time.Duration // Default: 60s
+    LookupTimeout  time.Duration // Default: 10s
+    ReaddirTimeout time.Duration // Default: 30s
+    CreateTimeout  time.Duration // Default: 15s
+    RemoveTimeout  time.Duration // Default: 15s
+    RenameTimeout  time.Duration // Default: 20s
+    HandleTimeout  time.Duration // Default: 5s
+    DefaultTimeout time.Duration // Default: 30s (fallback)
+}
+```
+
+#### Timeout Fields
+
+- **ReadTimeout**: Maximum time allowed for read operations
+- **WriteTimeout**: Maximum time allowed for write operations (longer default due to disk I/O)
+- **LookupTimeout**: Maximum time allowed for path lookup operations
+- **ReaddirTimeout**: Maximum time allowed for directory listing operations
+- **CreateTimeout**: Maximum time allowed for file creation operations
+- **RemoveTimeout**: Maximum time allowed for file deletion operations
+- **RenameTimeout**: Maximum time allowed for file rename operations
+- **HandleTimeout**: Maximum time allowed for file handle operations
+- **DefaultTimeout**: Fallback timeout for operations without a specific timeout
+
 ## Example Usage
+
+### Basic Configuration
 
 ```go
 options := absnfs.ExportOptions{
@@ -413,6 +458,28 @@ options := absnfs.ExportOptions{
     EnableReadAhead: true,
     ReadAheadSize: 524288, // 512KB
     AttrCacheTimeout: 10 * time.Second,
+}
+
+server, err := absnfs.New(fs, options)
+```
+
+### Configuration with Custom Timeouts
+
+```go
+options := absnfs.ExportOptions{
+    ReadOnly: false,
+    TransferSize: 131072,
+    Timeouts: &absnfs.TimeoutConfig{
+        ReadTimeout:    45 * time.Second,
+        WriteTimeout:   90 * time.Second,
+        LookupTimeout:  15 * time.Second,
+        ReaddirTimeout: 60 * time.Second,
+        CreateTimeout:  30 * time.Second,
+        RemoveTimeout:  30 * time.Second,
+        RenameTimeout:  45 * time.Second,
+        HandleTimeout:  10 * time.Second,
+        DefaultTimeout: 60 * time.Second,
+    },
 }
 
 server, err := absnfs.New(fs, options)

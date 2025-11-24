@@ -13,6 +13,9 @@ import (
 	"github.com/absfs/absfs"
 )
 
+// ErrTimeout is returned when an operation times out
+var ErrTimeout = errors.New("operation timed out")
+
 // mapError converts absfs errors to NFS status codes
 func mapError(err error) uint32 {
 	// Check custom errors first
@@ -26,6 +29,8 @@ func mapError(err error) uint32 {
 		return NFSERR_BADHANDLE
 	case errors.As(err, &notSupported):
 		return NFSERR_NOTSUPP
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrTimeout):
+		return NFSERR_DELAY
 	case os.IsNotExist(err):
 		return NFSERR_NOENT
 	case os.IsPermission(err):
@@ -95,9 +100,19 @@ func sanitizePath(basePath, name string) (string, error) {
 
 // Lookup implements the LOOKUP operation
 func (s *AbsfsNFS) Lookup(path string) (*NFSNode, error) {
+	return s.LookupWithContext(context.Background(), path)
+}
+
+// LookupWithContext implements the LOOKUP operation with timeout support
+func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode, error) {
 	if path == "" {
 		return nil, fmt.Errorf("empty path")
 	}
+
+	// Create context with timeout
+	timeout := s.options.Timeouts.LookupTimeout
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	// Log operation if enabled
 	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogOperations {
@@ -110,7 +125,21 @@ func (s *AbsfsNFS) Lookup(path string) (*NFSNode, error) {
 		}()
 	}
 
+<<<<<<< HEAD
 	// Check cache first (including negative cache)
+=======
+	// Check for timeout before proceeding
+	select {
+	case <-ctx.Done():
+		if s.metrics != nil {
+			s.metrics.RecordTimeout("LOOKUP")
+		}
+		return nil, ErrTimeout
+	default:
+	}
+
+	// Check cache first
+>>>>>>> 141f3c7 (Implement configurable operation timeouts (issue #63))
 	if attrs := s.attrCache.Get(path, s); attrs != nil {
 		node := &NFSNode{
 			FileSystem: s.fs,
@@ -266,6 +295,11 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 
 // Read implements the READ operation
 func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error) {
+	return s.ReadWithContext(context.Background(), node, offset, count)
+}
+
+// ReadWithContext implements the READ operation with timeout support
+func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset int64, count int64) ([]byte, error) {
 	if node == nil {
 		return nil, fmt.Errorf("nil node")
 	}
@@ -275,6 +309,11 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 	if count < 0 {
 		return nil, fmt.Errorf("negative count")
 	}
+
+	// Create context with timeout
+	timeout := s.options.Timeouts.ReadTimeout
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	// Log operation if enabled
 	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogOperations {
@@ -287,6 +326,16 @@ func (s *AbsfsNFS) Read(node *NFSNode, offset int64, count int64) ([]byte, error
 				LogField{Key: "count", Value: count},
 				LogField{Key: "duration_ms", Value: duration.Milliseconds()})
 		}()
+	}
+
+	// Check for timeout before proceeding
+	select {
+	case <-ctx.Done():
+		if s.metrics != nil {
+			s.metrics.RecordTimeout("READ")
+		}
+		return nil, ErrTimeout
+	default:
 	}
 
 	// Limit the read size to TransferSize if it exceeds the configured limit
@@ -390,6 +439,11 @@ func min(a, b int) int {
 
 // Write implements the WRITE operation
 func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error) {
+	return s.WriteWithContext(context.Background(), node, offset, data)
+}
+
+// WriteWithContext implements the WRITE operation with timeout support
+func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset int64, data []byte) (int64, error) {
 	if node == nil {
 		return 0, fmt.Errorf("nil node")
 	}
@@ -408,6 +462,11 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 		return 0, os.ErrPermission
 	}
 
+	// Create context with timeout
+	timeout := s.options.Timeouts.WriteTimeout
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	// Log operation if enabled
 	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogOperations {
 		startTime := time.Now()
@@ -419,6 +478,16 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 				LogField{Key: "size", Value: len(data)},
 				LogField{Key: "duration_ms", Value: duration.Milliseconds()})
 		}()
+	}
+
+	// Check for timeout before proceeding
+	select {
+	case <-ctx.Done():
+		if s.metrics != nil {
+			s.metrics.RecordTimeout("WRITE")
+		}
+		return 0, ErrTimeout
+	default:
 	}
 
 	// Limit the write size to TransferSize if it exceeds the configured limit
@@ -515,6 +584,11 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 
 // Create implements the CREATE operation
 func (s *AbsfsNFS) Create(dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode, error) {
+	return s.CreateWithContext(context.Background(), dir, name, attrs)
+}
+
+// CreateWithContext implements the CREATE operation with timeout support
+func (s *AbsfsNFS) CreateWithContext(ctx context.Context, dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode, error) {
 	if dir == nil {
 		return nil, fmt.Errorf("nil directory node")
 	}
@@ -534,6 +608,11 @@ func (s *AbsfsNFS) Create(dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode,
 		return nil, os.ErrPermission
 	}
 
+	// Create context with timeout
+	timeout := s.options.Timeouts.CreateTimeout
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	// Log operation if enabled
 	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogFileAccess {
 		startTime := time.Now()
@@ -544,6 +623,16 @@ func (s *AbsfsNFS) Create(dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode,
 				LogField{Key: "name", Value: name},
 				LogField{Key: "duration_ms", Value: duration.Milliseconds()})
 		}()
+	}
+
+	// Check for timeout before proceeding
+	select {
+	case <-ctx.Done():
+		if s.metrics != nil {
+			s.metrics.RecordTimeout("CREATE")
+		}
+		return nil, ErrTimeout
+	default:
 	}
 
 	// Sanitize the path to prevent directory traversal attacks
@@ -575,6 +664,11 @@ func (s *AbsfsNFS) Create(dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode,
 
 // Remove implements the REMOVE operation
 func (s *AbsfsNFS) Remove(dir *NFSNode, name string) error {
+	return s.RemoveWithContext(context.Background(), dir, name)
+}
+
+// RemoveWithContext implements the REMOVE operation with timeout support
+func (s *AbsfsNFS) RemoveWithContext(ctx context.Context, dir *NFSNode, name string) error {
 	if dir == nil {
 		return fmt.Errorf("nil directory node")
 	}
@@ -591,6 +685,11 @@ func (s *AbsfsNFS) Remove(dir *NFSNode, name string) error {
 		return os.ErrPermission
 	}
 
+	// Create context with timeout
+	timeout := s.options.Timeouts.RemoveTimeout
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	// Log operation if enabled
 	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogFileAccess {
 		startTime := time.Now()
@@ -601,6 +700,16 @@ func (s *AbsfsNFS) Remove(dir *NFSNode, name string) error {
 				LogField{Key: "name", Value: name},
 				LogField{Key: "duration_ms", Value: duration.Milliseconds()})
 		}()
+	}
+
+	// Check for timeout before proceeding
+	select {
+	case <-ctx.Done():
+		if s.metrics != nil {
+			s.metrics.RecordTimeout("REMOVE")
+		}
+		return ErrTimeout
+	default:
 	}
 
 	// Sanitize the path to prevent directory traversal attacks
@@ -621,6 +730,11 @@ func (s *AbsfsNFS) Remove(dir *NFSNode, name string) error {
 
 // Rename implements the RENAME operation
 func (s *AbsfsNFS) Rename(oldDir *NFSNode, oldName string, newDir *NFSNode, newName string) error {
+	return s.RenameWithContext(context.Background(), oldDir, oldName, newDir, newName)
+}
+
+// RenameWithContext implements the RENAME operation with timeout support
+func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldName string, newDir *NFSNode, newName string) error {
 	if oldDir == nil || newDir == nil {
 		return fmt.Errorf("nil directory node")
 	}
@@ -630,6 +744,21 @@ func (s *AbsfsNFS) Rename(oldDir *NFSNode, oldName string, newDir *NFSNode, newN
 
 	if s.options.ReadOnly {
 		return os.ErrPermission
+	}
+
+	// Create context with timeout
+	timeout := s.options.Timeouts.RenameTimeout
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Check for timeout before proceeding
+	select {
+	case <-ctx.Done():
+		if s.metrics != nil {
+			s.metrics.RecordTimeout("RENAME")
+		}
+		return ErrTimeout
+	default:
 	}
 
 	// Sanitize both paths to prevent directory traversal attacks
@@ -660,8 +789,28 @@ func (s *AbsfsNFS) Rename(oldDir *NFSNode, oldName string, newDir *NFSNode, newN
 
 // ReadDir implements the READDIR operation
 func (s *AbsfsNFS) ReadDir(dir *NFSNode) ([]*NFSNode, error) {
+	return s.ReadDirWithContext(context.Background(), dir)
+}
+
+// ReadDirWithContext implements the READDIR operation with timeout support
+func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFSNode, error) {
 	if dir == nil {
 		return nil, fmt.Errorf("nil directory node")
+	}
+
+	// Create context with timeout
+	timeout := s.options.Timeouts.ReaddirTimeout
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Check for timeout before proceeding
+	select {
+	case <-ctx.Done():
+		if s.metrics != nil {
+			s.metrics.RecordTimeout("READDIR")
+		}
+		return nil, ErrTimeout
+	default:
 	}
 
 	f, err := s.fs.OpenFile(dir.path, os.O_RDONLY, 0)

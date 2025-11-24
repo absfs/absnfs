@@ -120,9 +120,9 @@ Adjusting the transfer size can help:
 
 ## Advanced Configuration
 
-### Timeouts
+### Connection Timeouts
 
-To configure various timeout values:
+To configure connection idle timeouts:
 
 ```go
 options := absnfs.ExportOptions{
@@ -131,10 +131,61 @@ options := absnfs.ExportOptions{
 }
 ```
 
-Timeouts help manage:
+Connection timeouts help manage:
 - Resource usage for idle connections
-- Recovery from stuck operations
-- Cleanup of abandoned file handles
+- Cleanup of abandoned connections
+
+### Operation Timeouts
+
+To configure operation-specific timeouts, use the `Timeouts` configuration:
+
+```go
+options := absnfs.ExportOptions{
+    Timeouts: &absnfs.TimeoutConfig{
+        // Read operations timeout
+        ReadTimeout: 30 * time.Second,
+
+        // Write operations timeout (longer for disk I/O)
+        WriteTimeout: 60 * time.Second,
+
+        // Path lookup operations timeout
+        LookupTimeout: 10 * time.Second,
+
+        // Directory listing operations timeout
+        ReaddirTimeout: 30 * time.Second,
+
+        // File creation operations timeout
+        CreateTimeout: 15 * time.Second,
+
+        // File deletion operations timeout
+        RemoveTimeout: 15 * time.Second,
+
+        // File rename operations timeout
+        RenameTimeout: 20 * time.Second,
+
+        // File handle operations timeout
+        HandleTimeout: 5 * time.Second,
+
+        // Default timeout for operations without specific timeout
+        DefaultTimeout: 30 * time.Second,
+    },
+}
+```
+
+Operation timeouts help:
+- Prevent operations from hanging indefinitely on slow filesystems
+- Protect against misbehaving clients
+- Free up resources from stuck operations
+- Provide consistent response times to clients
+
+When an operation times out, the server returns `NFSERR_DELAY` to the client, signaling that the server is temporarily busy and the client should retry the operation. Timeout metrics are tracked and can be monitored through the server's metrics API.
+
+**Best Practices:**
+- Set write timeouts longer than read timeouts due to disk I/O overhead
+- Adjust timeouts based on your filesystem's performance characteristics
+- For network-backed filesystems (like S3), use longer timeouts
+- For local SSD/NVMe storage, shorter timeouts are appropriate
+- Monitor timeout metrics to tune these values for your workload
 
 ### Logging
 
