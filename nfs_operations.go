@@ -1988,6 +1988,18 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		reply.Data = buf.Bytes()
 		return reply, nil
 
+	case NFSPROC3_LINK:
+		// LINK operation is not supported - hard links are not implemented
+		// Return NFSERR_NOTSUPP to indicate this operation is not available
+		var buf bytes.Buffer
+		notSupported := &NotSupportedError{
+			Operation: "LINK",
+			Reason:    "hard links are not supported by this NFS implementation",
+		}
+		xdrEncodeUint32(&buf, mapError(notSupported))
+		reply.Data = buf.Bytes()
+		return reply, nil
+
 	default:
 		reply.Status = PROC_UNAVAIL
 		return reply, nil

@@ -59,15 +59,15 @@ The error mapping logic considers several factors:
 
 | ABSFS/Go Error | NFS Error | Description |
 |----------------|-----------|-------------|
-| Invalid file handle | `NFS3ERR_BADHANDLE` | Invalid file handle |
-| Stale file handle | `NFS3ERR_STALE` | Stale file handle |
+| `*InvalidFileHandleError` | `NFS3ERR_BADHANDLE` | Invalid file handle not found in map |
+| `*StaleFileHandleError` | `NFS3ERR_STALE` | Stale file handle (was valid but no longer) |
 | Invalid cookie | `NFS3ERR_BAD_COOKIE` | READDIR cookie is stale |
 
 ### Operation Errors
 
 | ABSFS/Go Error | NFS Error | Description |
 |----------------|-----------|-------------|
-| Unsupported operation | `NFS3ERR_NOTSUPP` | Operation not supported |
+| `*NotSupportedError` | `NFS3ERR_NOTSUPP` | Operation not supported (e.g., LINK for hard links) |
 | Generic I/O error | `NFS3ERR_IO` | I/O error |
 | Invalid argument | `NFS3ERR_INVAL` | Invalid argument |
 
@@ -88,23 +88,20 @@ Here's a simplified example of how error mapping is implemented:
 
 ```go
 func mapToNFSError(err error, op string) nfsv3.NFSStatus {
-    if err == nil {
-        return nfsv3.NFS3_OK
-    }
-
-    // Check for specific error types
+    // Check custom errors first
     var invalidHandle *InvalidFileHandleError
-    if errors.As(err, &invalidHandle) {
-        return nfsv3.NFS3ERR_BADHANDLE
-    }
-
+    var notSupported *NotSupportedError
     var staleHandle *StaleFileHandleError
-    if errors.As(err, &staleHandle) {
-        return nfsv3.NFS3ERR_STALE
-    }
 
-    // Check for standard error conditions
     switch {
+    case err == nil:
+        return nfsv3.NFS3_OK
+    case errors.As(err, &invalidHandle):
+        return nfsv3.NFS3ERR_BADHANDLE
+    case errors.As(err, &notSupported):
+        return nfsv3.NFS3ERR_NOTSUPP
+    case errors.As(err, &staleHandle):
+        return nfsv3.NFS3ERR_STALE
     case errors.Is(err, fs.ErrNotExist) || os.IsNotExist(err):
         return nfsv3.NFS3ERR_NOENT
     case errors.Is(err, fs.ErrPermission) || os.IsPermission(err):
