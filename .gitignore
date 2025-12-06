@@ -45,3 +45,8 @@ Thumbs.db
 
 # Temporary files
 WorkingChangelog.md
+
+# Claude-related files
+.claude/
+CLAUDE.md
+.project_meta/
