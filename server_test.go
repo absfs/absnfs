@@ -489,7 +489,7 @@ func TestServerPortBinding(t *testing.T) {
 		if err == nil {
 			server2.Stop()
 			t.Error("Expected error binding to in-use port")
-		} else if !strings.Contains(err.Error(), "address already in use") {
+		} else if !strings.Contains(err.Error(), "address already in use") && !strings.Contains(err.Error(), "Only one usage of each socket address") {
 			t.Errorf("Expected 'address already in use' error, got: %v", err)
 		}
 	})
