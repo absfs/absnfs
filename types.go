@@ -677,6 +677,16 @@ func (n *AbsfsNFS) ExecuteWithWorker(task func() interface{}) interface{} {
 	return task()
 }
 
+// GetAttrCacheSize returns the current attribute cache size in a thread-safe manner
+func (n *AbsfsNFS) GetAttrCacheSize() int {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if n.attrCache == nil {
+		return 0
+	}
+	return n.attrCache.MaxSize()
+}
+
 // Close releases resources and stops any background processes
 func (n *AbsfsNFS) Close() error {
 	// Stop memory monitoring if active
