@@ -139,7 +139,7 @@ func TestCacheReductionCalculation(t *testing.T) {
 	server.options.MemoryLowWatermark = 0.6
 
 	// Store initial cache sizes
-	initialAttrCacheSize := server.attrCache.MaxSize()
+	initialAttrCacheSize := server.GetAttrCacheSize()
 	initialReadAheadMaxFiles := server.options.ReadAheadMaxFiles
 	initialReadAheadMaxMemory := server.options.ReadAheadMaxMemory
 
@@ -148,9 +148,10 @@ func TestCacheReductionCalculation(t *testing.T) {
 	monitor.reduceCacheSizes(0.3) // 30% reduction
 
 	// Verify cache sizes were reduced
-	if server.attrCache.MaxSize() >= initialAttrCacheSize {
-		t.Errorf("Attribute cache size was not reduced: %d vs %d", 
-			server.attrCache.MaxSize(), initialAttrCacheSize)
+	currentAttrCacheSize := server.GetAttrCacheSize()
+	if currentAttrCacheSize >= initialAttrCacheSize {
+		t.Errorf("Attribute cache size was not reduced: %d vs %d",
+			currentAttrCacheSize, initialAttrCacheSize)
 	}
 
 	// Get current read-ahead buffer configuration
@@ -196,7 +197,7 @@ func TestMemoryPressureHandling(t *testing.T) {
 	}
 
 	// Store initial cache sizes
-	initialAttrCacheSize := server.attrCache.MaxSize()
+	initialAttrCacheSize := server.GetAttrCacheSize()
 
 	// We need to create load to trigger memory pressure
 	// Allocate memory in smaller chunks to avoid overwhelming the test system
@@ -207,7 +208,7 @@ func TestMemoryPressureHandling(t *testing.T) {
 			data[j] = byte(j & 0xff) // Ensure memory is actually used
 		}
 		allData = append(allData, data)
-		
+
 		// Brief pause to let the monitor detect changes
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -216,9 +217,10 @@ func TestMemoryPressureHandling(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Verify cache sizes were reduced in response to pressure
-	if server.attrCache.MaxSize() >= initialAttrCacheSize {
-		t.Logf("Warning: Expected attribute cache size to be reduced, but it wasn't: %d vs %d", 
-			server.attrCache.MaxSize(), initialAttrCacheSize)
+	currentAttrCacheSize := server.GetAttrCacheSize()
+	if currentAttrCacheSize >= initialAttrCacheSize {
+		t.Logf("Warning: Expected attribute cache size to be reduced, but it wasn't: %d vs %d",
+			currentAttrCacheSize, initialAttrCacheSize)
 		// Note: This might not always happen reliably in test environments due to
 		// varying memory conditions, so we log a warning instead of failing the test
 	}
