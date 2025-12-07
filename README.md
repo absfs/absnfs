@@ -1,5 +1,10 @@
 # ABSFS NFS Server
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/absfs/absnfs.svg)](https://pkg.go.dev/github.com/absfs/absnfs)
+[![Go Report Card](https://goreportcard.com/badge/github.com/absfs/absnfs)](https://goreportcard.com/report/github.com/absfs/absnfs)
+[![CI](https://github.com/absfs/absnfs/actions/workflows/ci.yml/badge.svg)](https://github.com/absfs/absnfs/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 This package implements an NFS server adapter for the [absfs](https://github.com/absfs/absfs) filesystem interface. It allows any filesystem that implements the absfs.FileSystem interface to be exported as an NFS share.
 
 ## Features
