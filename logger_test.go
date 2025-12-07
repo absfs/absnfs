@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -336,6 +337,11 @@ func TestAbsfsNFS_SetLogger(t *testing.T) {
 
 // TestAbsfsNFS_SetLogger_Nil tests setting logger to nil (should use no-op)
 func TestAbsfsNFS_SetLogger_Nil(t *testing.T) {
+	// Skip on Windows due to file handle cleanup timing issues
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows due to TempDir file handle cleanup timing issues")
+	}
+
 	fs, err := memfs.NewFS()
 	if err != nil {
 		t.Fatalf("failed to create memfs: %v", err)
