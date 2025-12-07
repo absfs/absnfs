@@ -142,7 +142,9 @@ func (m *MemoryMonitor) reduceCacheSizes(reductionFactor float64) {
 	}
 
 	// Get current cache settings
+	m.nfs.mu.RLock()
 	attrCacheSize := m.nfs.attrCache.MaxSize()
+	m.nfs.mu.RUnlock()
 	fileCount, memoryUsage := m.nfs.readBuf.Stats()
 
 	// Calculate new reduced sizes
@@ -171,10 +173,13 @@ func (m *MemoryMonitor) reduceCacheSizes(reductionFactor float64) {
 
 	// Create new attribute cache with reduced size
 	newAttrCache := NewAttrCache(m.nfs.options.AttrCacheTimeout, newAttrCacheSize)
-	
+
 	// Replace the old cache with the new one
 	// This effectively clears the cache but maintains the same timeout setting
+	// Use mutex to prevent race with concurrent reads
+	m.nfs.mu.Lock()
 	m.nfs.attrCache = newAttrCache
+	m.nfs.mu.Unlock()
 
 	// Update read-ahead buffer configuration
 	m.nfs.readBuf.Configure(newReadAheadMaxFiles, newReadAheadMaxMemory)
