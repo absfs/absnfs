@@ -20,7 +20,7 @@ type ServerOptions struct {
 	UID      uint32 // Server UID
 	GID      uint32 // Server GID
 	ReadOnly bool   // Read-only mode
-	Port     int    // Port to listen on (default: 2049)
+	Port     int    // Port to listen on (0 = random port, default NFS port is 2049)
 	Hostname string // Hostname to bind to
 	Debug    bool   // Enable debug logging
 }
@@ -53,9 +53,8 @@ func NewServer(options ServerOptions) (*Server, error) {
 	if options.Port < 0 {
 		return nil, fmt.Errorf("invalid port")
 	}
-	if options.Port == 0 {
-		options.Port = 2049
-	}
+	// Note: Port 0 means let the OS assign a random port (useful for testing)
+	// The default NFS port 2049 should be explicitly specified by the caller
 	if options.Hostname == "" {
 		options.Hostname = "localhost"
 	}
@@ -331,19 +330,13 @@ func (s *Server) Listen() error {
 		// Create TLS listener
 		listener, err = tls.Listen("tcp", addr, tlsConfig)
 		if err != nil {
-			// If port is in use and we're using the default port, try a random port
-			if s.options.Port == 2049 && isAddrInUse(err) {
-				addr = fmt.Sprintf("%s:0", s.options.Hostname)
-				listener, err = tls.Listen("tcp", addr, tlsConfig)
-				if err != nil {
-					return fmt.Errorf("failed to listen on %s with TLS: %w", addr, err)
-				}
-				// Update the port to the actual port assigned
-				if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
-					s.options.Port = tcpAddr.Port
-				}
-			} else {
-				return fmt.Errorf("failed to listen on %s with TLS: %w", addr, err)
+			return fmt.Errorf("failed to listen on %s with TLS: %w", addr, err)
+		}
+
+		// If port was 0 (random port), update to the actual port assigned
+		if s.options.Port == 0 {
+			if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
+				s.options.Port = tcpAddr.Port
 			}
 		}
 
@@ -360,19 +353,13 @@ func (s *Server) Listen() error {
 		// Create regular TCP listener (no TLS)
 		listener, err = net.Listen("tcp", addr)
 		if err != nil {
-			// If port is in use and we're using the default port, try a random port
-			if s.options.Port == 2049 && isAddrInUse(err) {
-				addr = fmt.Sprintf("%s:0", s.options.Hostname)
-				listener, err = net.Listen("tcp", addr)
-				if err != nil {
-					return fmt.Errorf("failed to listen on %s: %w", addr, err)
-				}
-				// Update the port to the actual port assigned
-				if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
-					s.options.Port = tcpAddr.Port
-				}
-			} else {
-				return fmt.Errorf("failed to listen on %s: %w", addr, err)
+			return fmt.Errorf("failed to listen on %s: %w", addr, err)
+		}
+
+		// If port was 0 (random port), update to the actual port assigned
+		if s.options.Port == 0 {
+			if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
+				s.options.Port = tcpAddr.Port
 			}
 		}
 
