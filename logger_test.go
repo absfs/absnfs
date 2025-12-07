@@ -357,7 +357,7 @@ func TestAbsfsNFS_SetLogger_Nil(t *testing.T) {
 	defer func() {
 		server.Close()
 		// Give Windows time to release file handles
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}()
 
 	// Verify logger is SlogLogger initially
