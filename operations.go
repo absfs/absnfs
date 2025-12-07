@@ -77,7 +77,7 @@ func sanitizePath(basePath, name string) (string, error) {
 		return "", fmt.Errorf("invalid name: parent or current directory reference")
 	}
 
-	// Construct the path
+	// Construct the path using filepath.Join (uses OS-specific separators)
 	path := filepath.Join(basePath, name)
 
 	// Clean the path to resolve any ".." or "." components
@@ -86,16 +86,23 @@ func sanitizePath(basePath, name string) (string, error) {
 	// Ensure the cleaned path is still within the base directory
 	// by checking if it starts with the base path
 	cleanBase := filepath.Clean(basePath)
-	if !strings.HasPrefix(cleanPath, cleanBase) {
+
+	// Convert both paths to forward slashes for consistent comparison
+	// This ensures the prefix check works correctly on Windows
+	cleanPathSlash := filepath.ToSlash(cleanPath)
+	cleanBaseSlash := filepath.ToSlash(cleanBase)
+
+	if !strings.HasPrefix(cleanPathSlash, cleanBaseSlash) {
 		return "", fmt.Errorf("invalid path: traversal attempt detected")
 	}
 
 	// Additional check: ensure no ".." components remain after cleaning
-	if strings.Contains(cleanPath, "..") {
+	if strings.Contains(cleanPathSlash, "..") {
 		return "", fmt.Errorf("invalid path: contains parent directory reference")
 	}
 
-	return cleanPath, nil
+	// Return the path with forward slashes for consistent NFS path representation
+	return cleanPathSlash, nil
 }
 
 // Lookup implements the LOOKUP operation
