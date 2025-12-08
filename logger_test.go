@@ -337,11 +337,6 @@ func TestAbsfsNFS_SetLogger(t *testing.T) {
 
 // TestAbsfsNFS_SetLogger_Nil tests setting logger to nil (should use no-op)
 func TestAbsfsNFS_SetLogger_Nil(t *testing.T) {
-	// Skip on Windows due to file handle cleanup timing issues
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping on Windows due to TempDir file handle cleanup timing issues")
-	}
-
 	fs, err := memfs.NewFS()
 	if err != nil {
 		t.Fatalf("failed to create memfs: %v", err)
@@ -360,18 +355,13 @@ func TestAbsfsNFS_SetLogger_Nil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create NFS server: %v", err)
 	}
-	defer func() {
-		server.Close()
-		// Give Windows time to release file handles
-		time.Sleep(100 * time.Millisecond)
-	}()
 
 	// Verify logger is SlogLogger initially
 	if _, ok := server.structuredLogger.(*SlogLogger); !ok {
 		t.Fatal("structuredLogger is not an SlogLogger initially")
 	}
 
-	// Set logger to nil
+	// Set logger to nil - this should close the old logger
 	if err := server.SetLogger(nil); err != nil {
 		t.Fatalf("failed to set logger to nil: %v", err)
 	}
@@ -379,6 +369,14 @@ func TestAbsfsNFS_SetLogger_Nil(t *testing.T) {
 	// Verify logger is now noopLogger
 	if _, ok := server.structuredLogger.(*noopLogger); !ok {
 		t.Error("structuredLogger is not a noopLogger after SetLogger(nil)")
+	}
+
+	// Close the server
+	server.Close()
+
+	// Give Windows extra time to release file handles before TempDir cleanup
+	if runtime.GOOS == "windows" {
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 

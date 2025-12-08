@@ -738,18 +738,18 @@ func (n *AbsfsNFS) SetLogger(logger Logger) error {
 		return fmt.Errorf("nil server")
 	}
 
-	if logger == nil {
-		// Use no-op logger when nil is passed
-		n.structuredLogger = NewNoopLogger()
-		return nil
-	}
-
-	// Close existing logger if it's a SlogLogger
+	// Close existing logger if it's a SlogLogger before replacing it
 	if slogger, ok := n.structuredLogger.(*SlogLogger); ok {
 		if err := slogger.Close(); err != nil {
 			// Log error but continue with setting new logger
 			n.logger.Printf("failed to close previous logger: %v", err)
 		}
+	}
+
+	if logger == nil {
+		// Use no-op logger when nil is passed
+		n.structuredLogger = NewNoopLogger()
+		return nil
 	}
 
 	n.structuredLogger = logger
