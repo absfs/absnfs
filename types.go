@@ -371,11 +371,44 @@ type NFSNode struct {
 type NFSAttrs struct {
 	Mode       os.FileMode
 	Size       int64
-	Mtime      time.Time
-	Atime      time.Time
+	mtime      time.Time
+	atime      time.Time
 	Uid        uint32
 	Gid        uint32
 	validUntil time.Time
+}
+
+// NewNFSAttrs creates a new NFSAttrs with the specified values
+func NewNFSAttrs(mode os.FileMode, size int64, mtime, atime time.Time, uid, gid uint32) *NFSAttrs {
+	attrs := &NFSAttrs{
+		Mode: mode,
+		Size: size,
+		Uid:  uid,
+		Gid:  gid,
+	}
+	attrs.SetMtime(mtime)
+	attrs.SetAtime(atime)
+	return attrs
+}
+
+// Mtime returns the modification time
+func (a *NFSAttrs) Mtime() time.Time {
+	return a.mtime
+}
+
+// SetMtime sets the modification time
+func (a *NFSAttrs) SetMtime(t time.Time) {
+	a.mtime = t
+}
+
+// Atime returns the access time
+func (a *NFSAttrs) Atime() time.Time {
+	return a.atime
+}
+
+// SetAtime sets the access time
+func (a *NFSAttrs) SetAtime(t time.Time) {
+	a.atime = t
 }
 
 // IsValid returns true if the attributes are still valid
@@ -625,14 +658,15 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		return nil, err
 	}
 
+	modTime := info.ModTime()
 	root.attrs = &NFSAttrs{
-		Mode:  info.Mode(),
-		Size:  info.Size(),
-		Mtime: info.ModTime(),
-		Atime: info.ModTime(), // Use ModTime as Atime since absfs doesn't expose Atime
-		Uid:   0,              // Root ownership by default
-		Gid:   0,
+		Mode: info.Mode(),
+		Size: info.Size(),
+		Uid:  0, // Root ownership by default
+		Gid:  0,
 	}
+	root.attrs.SetMtime(modTime)
+	root.attrs.SetAtime(modTime) // Use ModTime as Atime since absfs doesn't expose Atime
 	root.mu.Lock()
 	root.attrs.Refresh() // Initialize cache validity
 	root.mu.Unlock()

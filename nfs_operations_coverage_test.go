@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"io"
 	"testing"
-	"time"
 )
 
 // TestNFSOperationsErrorPaths targets specific error paths in nfs_operations.go
@@ -367,8 +366,8 @@ func TestFileAttributeEncodeErrors(t *testing.T) {
 		Uid:   1000,
 		Gid:   1000,
 		Size:  1024,
-		Mtime: time.Now(),
-		Atime: time.Now(),
+		// Mtime: time.Now()
+		// Atime: time.Now()
 	}
 	
 	err := encodeFileAttributes(badWriter, attrs)

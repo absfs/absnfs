@@ -11,14 +11,15 @@ import (
 
 func TestEncodeFileAttributes(t *testing.T) {
 	t.Run("successful encoding", func(t *testing.T) {
+		now := time.Now()
 		attrs := &NFSAttrs{
-			Mode:  os.FileMode(0644),
-			Size:  1024,
-			Mtime: time.Now(),
-			Atime: time.Now(),
-			Uid:   1000,
-			Gid:   1000,
+			Mode: os.FileMode(0644),
+			Size: 1024,
+			Uid:  1000,
+			Gid:  1000,
 		}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
 
 		var buf bytes.Buffer
 		err := encodeFileAttributes(&buf, attrs)
@@ -72,28 +73,29 @@ func TestEncodeFileAttributes(t *testing.T) {
 		if err := binary.Read(r, binary.BigEndian, &mtime); err != nil {
 			t.Fatalf("Failed to read mtime: %v", err)
 		}
-		if mtime != uint64(attrs.Mtime.Unix()) {
-			t.Errorf("Expected mtime %v, got %v", attrs.Mtime.Unix(), mtime)
+		if mtime != uint64(attrs.Mtime().Unix()) {
+			t.Errorf("Expected mtime %v, got %v", attrs.Mtime().Unix(), mtime)
 		}
 
 		var atime uint64
 		if err := binary.Read(r, binary.BigEndian, &atime); err != nil {
 			t.Fatalf("Failed to read atime: %v", err)
 		}
-		if atime != uint64(attrs.Atime.Unix()) {
-			t.Errorf("Expected atime %v, got %v", attrs.Atime.Unix(), atime)
+		if atime != uint64(attrs.Atime().Unix()) {
+			t.Errorf("Expected atime %v, got %v", attrs.Atime().Unix(), atime)
 		}
 	})
 
 	t.Run("write errors", func(t *testing.T) {
+		now := time.Now()
 		attrs := &NFSAttrs{
-			Mode:  os.FileMode(0644),
-			Size:  1024,
-			Mtime: time.Now(),
-			Atime: time.Now(),
-			Uid:   1000,
-			Gid:   1000,
+			Mode: os.FileMode(0644),
+			Size: 1024,
+			Uid:  1000,
+			Gid:  1000,
 		}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
 
 		// Create a writer that fails after a few writes
 		failWriter := &attrFailingWriter{
@@ -109,14 +111,15 @@ func TestEncodeFileAttributes(t *testing.T) {
 
 func TestEncodeAttributesResponse(t *testing.T) {
 	t.Run("successful encoding", func(t *testing.T) {
+		now := time.Now()
 		attrs := &NFSAttrs{
-			Mode:  os.FileMode(0644),
-			Size:  1024,
-			Mtime: time.Now(),
-			Atime: time.Now(),
-			Uid:   1000,
-			Gid:   1000,
+			Mode: os.FileMode(0644),
+			Size: 1024,
+			Uid:  1000,
+			Gid:  1000,
 		}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
 
 		data, err := encodeAttributesResponse(attrs)
 		if err != nil {

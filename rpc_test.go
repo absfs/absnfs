@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"io"
 	"testing"
-	"time"
 )
 
 func TestXDREncoding(t *testing.T) {
@@ -169,8 +168,8 @@ func TestRPCSuccessPaths(t *testing.T) {
 			Uid:   1000,
 			Gid:   1000,
 			Size:  4096,
-			Mtime: time.Now(),
-			Atime: time.Now(),
+			// Mtime: time.Now()
+			// Atime: time.Now()
 		}
 		
 		reply := &RPCReply{
@@ -308,8 +307,8 @@ func TestRPCReplyEncodeWithTypes(t *testing.T) {
 					Uid:   1000,
 					Gid:   1000,
 					Size:  1024,
-					Mtime: time.Now(),
-					Atime: time.Now(),
+					// Mtime: time.Now()
+					// Atime: time.Now()
 				},
 			"test string",
 			uint32(12345),

@@ -385,14 +385,15 @@ func (bp *BatchProcessor) processGetAttrBatch(batch *Batch) {
 			}
 			
 			// Create attributes
+			modTime := info.ModTime()
 			attrs = &NFSAttrs{
-				Mode:  info.Mode(),
-				Size:  info.Size(),
-				Mtime: info.ModTime(),
-				Atime: info.ModTime(), // Use ModTime as Atime since absfs doesn't expose Atime
-				Uid:   0,              // Default uid
-				Gid:   0,              // Default gid
+				Mode: info.Mode(),
+				Size: info.Size(),
+				Uid:  0, // Default uid
+				Gid:  0, // Default gid
 			}
+			attrs.SetMtime(modTime)
+			attrs.SetAtime(modTime) // Use ModTime as Atime since absfs doesn't expose Atime
 			
 			// Cache the attributes if path is available
 			if path != "" {

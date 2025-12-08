@@ -173,14 +173,15 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 		return nil, fmt.Errorf("lookup: failed to stat %s: %w", path, err)
 	}
 
+	modTime := info.ModTime()
 	attrs := &NFSAttrs{
-		Mode:  info.Mode(),
-		Size:  info.Size(),
-		Mtime: info.ModTime(),
-		Atime: info.ModTime(),
-		Uid:   0,
-		Gid:   0,
+		Mode: info.Mode(),
+		Size: info.Size(),
+		Uid:  0,
+		Gid:  0,
 	}
+	attrs.SetMtime(modTime)
+	attrs.SetAtime(modTime)
 	attrs.Refresh() // Initialize cache validity
 
 	node := &NFSNode{
@@ -228,14 +229,15 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 	gid := node.attrs.Gid
 	node.mu.RUnlock()
 
+	modTime := info.ModTime()
 	attrs := &NFSAttrs{
-		Mode:  info.Mode(),
-		Size:  info.Size(),
-		Mtime: info.ModTime(),
-		Atime: info.ModTime(),
-		Uid:   uid,
-		Gid:   gid,
+		Mode: info.Mode(),
+		Size: info.Size(),
+		Uid:  uid,
+		Gid:  gid,
 	}
+	attrs.SetMtime(modTime)
+	attrs.SetAtime(modTime)
 	attrs.Refresh() // Initialize cache validity
 
 	// Cache the attributes
@@ -263,8 +265,8 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 	currentMode := node.attrs.Mode
 	currentUid := node.attrs.Uid
 	currentGid := node.attrs.Gid
-	currentMtime := node.attrs.Mtime
-	currentAtime := node.attrs.Atime
+	currentMtime := node.attrs.Mtime()
+	currentAtime := node.attrs.Atime()
 	node.mu.RUnlock()
 
 	if attrs.Mode != currentMode {
@@ -279,8 +281,8 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 		}
 	}
 
-	if attrs.Mtime != currentMtime || attrs.Atime != currentAtime {
-		if err := s.fs.Chtimes(node.path, attrs.Atime, attrs.Mtime); err != nil {
+	if attrs.Mtime() != currentMtime || attrs.Atime() != currentAtime {
+		if err := s.fs.Chtimes(node.path, attrs.Atime(), attrs.Mtime()); err != nil {
 			return fmt.Errorf("setattr: chtimes failed: %w", err)
 		}
 	}
@@ -533,7 +535,7 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 			if statErr == nil {
 				node.mu.Lock()
 				node.attrs.Size = info.Size()
-				node.attrs.Mtime = info.ModTime()
+				node.attrs.SetMtime(info.ModTime())
 				node.attrs.Refresh() // Initialize cache validity
 				node.mu.Unlock()
 			}
@@ -577,7 +579,7 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 		if statErr == nil {
 			node.mu.Lock()
 			node.attrs.Size = info.Size()
-			node.attrs.Mtime = info.ModTime()
+			node.attrs.SetMtime(info.ModTime())
 			node.attrs.Refresh() // Initialize cache validity
 			node.mu.Unlock()
 		}
@@ -942,14 +944,15 @@ func (s *AbsfsNFS) ReadDirPlus(dir *NFSNode) ([]*NFSNode, error) {
 			if err != nil {
 				continue
 			}
+			modTime := info.ModTime()
 			attrs := &NFSAttrs{
-				Mode:  info.Mode(),
-				Size:  info.Size(),
-				Mtime: info.ModTime(),
-				Atime: info.ModTime(),
-				Uid:   node.attrs.Uid,
-				Gid:   node.attrs.Gid,
+				Mode: info.Mode(),
+				Size: info.Size(),
+				Uid:  node.attrs.Uid,
+				Gid:  node.attrs.Gid,
 			}
+			attrs.SetMtime(modTime)
+			attrs.SetAtime(modTime)
 			attrs.Refresh() // Initialize cache validity
 			s.attrCache.Put(node.path, attrs)
 			node.attrs = attrs

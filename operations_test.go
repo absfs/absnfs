@@ -179,13 +179,13 @@ func TestOperationsAdvanced(t *testing.T) {
 
 		// Test SetAttr
 		newAttrs := &NFSAttrs{
-			Mode:  0644,
-			Uid:   1000,
-			Gid:   1000,
-			Size:  0,
-			Mtime: attrs.Mtime,
-			Atime: attrs.Atime,
+			Mode: 0644,
+			Uid:  1000,
+			Gid:  1000,
+			Size: 0,
 		}
+		newAttrs.SetMtime(attrs.Mtime())
+		newAttrs.SetAtime(attrs.Atime())
 		if err := nfs.SetAttr(node, newAttrs); err != nil {
 			t.Errorf("SetAttr failed: %v", err)
 		}
@@ -243,14 +243,15 @@ func TestOperationsAdvanced(t *testing.T) {
 		}
 
 		// Test Create
+		now := time.Now()
 		attrs := &NFSAttrs{
-			Mode:  0644,
-			Uid:   1000,
-			Gid:   1000,
-			Size:  0,
-			Mtime: time.Now(),
-			Atime: time.Now(),
+			Mode: 0644,
+			Uid:  1000,
+			Gid:  1000,
+			Size: 0,
 		}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
 
 		// Test successful file creation
 		node, err := nfs.Create(dirNode, "testfile", attrs)
@@ -530,14 +531,15 @@ func TestOperationsAdvanced(t *testing.T) {
 		}
 
 		// Modify file to invalidate cache
+		now := time.Now()
 		newAttrs := &NFSAttrs{
-			Mode:  0644,
-			Uid:   1000,
-			Gid:   1000,
-			Size:  0,
-			Mtime: time.Now(),
-			Atime: time.Now(),
+			Mode: 0644,
+			Uid:  1000,
+			Gid:  1000,
+			Size: 0,
 		}
+		newAttrs.SetMtime(now)
+		newAttrs.SetAtime(now)
 		if err := nfs.SetAttr(node, newAttrs); err != nil {
 			t.Errorf("SetAttr failed: %v", err)
 		}
@@ -701,14 +703,15 @@ func TestOperationsAdvanced(t *testing.T) {
 		}
 
 		// Modify file attributes with different values
+		now := time.Now()
 		newAttrs := &NFSAttrs{
-			Mode:  0644,
-			Uid:   1000,
-			Gid:   1000,
-			Size:  origAttrs.Size,
-			Mtime: time.Now(),
-			Atime: time.Now(),
+			Mode: 0644,
+			Uid:  1000,
+			Gid:  1000,
+			Size: origAttrs.Size,
 		}
+		newAttrs.SetMtime(now)
+		newAttrs.SetAtime(now)
 
 		// Apply new attributes
 		if err := nfs.SetAttr(node1, newAttrs); err != nil {
@@ -1060,14 +1063,15 @@ func TestOperationsAdvanced(t *testing.T) {
 				t.Fatalf("Failed to lookup export directory: %v", err)
 			}
 
+			now := time.Now()
 			attrs := &NFSAttrs{
-				Mode:  0644,
-				Uid:   1000,
-				Gid:   1000,
-				Size:  0,
-				Mtime: time.Now(),
-				Atime: time.Now(),
+				Mode: 0644,
+				Uid:  1000,
+				Gid:  1000,
+				Size: 0,
 			}
+			attrs.SetMtime(now)
+			attrs.SetAtime(now)
 
 			// Try to create file with path traversal
 			maliciousNames := []string{
