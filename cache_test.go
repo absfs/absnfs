@@ -20,8 +20,8 @@ func TestAttrCache(t *testing.T) {
 		initialAttrs := &NFSAttrs{
 			Mode:  0644,
 			Size:  1234,
-			Mtime: time.Now(),
-			Atime: time.Now(),
+			// Mtime: time.Now()
+			// Atime: time.Now()
 			Uid:   1000,
 			Gid:   1000,
 		}
@@ -58,8 +58,8 @@ func TestAttrCache(t *testing.T) {
 			attrs := &NFSAttrs{
 				Mode:  0644,
 				Size:  int64(i * 1000),
-				Mtime: time.Now(),
-				Atime: time.Now(),
+				// Mtime: time.Now()
+				// Atime: time.Now()
 				Uid:   1000,
 				Gid:   1000,
 			}
@@ -97,8 +97,8 @@ func TestAttrCache(t *testing.T) {
 					attrs := &NFSAttrs{
 						Mode:  0644,
 						Size:  int64(j * 1000),
-						Mtime: time.Now(),
-						Atime: time.Now(),
+						// Mtime: time.Now()
+						// Atime: time.Now()
 						Uid:   uint32(id),
 						Gid:   uint32(id),
 					}

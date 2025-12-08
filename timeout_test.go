@@ -303,8 +303,8 @@ func TestCreateTimeout(t *testing.T) {
 		Uid:   1000,
 		Gid:   1000,
 		Size:  0,
-		Mtime: time.Now(),
-		Atime: time.Now(),
+		// Mtime: time.Now()
+		// Atime: time.Now()
 	}
 
 	_, err = nfs.CreateWithContext(ctx, dirNode, "testfile", attrs)
@@ -521,7 +521,10 @@ func TestTimeoutMetricsTracking(t *testing.T) {
 		nfs.WriteWithContext(ctx, node, 0, []byte("data"))
 	}
 	if dirNode != nil {
-		attrs := &NFSAttrs{Mode: 0644, Uid: 1000, Gid: 1000, Size: 0, Mtime: time.Now(), Atime: time.Now()}
+		now := time.Now()
+		attrs := &NFSAttrs{Mode: 0644, Uid: 1000, Gid: 1000, Size: 0}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
 		nfs.CreateWithContext(ctx, dirNode, "newfile", attrs)
 		nfs.RemoveWithContext(ctx, dirNode, "testfile")
 		nfs.RenameWithContext(ctx, dirNode, "testfile", dirNode, "renamed")
