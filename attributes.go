@@ -23,10 +23,10 @@ func encodeFileAttributes(w io.Writer, attrs *NFSAttrs) error {
 	if err := binary.Write(w, binary.BigEndian, attrs.Size); err != nil {
 		return err
 	}
-	if err := binary.Write(w, binary.BigEndian, uint64(attrs.Mtime.Unix())); err != nil {
+	if err := binary.Write(w, binary.BigEndian, uint64(attrs.Mtime().Unix())); err != nil {
 		return err
 	}
-	if err := binary.Write(w, binary.BigEndian, uint64(attrs.Atime.Unix())); err != nil {
+	if err := binary.Write(w, binary.BigEndian, uint64(attrs.Atime().Unix())); err != nil {
 		return err
 	}
 	return nil

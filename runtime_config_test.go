@@ -322,7 +322,7 @@ func TestAttrCache_Resize(t *testing.T) {
 		attrs := &NFSAttrs{
 			Mode:  0644,
 			Size:  1024,
-			Mtime: time.Now(),
+			// Mtime: time.Now()
 		}
 		cache.Put(path, attrs)
 	}
@@ -360,7 +360,7 @@ func TestAttrCache_UpdateTTL(t *testing.T) {
 	attrs := &NFSAttrs{
 		Mode:  0644,
 		Size:  1024,
-		Mtime: time.Now(),
+		// Mtime: time.Now()
 	}
 	cache.Put("/test/file", attrs)
 

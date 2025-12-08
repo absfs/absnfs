@@ -19,8 +19,8 @@ func TestNFSAttrs(t *testing.T) {
 		attrs := &NFSAttrs{
 			Mode:  0644,
 			Size:  1234,
-			Mtime: time.Now(),
-			Atime: time.Now(),
+			// Mtime: time.Now()
+			// Atime: time.Now()
 			Uid:   1000,
 			Gid:   1000,
 		}
@@ -257,8 +257,8 @@ func TestReadWrite(t *testing.T) {
 
 		attrs := &NFSAttrs{
 			Mode:  0644,
-			Mtime: time.Now(),
-			Atime: time.Now(),
+			// Mtime: time.Now()
+			// Atime: time.Now()
 		}
 
 		node, err := nfs.Create(dir, "write_test.txt", attrs)
@@ -544,8 +544,8 @@ func TestAbsfsNFSClose(t *testing.T) {
 		nfs.attrCache.Put(testPath, &NFSAttrs{
 			Mode:  0755,
 			Size:  0,
-			Mtime: time.Now(),
-			Atime: time.Now(),
+			// Mtime: time.Now()
+			// Atime: time.Now()
 		})
 
 		// Add data to read buffer
@@ -687,8 +687,8 @@ func TestAbsfsNFSClose(t *testing.T) {
 			nfs.attrCache.Put(path, &NFSAttrs{
 				Mode:  0644,
 				Size:  int64(i * 1024),
-				Mtime: time.Now(),
-				Atime: time.Now(),
+				// Mtime: time.Now()
+				// Atime: time.Now()
 			})
 		}
 

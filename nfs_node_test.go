@@ -36,8 +36,8 @@ func TestNFSNodeOperations(t *testing.T) {
 		attrs: &NFSAttrs{
 			Mode:  0644,
 			Size:  12,
-			Mtime: time.Now(),
-			Atime: time.Now(),
+			// Mtime: time.Now()
+			// Atime: time.Now()
 		},
 	}
 
@@ -47,8 +47,8 @@ func TestNFSNodeOperations(t *testing.T) {
 		attrs: &NFSAttrs{
 			Mode:  0755 | os.ModeDir,
 			Size:  0,
-			Mtime: time.Now(),
-			Atime: time.Now(),
+			// Mtime: time.Now()
+			// Atime: time.Now()
 		},
 	}
 

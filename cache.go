@@ -95,13 +95,13 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
 
 		// Copy attributes while holding RLock to prevent data races
 		attrs := &NFSAttrs{
-			Mode:  cached.attrs.Mode,
-			Size:  cached.attrs.Size,
-			Mtime: cached.attrs.Mtime,
-			Atime: cached.attrs.Atime,
-			Uid:   cached.attrs.Uid,
-			Gid:   cached.attrs.Gid,
+			Mode: cached.attrs.Mode,
+			Size: cached.attrs.Size,
+			Uid:  cached.attrs.Uid,
+			Gid:  cached.attrs.Gid,
 		}
+		attrs.SetMtime(cached.attrs.Mtime())
+		attrs.SetAtime(cached.attrs.Atime())
 		c.mu.RUnlock()
 
 		// Update access log (LRU tracking)
@@ -203,13 +203,13 @@ func (c *AttrCache) Put(path string, attrs *NFSAttrs) {
 
 	// Deep copy the attributes to prevent modification
 	attrsCopy := &NFSAttrs{
-		Mode:  attrs.Mode,
-		Size:  attrs.Size,
-		Mtime: attrs.Mtime,
-		Atime: attrs.Atime,
-		Uid:   attrs.Uid,
-		Gid:   attrs.Gid,
+		Mode: attrs.Mode,
+		Size: attrs.Size,
+		Uid:  attrs.Uid,
+		Gid:  attrs.Gid,
 	}
+	attrsCopy.SetMtime(attrs.Mtime())
+	attrsCopy.SetAtime(attrs.Atime())
 
 	// Preserve the listElement reference when updating existing entry
 	var listElem *list.Element
