@@ -1,6 +1,7 @@
 package absnfs
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -166,4 +167,17 @@ func (n *NFSNode) Chtimes(atime time.Time, mtime time.Time) error {
 	n.attrs.Invalidate() // Invalidate cache on chtimes
 	n.mu.Unlock()
 	return n.FileSystem.Chtimes(n.path, atime, mtime)
+}
+
+// ReadDir implements absfs.File (fs.ReadDirFile)
+func (n *NFSNode) ReadDir(count int) ([]fs.DirEntry, error) {
+	entries, err := n.Readdir(count)
+	if err != nil {
+		return nil, err
+	}
+	dirEntries := make([]fs.DirEntry, len(entries))
+	for i, info := range entries {
+		dirEntries[i] = fs.FileInfoToDirEntry(info)
+	}
+	return dirEntries, nil
 }
