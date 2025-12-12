@@ -812,8 +812,7 @@ func (n *AbsfsNFS) GetExportOptions() ExportOptions {
 	}
 
 	if n.options.TLS != nil {
-		tlsCopy := *n.options.TLS
-		opts.TLS = &tlsCopy
+		opts.TLS = n.options.TLS.Clone()
 	}
 
 	if n.options.Log != nil {
