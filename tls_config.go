@@ -282,3 +282,33 @@ func TLSVersionString(version uint16) string {
 		return fmt.Sprintf("Unknown(0x%04x)", version)
 	}
 }
+
+// Clone returns a deep copy of the TLSConfig without copying the mutex
+func (tc *TLSConfig) Clone() *TLSConfig {
+	if tc == nil {
+		return nil
+	}
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+
+	clone := &TLSConfig{
+		Enabled:                  tc.Enabled,
+		CertFile:                 tc.CertFile,
+		KeyFile:                  tc.KeyFile,
+		CAFile:                   tc.CAFile,
+		ClientAuth:               tc.ClientAuth,
+		MinVersion:               tc.MinVersion,
+		MaxVersion:               tc.MaxVersion,
+		PreferServerCipherSuites: tc.PreferServerCipherSuites,
+		InsecureSkipVerify:       tc.InsecureSkipVerify,
+	}
+
+	// Copy cipher suites slice
+	if len(tc.CipherSuites) > 0 {
+		clone.CipherSuites = make([]uint16, len(tc.CipherSuites))
+		copy(clone.CipherSuites, tc.CipherSuites)
+	}
+
+	// Note: tlsConfig is not copied - the clone will rebuild it when needed
+	return clone
+}
