@@ -31,7 +31,7 @@ func TestNFSNodeOperations(t *testing.T) {
 
 	// Create NFSNode instances
 	fileNode := &NFSNode{
-		FileSystem: fs,
+		SymlinkFileSystem: fs,
 		path:       "/test.txt",
 		attrs: &NFSAttrs{
 			Mode:  0644,
@@ -42,7 +42,7 @@ func TestNFSNodeOperations(t *testing.T) {
 	}
 
 	dirNode := &NFSNode{
-		FileSystem: fs,
+		SymlinkFileSystem: fs,
 		path:       "/testdir",
 		attrs: &NFSAttrs{
 			Mode:  0755 | os.ModeDir,
@@ -197,7 +197,7 @@ func TestNFSNodeOperations(t *testing.T) {
 
 		// Test Name for root directory
 		rootNode := &NFSNode{
-			FileSystem: fs,
+			SymlinkFileSystem: fs,
 			path:       "/",
 		}
 		if name := rootNode.Name(); name != "/" {
@@ -213,7 +213,7 @@ func TestNFSNodeOperations(t *testing.T) {
 	// Test error cases
 	t.Run("error cases", func(t *testing.T) {
 		nonexistentNode := &NFSNode{
-			FileSystem: fs,
+			SymlinkFileSystem: fs,
 			path:       "/nonexistent",
 		}
 

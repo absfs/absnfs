@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"testing"
@@ -396,7 +397,7 @@ func TestRename(t *testing.T) {
 		}
 
 		// Create a new directory for rename target
-		fs := oldDir.FileSystem
+		fs := oldDir.SymlinkFileSystem
 		if err := fs.MkdirAll("/newdir", 0755); err != nil {
 			done <- fmt.Errorf("Failed to create target directory: %v", err)
 			return
@@ -482,7 +483,7 @@ func TestReadOnlyMode(t *testing.T) {
 	}
 }
 
-// mockFS implements a minimal absfs.FileSystem for testing
+// mockFS implements a minimal absfs.SymlinkFileSystem for testing
 type mockFS struct {
 	statError error
 }
@@ -510,6 +511,10 @@ func (m *mockFS) Chtimes(path string, atime time.Time, mtime time.Time) error {
 }
 func (m *mockFS) Symlink(oldname, newname string) error { return m.statError }
 func (m *mockFS) Readlink(path string) (string, error)  { return "", m.statError }
+func (m *mockFS) Lchown(path string, uid, gid int) error { return m.statError }
+func (m *mockFS) ReadDir(path string) ([]fs.DirEntry, error) { return nil, m.statError }
+func (m *mockFS) ReadFile(path string) ([]byte, error) { return nil, m.statError }
+func (m *mockFS) Sub(dir string) (fs.FS, error) { return nil, m.statError }
 func (m *mockFS) Getwd() (string, error)                { return "", m.statError }
 func (m *mockFS) ListSeparator() uint8                  { return '/' }
 func (m *mockFS) Separator() uint8                      { return '/' }
