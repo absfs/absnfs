@@ -45,7 +45,12 @@ import (
 // Version represents the current version of the absnfs package
 const Version = "0.1.0"
 
+// NOTE: absfs.SymlinkFileSystem from the absfs package is now the standard interface.
+// The local SymlinkFileSystem interface below is kept for backwards compatibility
+// but code should prefer using absfs.SymlinkFileSystem directly.
+
 // SymlinkFileSystem represents a filesystem that supports symbolic links
+// Deprecated: Use absfs.SymlinkFileSystem instead
 type SymlinkFileSystem interface {
 	Symlink(oldname, newname string) error
 	Readlink(name string) (string, error)
@@ -54,8 +59,8 @@ type SymlinkFileSystem interface {
 
 // AbsfsNFS represents an NFS server that exports an absfs filesystem
 type AbsfsNFS struct {
-	mu            sync.RWMutex      // Protects options and related configuration
-	fs            absfs.FileSystem  // The wrapped absfs filesystem
+	mu            sync.RWMutex              // Protects options and related configuration
+	fs            absfs.SymlinkFileSystem   // The wrapped absfs filesystem (supports symlinks)
 	root          *NFSNode          // Root directory node
 	logger        *log.Logger       // Deprecated: use structuredLogger instead
 	structuredLogger Logger         // Structured logger for production use
@@ -359,7 +364,7 @@ type FileHandleMap struct {
 
 // NFSNode represents a file or directory in the NFS tree
 type NFSNode struct {
-	absfs.FileSystem
+	absfs.SymlinkFileSystem
 	path     string
 	fileId   uint64
 	mu       sync.RWMutex // Protects attrs access
@@ -427,7 +432,7 @@ func (a *NFSAttrs) Invalidate() {
 }
 
 // New creates a new AbsfsNFS server instance
-func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
+func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	if fs == nil {
 		return nil, os.ErrInvalid
 	}
@@ -648,9 +653,9 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error) {
 
 	// Initialize root node
 	root := &NFSNode{
-		FileSystem: fs,
-		path:       "/",
-		children:   make(map[string]*NFSNode),
+		SymlinkFileSystem: fs,
+		path:              "/",
+		children:          make(map[string]*NFSNode),
 	}
 
 	info, err := fs.Stat("/")

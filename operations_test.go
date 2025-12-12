@@ -169,7 +169,7 @@ func TestOperationsAdvanced(t *testing.T) {
 
 		// Test GetAttr with non-existent file
 		nonExistentNode := &NFSNode{
-			FileSystem: fs,
+			SymlinkFileSystem: fs,
 			path:       "/nonexistent",
 			attrs:      &NFSAttrs{},
 		}
@@ -467,7 +467,7 @@ func TestOperationsAdvanced(t *testing.T) {
 
 		// Test ReadDir with non-existent directory
 		nonExistentDir := &NFSNode{
-			FileSystem: fs,
+			SymlinkFileSystem: fs,
 			path:       "/nonexistent",
 			attrs: &NFSAttrs{
 				Mode: os.ModeDir,
@@ -831,7 +831,7 @@ func TestOperationsAdvanced(t *testing.T) {
 
 		// Test ReadDirPlus on non-existent directory
 		nonExistentDir := &NFSNode{
-			FileSystem: fs,
+			SymlinkFileSystem: fs,
 			path:       "/nonexistent",
 			attrs: &NFSAttrs{
 				Mode: os.ModeDir,

@@ -145,9 +145,9 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 	// Check cache first (including negative cache)
 	if attrs := s.attrCache.Get(path, s); attrs != nil {
 		node := &NFSNode{
-			FileSystem: s.fs,
-			path:       path,
-			attrs:      attrs,
+			SymlinkFileSystem: s.fs,
+			path:              path,
+			attrs:             attrs,
 		}
 		if attrs.Mode&os.ModeDir != 0 {
 			node.children = make(map[string]*NFSNode)
@@ -155,14 +155,9 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 		return node, nil
 	}
 
-	// Try Lstat first if filesystem supports it (to get symlink info without following)
-	var info os.FileInfo
-	var err error
-	if symlinkFS, ok := s.fs.(SymlinkFileSystem); ok {
-		info, err = symlinkFS.Lstat(path)
-	} else {
-		info, err = s.fs.Stat(path)
-	}
+	// Use Lstat to get symlink info without following
+	// The filesystem now implements absfs.SymlinkFileSystem which has Lstat
+	info, err := s.fs.Lstat(path)
 
 	if err != nil {
 		// Store negative cache entry if enabled and error is "not found"
@@ -185,9 +180,9 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 	attrs.Refresh() // Initialize cache validity
 
 	node := &NFSNode{
-		FileSystem: s.fs,
-		path:       path,
-		attrs:      attrs,
+		SymlinkFileSystem: s.fs,
+		path:              path,
+		attrs:             attrs,
 	}
 
 	if info.IsDir() {
@@ -210,14 +205,9 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 		return attrs, nil
 	}
 
-	// Get fresh attributes using Lstat if available (to handle symlinks properly)
-	var info os.FileInfo
-	var err error
-	if symlinkFS, ok := s.fs.(SymlinkFileSystem); ok {
-		info, err = symlinkFS.Lstat(node.path)
-	} else {
-		info, err = s.fs.Stat(node.path)
-	}
+	// Get fresh attributes using Lstat (to handle symlinks properly)
+	// The filesystem implements absfs.SymlinkFileSystem which has Lstat
+	info, err := s.fs.Lstat(node.path)
 
 	if err != nil {
 		return nil, fmt.Errorf("getattr: failed to stat %s: %w", node.path, err)
@@ -1008,20 +998,14 @@ func (s *AbsfsNFS) Symlink(dir *NFSNode, name string, target string, attrs *NFSA
 		return nil, os.ErrPermission
 	}
 
-	// Check if filesystem supports symlinks
-	symlinkFS, ok := s.fs.(SymlinkFileSystem)
-	if !ok {
-		return nil, fmt.Errorf("symlink: filesystem does not support symbolic links")
-	}
-
 	// Sanitize the path to prevent directory traversal attacks
 	path, err := sanitizePath(dir.path, name)
 	if err != nil {
 		return nil, fmt.Errorf("symlink: failed to sanitize path: %w", err)
 	}
 
-	// Create the symlink
-	err = symlinkFS.Symlink(target, path)
+	// Create the symlink (s.fs is absfs.SymlinkFileSystem)
+	err = s.fs.Symlink(target, path)
 	if err != nil {
 		return nil, fmt.Errorf("symlink: failed to create symlink at %s pointing to %s: %w", path, target, err)
 	}
@@ -1042,13 +1026,8 @@ func (s *AbsfsNFS) Readlink(node *NFSNode) (string, error) {
 		return "", fmt.Errorf("nil node")
 	}
 
-	// Check if filesystem supports symlinks
-	symlinkFS, ok := s.fs.(SymlinkFileSystem)
-	if !ok {
-		return "", fmt.Errorf("readlink: filesystem does not support symbolic links")
-	}
-
-	target, err := symlinkFS.Readlink(node.path)
+	// s.fs is absfs.SymlinkFileSystem, so Readlink is always available
+	target, err := s.fs.Readlink(node.path)
 	if err != nil {
 		return "", fmt.Errorf("readlink: failed to read symlink %s: %w", node.path, err)
 	}
