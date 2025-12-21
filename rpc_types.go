@@ -32,15 +32,26 @@ const (
 	MAX_RPC_AUTH_LENGTH = 400
 )
 
-// RPC reply status
+// RPC reply status (reply_stat in RFC 1831)
 const (
-	MSG_ACCEPTED  = 0
-	MSG_DENIED    = 1
-	PROG_UNAVAIL  = 1
-	PROG_MISMATCH = 2
-	PROC_UNAVAIL  = 3
-	GARBAGE_ARGS  = 4
-	ACCESS_DENIED = 5
+	MSG_ACCEPTED = 0
+	MSG_DENIED   = 1
+)
+
+// Accept status values (accept_stat in RFC 1831)
+const (
+	SUCCESS       = 0 // RPC executed successfully
+	PROG_UNAVAIL  = 1 // remote hasn't exported program
+	PROG_MISMATCH = 2 // remote can't support version #
+	PROC_UNAVAIL  = 3 // program can't support procedure
+	GARBAGE_ARGS  = 4 // procedure can't decode params
+	SYSTEM_ERR    = 5 // system error (e.g., memory allocation failure)
+)
+
+// Reject status values for MSG_DENIED
+const (
+	RPC_MISMATCH = 0 // RPC version wrong
+	AUTH_ERROR   = 1 // remote can't authenticate caller
 )
 
 // RPC program numbers
@@ -96,6 +107,10 @@ func xdrEncodeUint32(w io.Writer, v uint32) error {
 	return binary.Write(w, binary.BigEndian, v)
 }
 
+func xdrEncodeUint64(w io.Writer, v uint64) error {
+	return binary.Write(w, binary.BigEndian, v)
+}
+
 func xdrDecodeUint32(r io.Reader) (uint32, error) {
 	var v uint32
 	err := binary.Read(r, binary.BigEndian, &v)
@@ -116,6 +131,50 @@ func xdrEncodeString(w io.Writer, s string) error {
 		return err
 	}
 	return nil
+}
+
+// xdrEncodeFileHandle encodes an NFS3 file handle (opaque<FHSIZE3>)
+// File handles are encoded as: [4-byte length][8-byte handle data]
+func xdrEncodeFileHandle(w io.Writer, handle uint64) error {
+	// Write length (8 bytes for our handle format)
+	if err := xdrEncodeUint32(w, 8); err != nil {
+		return err
+	}
+	// Write the 8-byte handle value
+	return binary.Write(w, binary.BigEndian, handle)
+}
+
+// xdrDecodeFileHandle decodes an NFS3 file handle (opaque<FHSIZE3>)
+// Returns the 8-byte handle value
+func xdrDecodeFileHandle(r io.Reader) (uint64, error) {
+	// First read the length
+	length, err := xdrDecodeUint32(r)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read handle length: %w", err)
+	}
+
+	// NFS3 file handles can be up to 64 bytes, but our handles are 8 bytes
+	if length != 8 {
+		// Read and discard the handle data if wrong size
+		if length > 0 && length <= 64 {
+			buf := make([]byte, length)
+			io.ReadFull(r, buf)
+			// Pad to 4-byte boundary
+			padding := (4 - (int(length) % 4)) % 4
+			if padding > 0 {
+				io.ReadFull(r, make([]byte, padding))
+			}
+		}
+		return 0, fmt.Errorf("invalid handle length: %d (expected 8)", length)
+	}
+
+	// Read the 8-byte handle
+	var handle uint64
+	if err := binary.Read(r, binary.BigEndian, &handle); err != nil {
+		return 0, fmt.Errorf("failed to read handle data: %w", err)
+	}
+
+	return handle, nil
 }
 
 func xdrDecodeString(r io.Reader) (string, error) {
@@ -178,10 +237,11 @@ type AuthSysCredential struct {
 
 // RPCReply represents an RPC reply message
 type RPCReply struct {
-	Header   RPCMsgHeader
-	Status   uint32
-	Verifier RPCVerifier
-	Data     interface{}
+	Header       RPCMsgHeader
+	Status       uint32      // reply_stat: MSG_ACCEPTED or MSG_DENIED
+	AcceptStatus uint32      // accept_stat: SUCCESS, PROG_UNAVAIL, etc. (only when Status == MSG_ACCEPTED)
+	Verifier     RPCVerifier
+	Data         interface{}
 }
 
 // DecodeRPCCall decodes an RPC call from a reader
@@ -256,53 +316,84 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 }
 
 // EncodeRPCReply encodes an RPC reply to a writer
+// RFC 1831 reply format:
+//   XID (4 bytes)
+//   msg_type = REPLY (4 bytes)
+//   reply_stat (4 bytes) - MSG_ACCEPTED or MSG_DENIED
+//   [if MSG_ACCEPTED:]
+//     verf (opaque auth) - flavor (4) + length (4) + body
+//     accept_stat (4 bytes) - SUCCESS, PROG_UNAVAIL, etc.
+//     [procedure-specific results]
+//   [if MSG_DENIED:]
+//     reject_stat + auth error info
 func EncodeRPCReply(w io.Writer, reply *RPCReply) error {
-	// Encode header
+	// Encode XID
 	if err := xdrEncodeUint32(w, reply.Header.Xid); err != nil {
 		return fmt.Errorf("failed to encode XID: %w", err)
 	}
+
+	// Encode message type (REPLY)
 	if err := xdrEncodeUint32(w, RPC_REPLY); err != nil {
 		return fmt.Errorf("failed to encode message type: %w", err)
 	}
 
-	// Encode reply status
+	// Encode reply_stat (MSG_ACCEPTED or MSG_DENIED)
 	if err := xdrEncodeUint32(w, reply.Status); err != nil {
 		return fmt.Errorf("failed to encode reply status: %w", err)
 	}
 
-	// Encode verifier
-	if err := xdrEncodeUint32(w, reply.Verifier.Flavor); err != nil {
-		return fmt.Errorf("failed to encode verifier flavor: %w", err)
-	}
-	if err := xdrEncodeUint32(w, uint32(len(reply.Verifier.Body))); err != nil {
-		return fmt.Errorf("failed to encode verifier length: %w", err)
-	}
-	if _, err := w.Write(reply.Verifier.Body); err != nil {
-		return fmt.Errorf("failed to write verifier body: %w", err)
-	}
-
-	// Encode reply data based on procedure type
-	if reply.Data != nil {
-		switch data := reply.Data.(type) {
-		case []byte:
-			// Raw byte data (pre-encoded)
-			_, err := w.Write(data)
-			return err
-		case *NFSAttrs:
-			// File attributes
-			return encodeFileAttributes(w, data)
-		case string:
-			// String data (mainly for error messages)
-			return xdrEncodeString(w, data)
-		case uint32:
-			// Status or error code
-			return xdrEncodeUint32(w, data)
-		default:
-			// If no specific encoding is provided, assume data is already encoded
-			if dataBytes, ok := data.([]byte); ok {
-				_, err := w.Write(dataBytes)
-				return err
+	if reply.Status == MSG_ACCEPTED {
+		// Encode verifier (null verifier for AUTH_NONE)
+		if err := xdrEncodeUint32(w, reply.Verifier.Flavor); err != nil {
+			return fmt.Errorf("failed to encode verifier flavor: %w", err)
+		}
+		if err := xdrEncodeUint32(w, uint32(len(reply.Verifier.Body))); err != nil {
+			return fmt.Errorf("failed to encode verifier length: %w", err)
+		}
+		if len(reply.Verifier.Body) > 0 {
+			if _, err := w.Write(reply.Verifier.Body); err != nil {
+				return fmt.Errorf("failed to write verifier body: %w", err)
 			}
+		}
+
+		// Encode accept_stat (SUCCESS, PROG_UNAVAIL, etc.)
+		if err := xdrEncodeUint32(w, reply.AcceptStatus); err != nil {
+			return fmt.Errorf("failed to encode accept status: %w", err)
+		}
+
+		// Only encode data if accept_stat is SUCCESS
+		if reply.AcceptStatus == SUCCESS && reply.Data != nil {
+			switch data := reply.Data.(type) {
+			case []byte:
+				// Raw byte data (pre-encoded)
+				_, err := w.Write(data)
+				return err
+			case *NFSAttrs:
+				// File attributes
+				return encodeFileAttributes(w, data)
+			case string:
+				// String data (mainly for error messages)
+				return xdrEncodeString(w, data)
+			case uint32:
+				// Status or error code
+				return xdrEncodeUint32(w, data)
+			default:
+				// If no specific encoding is provided, assume data is already encoded
+				if dataBytes, ok := data.([]byte); ok {
+					_, err := w.Write(dataBytes)
+					return err
+				}
+			}
+		}
+	} else {
+		// MSG_DENIED - encode reject info
+		// For now, just encode AUTH_ERROR with minimal info
+		if err := xdrEncodeUint32(w, AUTH_ERROR); err != nil {
+			return fmt.Errorf("failed to encode reject stat: %w", err)
+		}
+		// Auth error type (AUTH_BADCRED = 1)
+		if err := xdrEncodeUint32(w, 1); err != nil {
+			return fmt.Errorf("failed to encode auth error: %w", err)
 		}
 	}
 

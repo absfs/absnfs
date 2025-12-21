@@ -110,7 +110,8 @@ func TestRPCSuccessPaths(t *testing.T) {
 				Xid:     1,
 				MsgType: RPC_REPLY,
 			},
-			Status: MSG_ACCEPTED,
+			Status:       MSG_ACCEPTED,
+			AcceptStatus: SUCCESS, // Must be SUCCESS for data to be encoded
 			Verifier: RPCVerifier{
 				Flavor: 0,
 				Body:   []byte{},
@@ -125,7 +126,7 @@ func TestRPCSuccessPaths(t *testing.T) {
 		}
 
 		// Verify encoded data
-		var xid, msgType, status, verFlavor, verLen uint32
+		var xid, msgType, status, verFlavor, verLen, acceptStatus uint32
 		binary.Read(buf, binary.BigEndian, &xid)
 		if xid != 1 {
 			t.Errorf("Expected XID 1, got %d", xid)
@@ -146,7 +147,11 @@ func TestRPCSuccessPaths(t *testing.T) {
 		if verLen != 0 {
 			t.Errorf("Expected verifier length 0, got %d", verLen)
 		}
-		
+		binary.Read(buf, binary.BigEndian, &acceptStatus)
+		if acceptStatus != SUCCESS {
+			t.Errorf("Expected accept status %d, got %d", SUCCESS, acceptStatus)
+		}
+
 		// Verify we wrote the data bytes
 		dataBytes := make([]byte, 9) // "test data" is 9 bytes
 		n, err := buf.Read(dataBytes)
@@ -164,82 +169,90 @@ func TestRPCSuccessPaths(t *testing.T) {
 	t.Run("encode reply with NFSAttrs data", func(t *testing.T) {
 		// Create test attributes
 		attrs := &NFSAttrs{
-			Mode:  0644,
-			Uid:   1000,
-			Gid:   1000,
-			Size:  4096,
-			// Mtime: time.Now()
-			// Atime: time.Now()
+			Mode:   0644,
+			Uid:    1000,
+			Gid:    1000,
+			Size:   4096,
+			FileId: 12345,
 		}
-		
+
 		reply := &RPCReply{
 			Header: RPCMsgHeader{
 				Xid:     2,
 				MsgType: RPC_REPLY,
 			},
-			Status: MSG_ACCEPTED,
+			Status:       MSG_ACCEPTED,
+			AcceptStatus: SUCCESS, // Must be SUCCESS for data to be encoded
 			Verifier: RPCVerifier{
 				Flavor: 0,
 				Body:   []byte{},
 			},
 			Data: attrs,
 		}
-		
+
 		buf := &bytes.Buffer{}
 		err := EncodeRPCReply(buf, reply)
 		if err != nil {
 			t.Errorf("EncodeRPCReply failed with NFSAttrs: %v", err)
 		}
-		
+
 		// Skip past the header data
-		var headerData [20]byte // 5 uint32s (XID, msgType, status, verFlavor, verLen)
+		var headerData [24]byte // 6 uint32s (XID, msgType, status, verFlavor, verLen, acceptStatus)
 		n, err := buf.Read(headerData[:])
-		if err != nil || n != 20 {
+		if err != nil || n != 24 {
 			t.Errorf("Failed to read header data: %v", err)
 		}
-		
-		// Should have encoded attributes data
-		if buf.Len() == 0 {
-			t.Errorf("No attribute data was encoded")
+
+		// Should have encoded attributes data (84 bytes for fattr3)
+		if buf.Len() < 84 {
+			t.Errorf("Expected at least 84 bytes of attribute data, got %d", buf.Len())
 		}
-		
-		// Read mode as a basic check
+
+		// RFC 1813 fattr3: ftype comes first, then mode
+		var ftype uint32
+		binary.Read(buf, binary.BigEndian, &ftype)
+		if ftype != NF3REG { // Regular file
+			t.Errorf("Expected ftype NF3REG (1), got %d", ftype)
+		}
+
 		var mode uint32
 		binary.Read(buf, binary.BigEndian, &mode)
-		if mode != uint32(attrs.Mode) {
-			t.Errorf("Expected mode %d, got %d", attrs.Mode, mode)
+		// Mode should be permission bits only (0644 = 420)
+		if mode != uint32(attrs.Mode.Perm()) {
+			t.Errorf("Expected mode %d, got %d", attrs.Mode.Perm(), mode)
 		}
 	})
 	
 	t.Run("encode reply with uint32 data", func(t *testing.T) {
 		statusCode := uint32(NFSERR_NOENT)
-		
+
 		reply := &RPCReply{
 			Header: RPCMsgHeader{
 				Xid:     3,
 				MsgType: RPC_REPLY,
 			},
-			Status: MSG_ACCEPTED,
+			Status:       MSG_ACCEPTED,
+			AcceptStatus: SUCCESS, // Must be SUCCESS for data to be encoded
 			Verifier: RPCVerifier{
 				Flavor: 0,
 				Body:   []byte{},
 			},
 			Data: statusCode,
 		}
-		
+
 		buf := &bytes.Buffer{}
 		err := EncodeRPCReply(buf, reply)
 		if err != nil {
 			t.Errorf("EncodeRPCReply failed with uint32: %v", err)
 		}
-		
+
 		// Skip past the header data
-		var headerData [20]byte // 5 uint32s (XID, msgType, status, verFlavor, verLen)
+		var headerData [24]byte // 6 uint32s (XID, msgType, status, verFlavor, verLen, acceptStatus)
 		n, err := buf.Read(headerData[:])
-		if err != nil || n != 20 {
+		if err != nil || n != 24 {
 			t.Errorf("Failed to read header data: %v", err)
 		}
-		
+
 		// Read status code
 		var encodedStatus uint32
 		binary.Read(buf, binary.BigEndian, &encodedStatus)
@@ -250,47 +263,48 @@ func TestRPCSuccessPaths(t *testing.T) {
 	
 	t.Run("encode reply with string data", func(t *testing.T) {
 		testString := "error message"
-		
+
 		reply := &RPCReply{
 			Header: RPCMsgHeader{
 				Xid:     4,
 				MsgType: RPC_REPLY,
 			},
-			Status: MSG_ACCEPTED,
+			Status:       MSG_ACCEPTED,
+			AcceptStatus: SUCCESS, // Must be SUCCESS for data to be encoded
 			Verifier: RPCVerifier{
 				Flavor: 0,
 				Body:   []byte{},
 			},
 			Data: testString,
 		}
-		
+
 		buf := &bytes.Buffer{}
 		err := EncodeRPCReply(buf, reply)
 		if err != nil {
 			t.Errorf("EncodeRPCReply failed with string: %v", err)
 		}
-		
+
 		// Skip past the header data
-		var headerData [20]byte // 5 uint32s (XID, msgType, status, verFlavor, verLen)
+		var headerData [24]byte // 6 uint32s (XID, msgType, status, verFlavor, verLen, acceptStatus)
 		n, err := buf.Read(headerData[:])
-		if err != nil || n != 20 {
+		if err != nil || n != 24 {
 			t.Errorf("Failed to read header data: %v", err)
 		}
-		
+
 		// Read string length
 		var strLen uint32
 		binary.Read(buf, binary.BigEndian, &strLen)
 		if strLen != uint32(len(testString)) {
 			t.Errorf("Expected string length %d, got %d", len(testString), strLen)
 		}
-		
+
 		// Read string data
 		strData := make([]byte, strLen)
 		n, err = buf.Read(strData)
 		if err != nil || n != int(strLen) {
 			t.Errorf("Failed to read string data: %v", err)
 		}
-		
+
 		if string(strData) != testString {
 			t.Errorf("Expected string '%s', got '%s'", testString, string(strData))
 		}
@@ -303,40 +317,42 @@ func TestRPCReplyEncodeWithTypes(t *testing.T) {
 		dataTypes := []interface{}{
 			[]byte("test data"),
 			&NFSAttrs{
-					Mode:  0644,
-					Uid:   1000,
-					Gid:   1000,
-					Size:  1024,
-					// Mtime: time.Now()
-					// Atime: time.Now()
-				},
+				Mode: 0644,
+				Uid:  1000,
+				Gid:  1000,
+				Size: 1024,
+				// Mtime: time.Now()
+				// Atime: time.Now()
+			},
 			"test string",
 			uint32(12345),
 			nil,
 		}
-		
+
 		for _, data := range dataTypes {
 			reply := &RPCReply{
 				Header: RPCMsgHeader{
 					Xid:     1,
 					MsgType: RPC_REPLY,
 				},
-				Status: MSG_ACCEPTED,
+				Status:       MSG_ACCEPTED,
+				AcceptStatus: SUCCESS, // Must be SUCCESS for data to be encoded
 				Verifier: RPCVerifier{
 					Flavor: 0,
 					Body:   []byte{},
 				},
 				Data: data,
 			}
-			
+
 			buf := &bytes.Buffer{}
 			err := EncodeRPCReply(buf, reply)
 			if err != nil {
 				t.Errorf("EncodeRPCReply failed with data type %T: %v", data, err)
 			}
-			
+
 			// Verify at least the header was encoded
-			if buf.Len() < 20 { // min header size
+			// Header: XID + MsgType + Status + VerFlavor + VerLen + AcceptStatus = 6 uint32s = 24 bytes
+			if buf.Len() < 24 {
 				t.Errorf("Encoded buffer too small for data type %T: %d bytes", data, buf.Len())
 			}
 		}
@@ -705,7 +721,9 @@ func TestRPCErrorPaths(t *testing.T) {
 				Xid:     1,
 				MsgType: RPC_REPLY,
 			},
-			Data: []byte{1, 2, 3},
+			Status:       MSG_ACCEPTED,
+			AcceptStatus: SUCCESS, // Must be SUCCESS for data to be written
+			Data:         []byte{1, 2, 3},
 		}); err == nil {
 			t.Error("EncodeRPCReply should fail on data write error")
 		}
@@ -741,8 +759,13 @@ func (w *failingWriter) Write(p []byte) (n int, err error) {
 		if w.count == 5 {
 			return 0, io.ErrShortWrite
 		}
-	case "data":
+	case "accept_status":
 		if w.count == 6 {
+			return 0, io.ErrShortWrite
+		}
+	case "data":
+		// Data is written after 6 header fields: xid, msgtype, status, verflavor, verlen, acceptstatus
+		if w.count == 7 {
 			return 0, io.ErrShortWrite
 		}
 	case "length":
