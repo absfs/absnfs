@@ -7,4 +7,9 @@ require (
 	github.com/absfs/memfs v1.0.0
 )
 
-require github.com/absfs/inode v1.0.0 // indirect
+require (
+	github.com/absfs/cachefs v1.0.0 // indirect
+	github.com/absfs/inode v1.0.0 // indirect
+	github.com/absfs/lockfs v1.0.0 // indirect
+	github.com/absfs/osfs v1.0.0 // indirect
+)

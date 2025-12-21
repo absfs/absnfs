@@ -39,12 +39,12 @@ func DefaultRateLimiterConfig() RateLimiterConfig {
 	return RateLimiterConfig{
 		GlobalRequestsPerSecond:        10000,
 		PerIPRequestsPerSecond:         1000,
-		PerIPBurstSize:                 100,
-		PerConnectionRequestsPerSecond: 100,
-		PerConnectionBurstSize:         10,
+		PerIPBurstSize:                 500, // Increased for NFS client bursts during mount
+		PerConnectionRequestsPerSecond: 500,
+		PerConnectionBurstSize:         100, // Increased for NFS client bursts
 		ReadLargeOpsPerSecond:          100,
 		WriteLargeOpsPerSecond:         50,
-		ReaddirOpsPerSecond:            20,
+		ReaddirOpsPerSecond:            50, // Increased for directory listings
 		MountOpsPerMinute:              10,
 		FileHandlesPerIP:               10000,
 		FileHandlesGlobal:              1000000,

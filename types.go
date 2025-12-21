@@ -376,6 +376,7 @@ type NFSNode struct {
 type NFSAttrs struct {
 	Mode       os.FileMode
 	Size       int64
+	FileId     uint64 // Unique file identifier (inode number)
 	mtime      time.Time
 	atime      time.Time
 	Uid        uint32
