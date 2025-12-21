@@ -79,8 +79,8 @@ func TestNFSHandlerErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HandleCall failed: %v", err)
 		}
-		if reply.Status != PROG_UNAVAIL {
-			t.Errorf("Expected PROG_UNAVAIL status, got %v", reply.Status)
+		if reply.AcceptStatus != PROG_UNAVAIL {
+			t.Errorf("Expected PROG_UNAVAIL AcceptStatus, got %v", reply.AcceptStatus)
 		}
 
 		// Test invalid authentication
@@ -219,9 +219,9 @@ func TestNFSHandlerOperations(t *testing.T) {
 			},
 		}
 
-		// Encode handle
+		// Encode handle with proper XDR format
 		var buf bytes.Buffer
-		binary.Write(&buf, binary.BigEndian, handle)
+		xdrEncodeFileHandle(&buf, handle)
 
 		authCtx := testAuthContext()
 		authCtx.Credential = &call.Credential

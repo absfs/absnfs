@@ -30,8 +30,9 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 	defer cancel()
 
 	reply := &RPCReply{
-		Header: call.Header,
-		Status: MSG_ACCEPTED,
+		Header:       call.Header,
+		Status:       MSG_ACCEPTED,
+		AcceptStatus: SUCCESS,
 		Verifier: RPCVerifier{
 			Flavor: 0,
 			Body:   []byte{},
@@ -65,6 +66,12 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 		default:
 		}
 
+		// Debug logging for all incoming calls
+		if h.server.options.Debug {
+			h.server.logger.Printf("HandleCall: prog=%d vers=%d proc=%d",
+				call.Header.Program, call.Header.Version, call.Header.Procedure)
+		}
+
 		var result *RPCReply
 		var err error
 
@@ -74,7 +81,7 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 		case NFS_PROGRAM:
 			result, err = h.handleNFSCall(call, body, reply, authCtx)
 		default:
-			reply.Status = PROG_UNAVAIL
+			reply.AcceptStatus = PROG_UNAVAIL
 			// Check context before sending
 			select {
 			case <-ctx.Done():
@@ -85,17 +92,18 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 		}
 
 		if err != nil {
-			// Convert error to appropriate RPC status
+			// Convert error to appropriate RPC accept status
 			switch err := err.(type) {
 			case *RPCError:
-				reply.Status = err.Status
+				reply.AcceptStatus = err.Status
 			default:
 				if os.IsNotExist(err) {
-					reply.Status = NFSERR_NOENT
+					// NFS errors go in the procedure-specific data, not AcceptStatus
+					reply.AcceptStatus = SUCCESS
 				} else if os.IsPermission(err) {
-					reply.Status = ACCESS_DENIED
+					reply.AcceptStatus = SUCCESS
 				} else {
-					reply.Status = GARBAGE_ARGS
+					reply.AcceptStatus = GARBAGE_ARGS
 				}
 			}
 			// Check context before sending

@@ -60,8 +60,8 @@ func TestHandleMountCall(t *testing.T) {
 		if err != nil {
 			t.Fatalf("handleMountCall failed: %v", err)
 		}
-		if result.Status != PROG_MISMATCH {
-			t.Errorf("Expected PROG_MISMATCH status, got %v", result.Status)
+		if result.AcceptStatus != PROG_MISMATCH {
+			t.Errorf("Expected PROG_MISMATCH AcceptStatus, got %v", result.AcceptStatus)
 		}
 	})
 
@@ -114,8 +114,8 @@ func TestHandleMountCall(t *testing.T) {
 		if err != nil {
 			t.Fatalf("handleMountCall failed: %v", err)
 		}
-		if result.Status != PROC_UNAVAIL {
-			t.Errorf("Expected PROC_UNAVAIL status, got %v", result.Status)
+		if result.AcceptStatus != PROC_UNAVAIL {
+			t.Errorf("Expected PROC_UNAVAIL AcceptStatus, got %v", result.AcceptStatus)
 		}
 	})
 
@@ -171,8 +171,8 @@ func TestHandleMountCall(t *testing.T) {
 		if err != nil {
 			t.Fatalf("handleMountCall failed: %v", err)
 		}
-		if result.Status != GARBAGE_ARGS {
-			t.Errorf("Expected GARBAGE_ARGS status, got %v", result.Status)
+		if result.AcceptStatus != GARBAGE_ARGS {
+			t.Errorf("Expected GARBAGE_ARGS AcceptStatus, got %v", result.AcceptStatus)
 		}
 	})
 
@@ -304,8 +304,8 @@ func TestHandleMountCall(t *testing.T) {
 		if err != nil {
 			t.Fatalf("handleMountCall failed: %v", err)
 		}
-		if result.Status != GARBAGE_ARGS {
-			t.Errorf("Expected GARBAGE_ARGS status, got %v", result.Status)
+		if result.AcceptStatus != GARBAGE_ARGS {
+			t.Errorf("Expected GARBAGE_ARGS AcceptStatus, got %v", result.AcceptStatus)
 		}
 	})
 

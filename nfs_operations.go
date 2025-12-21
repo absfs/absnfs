@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path"
 	"runtime"
 	"strings"
 )
@@ -96,12 +97,9 @@ func validateMode(mode uint32, isDir bool) uint32 {
 func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	// Check version first
 	if call.Header.Version != NFS_V3 {
-		reply.Status = PROG_MISMATCH
+		reply.AcceptStatus = PROG_MISMATCH
 		return reply, nil
 	}
-
-	// Set default status to MSG_ACCEPTED
-	reply.Status = MSG_ACCEPTED
 
 	switch call.Header.Procedure {
 	case NFSPROC3_NULL:
@@ -109,16 +107,27 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 	case NFSPROC3_GETATTR:
 		handle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
+			if h.server.options.Debug {
+				h.server.logger.Printf("GETATTR: Failed to decode handle: %v", err)
+			}
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		handle.Handle = handleVal
+		if h.server.options.Debug {
+			h.server.logger.Printf("GETATTR: Looking up handle %d, fileMap count: %d", handle.Handle, h.server.handler.fileMap.Count())
+		}
 
 		// Find the node
 		file, ok := h.server.handler.fileMap.Get(handle.Handle)
 		if !ok {
+			if h.server.options.Debug {
+				h.server.logger.Printf("GETATTR: Handle %d not found in fileMap", handle.Handle)
+			}
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOENT)
 			reply.Data = buf.Bytes()
@@ -150,12 +159,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 	case NFSPROC3_SETATTR:
 		handle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		handle.Handle = handleVal
 
 		// Read attribute flags and values
 		var setMode, setUid, setGid uint32
@@ -229,6 +240,12 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
+		// Get pre-operation attributes for wcc_data
+		preAttrs, err := h.server.handler.GetAttr(node)
+		if err != nil {
+			return nil, err
+		}
+
 		// Create new attributes - read with lock protection
 		node.mu.RLock()
 		attrs := &NFSAttrs{
@@ -255,29 +272,43 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		}
 
 		// Get updated attributes
-		attrs, err := h.server.handler.GetAttr(node)
+		postAttrs, err := h.server.handler.GetAttr(node)
 		if err != nil {
 			return nil, err
 		}
 
-		// Encode response
+		// Encode response (RFC 1813 SETATTR3resok)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		if err := encodeFileAttributes(&buf, attrs); err != nil {
+
+		// wcc_data: pre_op_attr + post_op_attr
+		// pre_op_attr: attributes_follow + wcc_attr
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeWccAttr(&buf, preAttrs); err != nil {
 			return nil, err
 		}
+
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeFileAttributes(&buf, postAttrs); err != nil {
+			return nil, err
+		}
+
 		reply.Data = buf.Bytes()
 		return reply, nil
 
 	case NFSPROC3_LOOKUP:
 		// Decode directory handle
 		dirHandle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &dirHandle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
+			// No dir_attributes available for GARBAGE_ARGS
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		dirHandle.Handle = handleVal
 
 		// Decode filename
 		name, err := xdrDecodeString(body)
@@ -293,6 +324,8 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		if !ok {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			// dir_attributes: attributes_follow = FALSE (we don't have the dir)
+			xdrEncodeUint32(&buf, 0)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
@@ -302,6 +335,7 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		if !ok {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			xdrEncodeUint32(&buf, 0) // dir_attributes: attributes_follow = FALSE
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
@@ -314,41 +348,69 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		if !isDir {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOTDIR)
+			// dir_attributes: attributes_follow + fattr3
+			xdrEncodeUint32(&buf, 1)
+			encodeFileAttributes(&buf, node.attrs)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
 
 		// Lookup the file with timeout
-		lookupNode, err := h.server.handler.Lookup(node.path + "/" + name)
+		lookupPath := path.Join(node.path, name)
+		if h.server.options.Debug {
+			h.server.logger.Printf("LOOKUP: Looking up '%s'", lookupPath)
+		}
+		lookupNode, err := h.server.handler.Lookup(lookupPath)
 		if err != nil {
+			if h.server.options.Debug {
+				h.server.logger.Printf("LOOKUP: '%s' not found: %v", lookupPath, err)
+			}
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			// dir_attributes: attributes_follow + fattr3 for parent directory
+			xdrEncodeUint32(&buf, 1)
+			encodeFileAttributes(&buf, node.attrs)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
 
 		// Allocate new handle
 		handle := h.server.handler.fileMap.Allocate(lookupNode)
+		if h.server.options.Debug {
+			h.server.logger.Printf("LOOKUP: Found '%s', allocated handle %d", lookupPath, handle)
+		}
 
-		// Encode response
+		// Encode response (RFC 1813 LOOKUP3resok)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		binary.Write(&buf, binary.BigEndian, handle)
+		xdrEncodeFileHandle(&buf, handle)
+
+		// obj_attributes: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, lookupNode.attrs); err != nil {
 			return nil, err
 		}
+
+		// dir_attributes: attributes_follow + fattr3 for the parent directory
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeFileAttributes(&buf, node.attrs); err != nil {
+			return nil, err
+		}
+
 		reply.Data = buf.Bytes()
 		return reply, nil
 
 	case NFSPROC3_READLINK:
 		// Decode symlink handle
 		handle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		handle.Handle = handleVal
 
 		// Find the symlink node
 		fileNode, ok := h.server.handler.fileMap.Get(handle.Handle)
@@ -411,12 +473,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 	case NFSPROC3_READ:
 		handle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		handle.Handle = handleVal
 
 		// Read offset and count
 		var offset uint64
@@ -487,22 +551,35 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return nil, err
 		}
 
-		// Encode response
+		// Encode response (RFC 1813 READ3resok)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
+
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, attrs); err != nil {
 			return nil, err
 		}
 
-		// Handle empty data (EOF) case
-		if len(data) == 0 {
-			binary.Write(&buf, binary.BigEndian, uint32(0)) // Count read = 0
-			binary.Write(&buf, binary.BigEndian, true)      // EOF flag = true
+		// count (uint32)
+		xdrEncodeUint32(&buf, uint32(len(data)))
+
+		// eof (XDR bool - uint32)
+		if int64(offset)+int64(len(data)) >= attrs.Size {
+			xdrEncodeUint32(&buf, 1) // EOF = TRUE
 		} else {
-			binary.Write(&buf, binary.BigEndian, uint32(len(data))) // Count read
-			binary.Write(&buf, binary.BigEndian, false)             // EOF flag = false
-			buf.Write(data)                                         // Write data
+			xdrEncodeUint32(&buf, 0) // EOF = FALSE
 		}
+
+		// opaque data<> - XDR format: length + data + padding
+		xdrEncodeUint32(&buf, uint32(len(data))) // data length
+		buf.Write(data)
+		// Pad to 4-byte boundary
+		padding := (4 - (len(data) % 4)) % 4
+		if padding > 0 {
+			buf.Write(make([]byte, padding))
+		}
+
 		reply.Data = buf.Bytes()
 		return reply, nil
 
@@ -515,12 +592,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		}
 
 		handle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		handle.Handle = handleVal
 
 		// Read offset and count
 		var offset uint64
@@ -608,10 +687,40 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
+		if h.server.options.Debug {
+			h.server.logger.Printf("WRITE: handle=%d path='%s' offset=%d count=%d stable=%d", handle.Handle, node.path, offset, count, stable)
+		}
+
+		// Get pre-operation file attributes for wcc_data
+		preAttrs, err := h.server.handler.GetAttr(node)
+		if err != nil {
+			return nil, err
+		}
+
 		// Write data
 		n, err := h.server.handler.Write(node, int64(offset), data)
 		if err != nil {
-			return nil, err
+			if h.server.options.Debug {
+				h.server.logger.Printf("WRITE: Failed to write to '%s': %v", node.path, err)
+			}
+			// Get post-operation file attributes
+			postAttrs, _ := h.server.handler.GetAttr(node)
+			if postAttrs == nil {
+				postAttrs = preAttrs
+			}
+
+			// Return error with wcc_data (RFC 1813 WRITE3resfail)
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, mapError(err))
+			// file_wcc: wcc_data
+			// pre_op_attr: attributes_follow + wcc_attr
+			xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+			encodeWccAttr(&buf, preAttrs)
+			// post_op_attr: attributes_follow + fattr3
+			xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+			encodeFileAttributes(&buf, postAttrs)
+			reply.Data = buf.Bytes()
+			return reply, nil
 		}
 
 		// Get updated attributes
@@ -620,26 +729,50 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return nil, err
 		}
 
-		// Encode response
+		if h.server.options.Debug {
+			h.server.logger.Printf("WRITE: Success, wrote %d bytes to '%s'", n, node.path)
+		}
+
+		// Encode response (RFC 1813 WRITE3resok)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
+
+		// wcc_data: pre_op_attr + post_op_attr
+		// pre_op_attr: attributes_follow + wcc_attr
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeWccAttr(&buf, preAttrs); err != nil {
+			return nil, err
+		}
+
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, attrs); err != nil {
 			return nil, err
 		}
-		binary.Write(&buf, binary.BigEndian, uint32(n)) // Count written
-		binary.Write(&buf, binary.BigEndian, stable)    // Write stability level
+
+		// count (bytes written)
+		xdrEncodeUint32(&buf, uint32(n))
+
+		// committed (stable_how)
+		xdrEncodeUint32(&buf, stable)
+
+		// writeverf (8 bytes - server restart identifier)
+		buf.Write(make([]byte, 8)) // Use zeros as verifier for now
+
 		reply.Data = buf.Bytes()
 		return reply, nil
 
 	case NFSPROC3_CREATE:
 		// Decode directory handle
 		dirHandle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &dirHandle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		dirHandle.Handle = handleVal
 
 		// Decode filename
 		name, err := xdrDecodeString(body)
@@ -658,21 +791,109 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
-		// Read create mode and attributes
-		var createMode uint32
-		if err := binary.Read(body, binary.BigEndian, &createMode); err != nil {
+		// Read createhow3 (UNCHECKED=0, GUARDED=1, EXCLUSIVE=2)
+		var createHow uint32
+		if err := binary.Read(body, binary.BigEndian, &createHow); err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
 
-		var mode uint32
-		if err := binary.Read(body, binary.BigEndian, &mode); err != nil {
-			var buf bytes.Buffer
-			xdrEncodeUint32(&buf, GARBAGE_ARGS)
-			reply.Data = buf.Bytes()
-			return reply, nil
+		// Default mode for new files (readable/writable by owner, readable by group/others)
+		var mode uint32 = 0644
+
+		// For UNCHECKED or GUARDED, parse sattr3 structure
+		// For EXCLUSIVE, skip 8-byte verifier (not implemented yet)
+		if createHow == 0 || createHow == 1 {
+			// Parse sattr3: set_mode, [mode], set_uid, [uid], set_gid, [gid], set_size, [size], set_atime, set_mtime
+			var setMode uint32
+			if err := binary.Read(body, binary.BigEndian, &setMode); err != nil {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, GARBAGE_ARGS)
+				reply.Data = buf.Bytes()
+				return reply, nil
+			}
+			if setMode != 0 {
+				if err := binary.Read(body, binary.BigEndian, &mode); err != nil {
+					var buf bytes.Buffer
+					xdrEncodeUint32(&buf, GARBAGE_ARGS)
+					reply.Data = buf.Bytes()
+					return reply, nil
+				}
+			}
+
+			// Skip remaining sattr3 fields (uid, gid, size, atime, mtime)
+			// set_uid
+			var setUid uint32
+			if err := binary.Read(body, binary.BigEndian, &setUid); err != nil {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, GARBAGE_ARGS)
+				reply.Data = buf.Bytes()
+				return reply, nil
+			}
+			if setUid != 0 {
+				var uid uint32
+				binary.Read(body, binary.BigEndian, &uid) // Skip uid value
+			}
+
+			// set_gid
+			var setGid uint32
+			if err := binary.Read(body, binary.BigEndian, &setGid); err != nil {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, GARBAGE_ARGS)
+				reply.Data = buf.Bytes()
+				return reply, nil
+			}
+			if setGid != 0 {
+				var gid uint32
+				binary.Read(body, binary.BigEndian, &gid) // Skip gid value
+			}
+
+			// set_size
+			var setSize uint32
+			if err := binary.Read(body, binary.BigEndian, &setSize); err != nil {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, GARBAGE_ARGS)
+				reply.Data = buf.Bytes()
+				return reply, nil
+			}
+			if setSize != 0 {
+				var size uint64
+				binary.Read(body, binary.BigEndian, &size) // Skip size value
+			}
+
+			// set_atime (0=DONT_CHANGE, 1=SET_TO_SERVER_TIME, 2=SET_TO_CLIENT_TIME)
+			var setAtime uint32
+			if err := binary.Read(body, binary.BigEndian, &setAtime); err != nil {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, GARBAGE_ARGS)
+				reply.Data = buf.Bytes()
+				return reply, nil
+			}
+			if setAtime == 2 {
+				var atimeSec, atimeNsec uint32
+				binary.Read(body, binary.BigEndian, &atimeSec)
+				binary.Read(body, binary.BigEndian, &atimeNsec)
+			}
+
+			// set_mtime (0=DONT_CHANGE, 1=SET_TO_SERVER_TIME, 2=SET_TO_CLIENT_TIME)
+			var setMtime uint32
+			if err := binary.Read(body, binary.BigEndian, &setMtime); err != nil {
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, GARBAGE_ARGS)
+				reply.Data = buf.Bytes()
+				return reply, nil
+			}
+			if setMtime == 2 {
+				var mtimeSec, mtimeNsec uint32
+				binary.Read(body, binary.BigEndian, &mtimeSec)
+				binary.Read(body, binary.BigEndian, &mtimeNsec)
+			}
+		} else if createHow == 2 {
+			// EXCLUSIVE mode: skip 8-byte verifier
+			var verf [8]byte
+			body.Read(verf[:])
 		}
 
 		// Validate mode
@@ -700,6 +921,12 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
+		// Get pre-operation directory attributes for wcc_data
+		dirPreAttrs, err := h.server.handler.GetAttr(node)
+		if err != nil {
+			return nil, err
+		}
+
 		// Create new attributes
 		attrs := &NFSAttrs{
 			Mode: os.FileMode(mode),
@@ -710,31 +937,75 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		// Create the file
 		newNode, err := h.server.handler.Create(node, name, attrs)
 		if err != nil {
+			// Get post-operation directory attributes
+			dirPostAttrs, _ := h.server.handler.GetAttr(node)
+			if dirPostAttrs == nil {
+				dirPostAttrs = dirPreAttrs
+			}
+
+			// Return error with wcc_data (RFC 1813 CREATE3resfail)
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, mapError(err))
+			// dir_wcc: wcc_data
+			// pre_op_attr: attributes_follow + wcc_attr
+			xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+			encodeWccAttr(&buf, dirPreAttrs)
+			// post_op_attr: attributes_follow + fattr3
+			xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+			encodeFileAttributes(&buf, dirPostAttrs)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Get post-operation directory attributes
+		dirPostAttrs, err := h.server.handler.GetAttr(node)
+		if err != nil {
 			return nil, err
 		}
 
 		// Allocate new handle
 		handle := h.server.handler.fileMap.Allocate(newNode)
 
-		// Encode response
+		// Encode response (RFC 1813 CREATE3resok)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		binary.Write(&buf, binary.BigEndian, handle)
+
+		// post_op_fh3: handle_follows + nfs_fh3
+		xdrEncodeUint32(&buf, 1) // handle_follows = TRUE
+		xdrEncodeFileHandle(&buf, handle)
+
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, newNode.attrs); err != nil {
 			return nil, err
 		}
+
+		// dir_wcc: wcc_data for directory
+		// pre_op_attr: attributes_follow + wcc_attr
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeWccAttr(&buf, dirPreAttrs); err != nil {
+			return nil, err
+		}
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeFileAttributes(&buf, dirPostAttrs); err != nil {
+			return nil, err
+		}
+
 		reply.Data = buf.Bytes()
 		return reply, nil
 
 	case NFSPROC3_MKDIR:
 		// Decode directory handle
 		dirHandle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &dirHandle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		dirHandle.Handle = handleVal
 
 		// Decode dirname
 		name, err := xdrDecodeString(body)
@@ -787,13 +1058,42 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
-		// Create the directory
-		if err := h.server.handler.fs.Mkdir(node.path+"/"+name, os.FileMode(mode)); err != nil {
+		// Get pre-operation directory attributes for wcc_data
+		dirPreAttrs, err := h.server.handler.GetAttr(node)
+		if err != nil {
 			return nil, err
 		}
 
+		// Create the directory
+		if err := h.server.handler.fs.Mkdir(path.Join(node.path, name), os.FileMode(mode)); err != nil {
+			// Get post-operation directory attributes
+			dirPostAttrs, _ := h.server.handler.GetAttr(node)
+			if dirPostAttrs == nil {
+				dirPostAttrs = dirPreAttrs
+			}
+
+			// Return error with wcc_data (RFC 1813 MKDIR3resfail)
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, mapError(err))
+			// dir_wcc: wcc_data
+			// pre_op_attr: attributes_follow + wcc_attr
+			xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+			encodeWccAttr(&buf, dirPreAttrs)
+			// post_op_attr: attributes_follow + fattr3
+			xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+			encodeFileAttributes(&buf, dirPostAttrs)
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
 		// Lookup the new directory
-		newNode, err := h.server.handler.Lookup(node.path + "/" + name)
+		newNode, err := h.server.handler.Lookup(path.Join(node.path, name))
+		if err != nil {
+			return nil, err
+		}
+
+		// Get post-operation directory attributes
+		dirPostAttrs, err := h.server.handler.GetAttr(node)
 		if err != nil {
 			return nil, err
 		}
@@ -801,13 +1101,32 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		// Allocate new handle
 		handle := h.server.handler.fileMap.Allocate(newNode)
 
-		// Encode response
+		// Encode response (RFC 1813 MKDIR3resok - same as CREATE3resok)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		binary.Write(&buf, binary.BigEndian, handle)
+
+		// post_op_fh3: handle_follows + nfs_fh3
+		xdrEncodeUint32(&buf, 1) // handle_follows = TRUE
+		xdrEncodeFileHandle(&buf, handle)
+
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, newNode.attrs); err != nil {
 			return nil, err
 		}
+
+		// dir_wcc: wcc_data for parent directory
+		// pre_op_attr: attributes_follow + wcc_attr
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeWccAttr(&buf, dirPreAttrs); err != nil {
+			return nil, err
+		}
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeFileAttributes(&buf, dirPostAttrs); err != nil {
+			return nil, err
+		}
+
 		reply.Data = buf.Bytes()
 		return reply, nil
 
@@ -821,12 +1140,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 		// Decode directory handle
 		dirHandle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &dirHandle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		dirHandle.Handle = handleVal
 
 		// Decode symlink name
 		name, err := xdrDecodeString(body)
@@ -888,6 +1209,12 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return reply, nil
 		}
 
+		// Get parent directory pre-operation attributes
+		dirPreAttrs, err := h.server.handler.GetAttr(node)
+		if err != nil {
+			return nil, err
+		}
+
 		// Create new attributes for the symlink
 		attrs := &NFSAttrs{
 			Mode: os.FileMode(mode) | os.ModeSymlink,
@@ -901,16 +1228,41 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return nil, err
 		}
 
+		// Get parent directory post-operation attributes
+		dirPostAttrs, err := h.server.handler.GetAttr(node)
+		if err != nil {
+			return nil, err
+		}
+
 		// Allocate new handle
 		handle := h.server.handler.fileMap.Allocate(newNode)
 
-		// Encode response
+		// Encode response (RFC 1813 SYMLINK3resok)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		binary.Write(&buf, binary.BigEndian, handle)
+
+		// post_op_fh3: handle_follows + nfs_fh3
+		xdrEncodeUint32(&buf, 1) // handle_follows = TRUE
+		xdrEncodeFileHandle(&buf, handle)
+
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, newNode.attrs); err != nil {
 			return nil, err
 		}
+
+		// dir_wcc: wcc_data for parent directory
+		// pre_op_attr: attributes_follow + wcc_attr
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeWccAttr(&buf, dirPreAttrs); err != nil {
+			return nil, err
+		}
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeFileAttributes(&buf, dirPostAttrs); err != nil {
+			return nil, err
+		}
+
 		reply.Data = buf.Bytes()
 		return reply, nil
 
@@ -933,12 +1285,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 		// Decode arguments
 		handle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		handle.Handle = handleVal
 
 		// Read cookie and cookie verifier
 		var cookie uint64
@@ -999,12 +1353,13 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		// Encode response
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		
-		// Encode post-op attributes (directory attributes)
+
+		// Encode post-op attributes (RFC 1813: attributes_follow boolean + fattr3)
 		attrs, err := h.server.handler.GetAttr(dir)
 		if err != nil {
 			return nil, err
 		}
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, attrs); err != nil {
 			return nil, err
 		}
@@ -1013,25 +1368,38 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		buf.Write(cookieVerf[:])
 
 		// Encode directory entries
+		// NFSv3 READDIR response format (RFC 1813):
+		//   entry3 *entries (linked list)
+		//   bool eof
+		//
+		// entry3 format:
+		//   fileid3 fileid (uint64)
+		//   filename3 name
+		//   cookie3 cookie (uint64)
+		//   entry3 *nextentry (bool: 1=more entries, 0=end of list)
+
 		entryCount := 0
 		maxReplySize := int(count) - 100 // Leave room for headers
-		
-		// Start encoding entries
-		// Value 1 means at least one entry follows
-		xdrEncodeUint32(&buf, 1)
-		
+		reachedLimit := false
+
 		for i, entry := range entries {
 			if uint64(i) < cookie {
 				continue
 			}
-			
-			// Calculate this entry's cookie
-			entryCookie := uint64(i + 1)
-			
-			// Encode fileid (we'll use node handle as fileid)
+
+			// Check if we need to stop encoding to respect maxReplySize
+			if buf.Len() >= maxReplySize {
+				reachedLimit = true
+				break
+			}
+
+			// Write value_follows = 1 (an entry follows)
+			xdrEncodeUint32(&buf, 1)
+
+			// Encode fileid (uint64 - we use node handle as fileid)
 			entryHandle := h.server.handler.fileMap.Allocate(entry)
-			xdrEncodeUint32(&buf, uint32(entryHandle))
-			
+			binary.Write(&buf, binary.BigEndian, entryHandle)
+
 			// Encode name
 			name := ""
 			if entry.path == "/" {
@@ -1039,9 +1407,9 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			} else {
 				// Extract just the filename from the path
 				lastSlash := 0
-				for i := len(entry.path) - 1; i >= 0; i-- {
-					if entry.path[i] == '/' {
-						lastSlash = i
+				for j := len(entry.path) - 1; j >= 0; j-- {
+					if entry.path[j] == '/' {
+						lastSlash = j
 						break
 					}
 				}
@@ -1050,37 +1418,19 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 				}
 			}
 			xdrEncodeString(&buf, name)
-			
-			// Encode cookie
+
+			// Encode cookie (uint64)
+			entryCookie := uint64(i + 1)
 			binary.Write(&buf, binary.BigEndian, entryCookie)
-			
+
 			entryCount++
-			
-			// Check if we need to stop encoding to respect maxReplySize
-			if buf.Len() >= maxReplySize && i < len(entries)-1 {
-				// More entries remain, but we've hit our limit
-				// Value 1 means more entries follow
-				xdrEncodeUint32(&buf, 1)
-				break
-			}
-			
-			// If this is the last entry, signal that no more entries follow
-			if i == len(entries)-1 {
-				xdrEncodeUint32(&buf, 0)
-			} else {
-				// More entries follow
-				xdrEncodeUint32(&buf, 1)
-			}
 		}
-		
-		// If no entries were encoded at all
-		if entryCount == 0 {
-			// No entries follow
-			xdrEncodeUint32(&buf, 0)
-		}
-		
-		// Encode EOF (true if we've reached the end)
-		eof := entryCount == 0 || entryCount == len(entries)
+
+		// Write value_follows = 0 (no more entries)
+		xdrEncodeUint32(&buf, 0)
+
+		// Encode EOF (true if we've reached the end of directory)
+		eof := !reachedLimit
 		if eof {
 			xdrEncodeUint32(&buf, 1)
 		} else {
@@ -1093,12 +1443,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 	case NFSPROC3_READDIRPLUS:
 		// Decode arguments
 		handle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		handle.Handle = handleVal
 
 		// Read cookie and cookie verifier
 		var cookie uint64
@@ -1165,12 +1517,13 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		// Encode response
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		
-		// Encode post-op attributes (directory attributes)
+
+		// Encode post-op attributes (RFC 1813: attributes_follow boolean + fattr3)
 		attrs, err := h.server.handler.GetAttr(dir)
 		if err != nil {
 			return nil, err
 		}
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, attrs); err != nil {
 			return nil, err
 		}
@@ -1179,25 +1532,32 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		buf.Write(cookieVerf[:])
 
 		// Encode directory entries
+		// RFC 1813: entryplus3 is a linked list with value_follows before each entry
 		entryCount := 0
+		reachedLimit := false
 		maxReplySize := int(maxCount) - 200 // Leave room for headers and attributes
-		
-		// Start encoding entries
-		// Value 1 means at least one entry follows
-		xdrEncodeUint32(&buf, 1)
-		
+
 		for i, entry := range entries {
 			if uint64(i) < cookie {
 				continue
 			}
-			
+
+			// Check if we need to stop encoding to respect maxReplySize
+			if buf.Len() >= maxReplySize && entryCount > 0 {
+				reachedLimit = true
+				break
+			}
+
+			// Write value_follows = TRUE (entry follows)
+			xdrEncodeUint32(&buf, 1)
+
 			// Calculate this entry's cookie
 			entryCookie := uint64(i + 1)
-			
-			// Encode fileid (we'll use node handle as fileid)
+
+			// Encode fileid (uint64 per RFC 1813)
 			entryHandle := h.server.handler.fileMap.Allocate(entry)
-			xdrEncodeUint32(&buf, uint32(entryHandle))
-			
+			binary.Write(&buf, binary.BigEndian, entryHandle) // fileid is uint64
+
 			// Encode name
 			name := ""
 			if entry.path == "/" {
@@ -1205,9 +1565,9 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			} else {
 				// Extract just the filename from the path
 				lastSlash := 0
-				for i := len(entry.path) - 1; i >= 0; i-- {
-					if entry.path[i] == '/' {
-						lastSlash = i
+				for j := len(entry.path) - 1; j >= 0; j-- {
+					if entry.path[j] == '/' {
+						lastSlash = j
 						break
 					}
 				}
@@ -1216,47 +1576,28 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 				}
 			}
 			xdrEncodeString(&buf, name)
-			
-			// Encode cookie
+
+			// Encode cookie (uint64)
 			binary.Write(&buf, binary.BigEndian, entryCookie)
-			
-			// Encode file attributes
-			xdrEncodeUint32(&buf, 1) // Has attributes
+
+			// Encode post_op_attr (name_attributes)
+			xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 			if err := encodeFileAttributes(&buf, entry.attrs); err != nil {
 				return nil, err
 			}
-			
-			// Encode file handle
-			xdrEncodeUint32(&buf, 1) // Has handle
-			binary.Write(&buf, binary.BigEndian, entryHandle)
-			
+
+			// Encode post_op_fh3 (name_handle) - uses xdrEncodeFileHandle for proper opaque encoding
+			xdrEncodeUint32(&buf, 1) // handle_follows = TRUE
+			xdrEncodeFileHandle(&buf, entryHandle)
+
 			entryCount++
-			
-			// Check if we need to stop encoding to respect maxReplySize
-			if buf.Len() >= maxReplySize && i < len(entries)-1 {
-				// More entries remain, but we've hit our limit
-				// Value 1 means more entries follow
-				xdrEncodeUint32(&buf, 1)
-				break
-			}
-			
-			// If this is the last entry, signal that no more entries follow
-			if i == len(entries)-1 {
-				xdrEncodeUint32(&buf, 0)
-			} else {
-				// More entries follow
-				xdrEncodeUint32(&buf, 1)
-			}
 		}
-		
-		// If no entries were encoded at all
-		if entryCount == 0 {
-			// No entries follow
-			xdrEncodeUint32(&buf, 0)
-		}
-		
-		// Encode EOF (true if we've reached the end)
-		eof := entryCount == 0 || entryCount == len(entries)
+
+		// Write value_follows = FALSE (no more entries)
+		xdrEncodeUint32(&buf, 0)
+
+		// Encode EOF (true if we've reached the end of directory)
+		eof := !reachedLimit
 		if eof {
 			xdrEncodeUint32(&buf, 1)
 		} else {
@@ -1269,12 +1610,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 	case NFSPROC3_FSSTAT:
 		// Decode arguments
 		handle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		handle.Handle = handleVal
 
 		// Find the node
 		fileNode, ok := h.server.handler.fileMap.Get(handle.Handle)
@@ -1302,24 +1645,27 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		// Encode response
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		
-		// Encode post-op attributes
+
+		// Encode post-op attributes (RFC 1813: attributes_follow boolean + fattr3)
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, attrs); err != nil {
 			return nil, err
 		}
 
 		// We don't have actual filesystem stats, so provide dummy values
-		// Total bytes
+		// tbytes - Total bytes
 		binary.Write(&buf, binary.BigEndian, uint64(1024*1024*1024*10)) // 10GB
-		// Free bytes
+		// fbytes - Free bytes
 		binary.Write(&buf, binary.BigEndian, uint64(1024*1024*1024*5)) // 5GB
-		// Available bytes
+		// abytes - Available bytes
 		binary.Write(&buf, binary.BigEndian, uint64(1024*1024*1024*5)) // 5GB
-		// Total files
+		// tfiles - Total file slots
 		binary.Write(&buf, binary.BigEndian, uint64(1000000))
-		// Free files
+		// ffiles - Free file slots
 		binary.Write(&buf, binary.BigEndian, uint64(900000))
-		// Invariant time
+		// afiles - Available file slots
+		binary.Write(&buf, binary.BigEndian, uint64(900000))
+		// invarsec - Invariant time
 		binary.Write(&buf, binary.BigEndian, uint32(0))
 
 		reply.Data = buf.Bytes()
@@ -1328,12 +1674,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 	case NFSPROC3_FSINFO:
 		// Decode arguments
 		handle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		handle.Handle = handleVal
 
 		// Find the node
 		fileNode, ok := h.server.handler.fileMap.Get(handle.Handle)
@@ -1361,8 +1709,9 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		// Encode response
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		
-		// Encode post-op attributes
+
+		// Encode post-op attributes (RFC 1813: attributes_follow boolean + fattr3)
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, attrs); err != nil {
 			return nil, err
 		}
@@ -1381,10 +1730,10 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		binary.Write(&buf, binary.BigEndian, uint32(65536)) // 64KB
 		// wtmult - Suggested multiple for write transfer size
 		binary.Write(&buf, binary.BigEndian, uint32(4096)) // 4KB
-		
-		// dtpref - Preferred READDIR request size
-		binary.Write(&buf, binary.BigEndian, uint32(8192)) // 8KB
-		
+
+		// dtpref - Preferred READDIR request size (size3 = uint64)
+		binary.Write(&buf, binary.BigEndian, uint64(8192)) // 8KB
+
 		// maxfilesize - Maximum file size
 		binary.Write(&buf, binary.BigEndian, uint64(1099511627776)) // 1TB
 		
@@ -1416,12 +1765,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 	case NFSPROC3_PATHCONF:
 		// Decode arguments
 		handle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		handle.Handle = handleVal
 
 		// Find the node
 		fileNode, ok := h.server.handler.fileMap.Get(handle.Handle)
@@ -1449,8 +1800,9 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		// Encode response
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		
-		// Encode post-op attributes
+
+		// Encode post-op attributes (RFC 1813: attributes_follow boolean + fattr3)
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, attrs); err != nil {
 			return nil, err
 		}
@@ -1475,12 +1827,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 	case NFSPROC3_ACCESS:
 		// Decode arguments
 		handle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		handle.Handle = handleVal
 
 		// Read access mask
 		var access uint32
@@ -1552,8 +1906,9 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		// Encode response
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		
-		// Encode post-op attributes
+
+		// Encode post-op attributes (RFC 1813: attributes_follow boolean + fattr3)
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, attrs); err != nil {
 			return nil, err
 		}
@@ -1567,12 +1922,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 	case NFSPROC3_COMMIT:
 		// Decode arguments
 		handle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &handle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		handle.Handle = handleVal
 
 		// Read offset and count
 		var offset uint64
@@ -1593,16 +1950,24 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		// Find the node
 		fileNode, ok := h.server.handler.fileMap.Get(handle.Handle)
 		if !ok {
+			// Return error with wcc_data (RFC 1813 COMMIT3resfail)
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			// file_wcc: wcc_data - no attributes available
+			xdrEncodeUint32(&buf, 0) // pre_op_attr: attributes_follow = FALSE
+			xdrEncodeUint32(&buf, 0) // post_op_attr: attributes_follow = FALSE
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
 
 		node, ok := fileNode.(*NFSNode)
 		if !ok {
+			// Return error with wcc_data (RFC 1813 COMMIT3resfail)
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			// file_wcc: wcc_data - no attributes available
+			xdrEncodeUint32(&buf, 0) // pre_op_attr: attributes_follow = FALSE
+			xdrEncodeUint32(&buf, 0) // post_op_attr: attributes_follow = FALSE
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
@@ -1616,11 +1981,16 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		// We don't need to do any special commit operation
 		// For future: could implement fsync here
 
-		// Encode response
+		// Encode response (RFC 1813 COMMIT3resok)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		
-		// Encode post-op attributes
+
+		// Encode wcc_data (pre_op_attr + post_op_attr)
+		// pre_op_attr: attributes_follow = FALSE (COMMIT doesn't modify attributes)
+		xdrEncodeUint32(&buf, 0) // pre_op_attr attributes_follow = FALSE
+
+		// post_op_attr: attributes_follow = TRUE + fattr3
+		xdrEncodeUint32(&buf, 1) // post_op_attr attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, attrs); err != nil {
 			return nil, err
 		}
@@ -1644,12 +2014,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 		// Decode directory handle
 		dirHandle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &dirHandle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		dirHandle.Handle = handleVal
 
 		// Decode filename
 		name, err := xdrDecodeString(body)
@@ -1696,12 +2068,35 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		}
 
 		// Remove the file
+		if h.server.options.Debug {
+			h.server.logger.Printf("REMOVE: Removing '%s' from directory '%s'", name, node.path)
+		}
 		if err := h.server.handler.Remove(node, name); err != nil {
-			// Map the error
+			if h.server.options.Debug {
+				h.server.logger.Printf("REMOVE: Failed to remove '%s': %v", name, err)
+			}
+			// Get post-operation directory attributes
+			dirPostAttrs, _ := h.server.handler.GetAttr(node)
+			if dirPostAttrs == nil {
+				dirPostAttrs = dirPreAttrs
+			}
+
+			// Return error with wcc_data (RFC 1813 REMOVE3resfail)
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, mapError(err))
+			// dir_wcc: wcc_data
+			// pre_op_attr: attributes_follow + wcc_attr
+			xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+			encodeWccAttr(&buf, dirPreAttrs)
+			// post_op_attr: attributes_follow + fattr3
+			xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+			encodeFileAttributes(&buf, dirPostAttrs)
 			reply.Data = buf.Bytes()
 			return reply, nil
+		}
+
+		if h.server.options.Debug {
+			h.server.logger.Printf("REMOVE: Successfully removed '%s' from '%s'", name, node.path)
 		}
 
 		// Get updated directory attributes
@@ -1710,18 +2105,19 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return nil, err
 		}
 
-		// Encode response
+		// Encode response (RFC 1813 REMOVE3resok)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		
-		// Encode pre-operation directory attributes (has attributes)
-		xdrEncodeUint32(&buf, 1)
-		if err := encodeFileAttributes(&buf, dirPreAttrs); err != nil {
+
+		// wcc_data: pre_op_attr + post_op_attr
+		// pre_op_attr: attributes_follow + wcc_attr (NOT fattr3!)
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeWccAttr(&buf, dirPreAttrs); err != nil {
 			return nil, err
 		}
-		
-		// Encode post-operation directory attributes (has attributes)
-		xdrEncodeUint32(&buf, 1)
+
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, dirPostAttrs); err != nil {
 			return nil, err
 		}
@@ -1739,12 +2135,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 		// Decode directory handle
 		dirHandle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &dirHandle.Handle); err != nil {
+		handleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		dirHandle.Handle = handleVal
 
 		// Decode directory name
 		name, err := xdrDecodeString(body)
@@ -1791,33 +2189,60 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		}
 
 		// Check if the target is really a directory
-		targetPath := node.path + "/" + name
+		targetPath := path.Join(node.path, name)
 		targetInfo, err := h.server.handler.fs.Stat(targetPath)
 		if err != nil {
+			// Return error with wcc_data (RFC 1813 RMDIR3resfail)
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			// dir_wcc: wcc_data
+			xdrEncodeUint32(&buf, 1) // pre_op_attr: attributes_follow = TRUE
+			encodeWccAttr(&buf, dirPreAttrs)
+			xdrEncodeUint32(&buf, 1) // post_op_attr: attributes_follow = TRUE
+			encodeFileAttributes(&buf, dirPreAttrs) // same as pre since no change
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
-		
+
 		if !targetInfo.IsDir() {
+			// Return error with wcc_data (RFC 1813 RMDIR3resfail)
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, NFSERR_NOTDIR)
+			// dir_wcc: wcc_data
+			xdrEncodeUint32(&buf, 1) // pre_op_attr: attributes_follow = TRUE
+			encodeWccAttr(&buf, dirPreAttrs)
+			xdrEncodeUint32(&buf, 1) // post_op_attr: attributes_follow = TRUE
+			encodeFileAttributes(&buf, dirPreAttrs) // same as pre since no change
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
 
 		// Try to remove the directory
 		if err := h.server.handler.fs.Remove(targetPath); err != nil {
-			var buf bytes.Buffer
+			// Get post-operation directory attributes
+			dirPostAttrs, _ := h.server.handler.GetAttr(node)
+			if dirPostAttrs == nil {
+				dirPostAttrs = dirPreAttrs
+			}
+
+			var errCode uint32
 			if os.IsPermission(err) {
-				xdrEncodeUint32(&buf, NFSERR_ACCES)
+				errCode = NFSERR_ACCES
 			} else if os.IsNotExist(err) {
-				xdrEncodeUint32(&buf, NFSERR_NOENT)
+				errCode = NFSERR_NOENT
 			} else {
 				// Directory might not be empty
-				xdrEncodeUint32(&buf, NFSERR_NOTEMPTY)
+				errCode = NFSERR_NOTEMPTY
 			}
+
+			// Return error with wcc_data (RFC 1813 RMDIR3resfail)
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, errCode)
+			// dir_wcc: wcc_data
+			xdrEncodeUint32(&buf, 1) // pre_op_attr: attributes_follow = TRUE
+			encodeWccAttr(&buf, dirPreAttrs)
+			xdrEncodeUint32(&buf, 1) // post_op_attr: attributes_follow = TRUE
+			encodeFileAttributes(&buf, dirPostAttrs)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
@@ -1828,18 +2253,19 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return nil, err
 		}
 
-		// Encode response
+		// Encode response (RFC 1813 RMDIR3resok)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		
-		// Encode pre-operation directory attributes (has attributes)
-		xdrEncodeUint32(&buf, 1)
-		if err := encodeFileAttributes(&buf, dirPreAttrs); err != nil {
+
+		// wcc_data: pre_op_attr + post_op_attr
+		// pre_op_attr: attributes_follow + wcc_attr (NOT fattr3!)
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeWccAttr(&buf, dirPreAttrs); err != nil {
 			return nil, err
 		}
-		
-		// Encode post-operation directory attributes (has attributes)
-		xdrEncodeUint32(&buf, 1)
+
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, dirPostAttrs); err != nil {
 			return nil, err
 		}
@@ -1857,12 +2283,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 		// Decode source directory handle
 		srcDirHandle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &srcDirHandle.Handle); err != nil {
+		srcHandleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		srcDirHandle.Handle = srcHandleVal
 
 		// Decode source filename
 		srcName, err := xdrDecodeString(body)
@@ -1875,12 +2303,14 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 		// Decode destination directory handle
 		dstDirHandle := FileHandle{}
-		if err := binary.Read(body, binary.BigEndian, &dstDirHandle.Handle); err != nil {
+		dstHandleVal, err := xdrDecodeFileHandle(body)
+		if err != nil {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, GARBAGE_ARGS)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
+		dstDirHandle.Handle = dstHandleVal
 
 		// Decode destination filename
 		dstName, err := xdrDecodeString(body)
@@ -1939,8 +2369,32 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 		// Perform the rename
 		if err := h.server.handler.Rename(srcDir, srcName, dstDir, dstName); err != nil {
+			// Get post-operation directory attributes
+			srcDirPostAttrs, _ := h.server.handler.GetAttr(srcDir)
+			if srcDirPostAttrs == nil {
+				srcDirPostAttrs = srcDirPreAttrs
+			}
+			dstDirPostAttrs, _ := h.server.handler.GetAttr(dstDir)
+			if dstDirPostAttrs == nil {
+				dstDirPostAttrs = dstDirPreAttrs
+			}
+
+			// Return error with wcc_data (RFC 1813 RENAME3resfail)
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, mapError(err))
+
+			// fromdir_wcc: wcc_data for source directory
+			xdrEncodeUint32(&buf, 1) // pre_op_attr: attributes_follow = TRUE
+			encodeWccAttr(&buf, srcDirPreAttrs)
+			xdrEncodeUint32(&buf, 1) // post_op_attr: attributes_follow = TRUE
+			encodeFileAttributes(&buf, srcDirPostAttrs)
+
+			// todir_wcc: wcc_data for destination directory
+			xdrEncodeUint32(&buf, 1) // pre_op_attr: attributes_follow = TRUE
+			encodeWccAttr(&buf, dstDirPreAttrs)
+			xdrEncodeUint32(&buf, 1) // post_op_attr: attributes_follow = TRUE
+			encodeFileAttributes(&buf, dstDirPostAttrs)
+
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
@@ -1957,30 +2411,30 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			return nil, err
 		}
 
-		// Encode response
+		// Encode response (RFC 1813 RENAME3resok)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFS_OK)
-		
-		// Encode source pre-operation directory attributes (has attributes)
-		xdrEncodeUint32(&buf, 1)
-		if err := encodeFileAttributes(&buf, srcDirPreAttrs); err != nil {
+
+		// fromdir_wcc: wcc_data for source directory
+		// pre_op_attr: attributes_follow + wcc_attr
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeWccAttr(&buf, srcDirPreAttrs); err != nil {
 			return nil, err
 		}
-		
-		// Encode source post-operation directory attributes (has attributes)
-		xdrEncodeUint32(&buf, 1)
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, srcDirPostAttrs); err != nil {
 			return nil, err
 		}
-		
-		// Encode destination pre-operation directory attributes (has attributes)
-		xdrEncodeUint32(&buf, 1)
-		if err := encodeFileAttributes(&buf, dstDirPreAttrs); err != nil {
+
+		// todir_wcc: wcc_data for destination directory
+		// pre_op_attr: attributes_follow + wcc_attr
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
+		if err := encodeWccAttr(&buf, dstDirPreAttrs); err != nil {
 			return nil, err
 		}
-		
-		// Encode destination post-operation directory attributes (has attributes)
-		xdrEncodeUint32(&buf, 1)
+		// post_op_attr: attributes_follow + fattr3
+		xdrEncodeUint32(&buf, 1) // attributes_follow = TRUE
 		if err := encodeFileAttributes(&buf, dstDirPostAttrs); err != nil {
 			return nil, err
 		}
@@ -2001,7 +2455,7 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		return reply, nil
 
 	default:
-		reply.Status = PROC_UNAVAIL
+		reply.AcceptStatus = PROC_UNAVAIL
 		return reply, nil
 	}
 }

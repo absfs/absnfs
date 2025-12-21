@@ -96,8 +96,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
-		if result.Status != PROG_MISMATCH {
-			t.Errorf("Expected PROG_MISMATCH status, got %v", result.Status)
+		if result.AcceptStatus != PROG_MISMATCH {
+			t.Errorf("Expected PROG_MISMATCH AcceptStatus, got %v", result.AcceptStatus)
 		}
 	})
 
@@ -165,7 +165,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 
 		// Test read at offset 0
 		var buf bytes.Buffer
-		binary.Write(&buf, binary.BigEndian, handle)
+		xdrEncodeFileHandle(&buf, handle)               // Properly encode handle with length prefix
 		binary.Write(&buf, binary.BigEndian, uint64(0)) // offset
 		binary.Write(&buf, binary.BigEndian, uint32(4)) // count
 
@@ -191,7 +191,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 
 		// Test read beyond EOF
 		buf.Reset()
-		binary.Write(&buf, binary.BigEndian, handle)
+		xdrEncodeFileHandle(&buf, handle)                 // Properly encode handle with length prefix
 		binary.Write(&buf, binary.BigEndian, uint64(100)) // offset beyond EOF
 		binary.Write(&buf, binary.BigEndian, uint32(4))   // count
 
@@ -276,7 +276,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 
 		// Test write operation
 		var buf bytes.Buffer
-		binary.Write(&buf, binary.BigEndian, handle)
+		xdrEncodeFileHandle(&buf, handle)               // Properly encode handle with length prefix
 		binary.Write(&buf, binary.BigEndian, uint64(0)) // offset
 		binary.Write(&buf, binary.BigEndian, uint32(4)) // count
 		binary.Write(&buf, binary.BigEndian, uint32(1)) // stable
@@ -399,7 +399,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 
 		// Test setattr operation
 		var buf bytes.Buffer
-		binary.Write(&buf, binary.BigEndian, handle)
+		xdrEncodeFileHandle(&buf, handle)                  // Properly encode handle with length prefix
 		binary.Write(&buf, binary.BigEndian, uint32(1))    // Set mode
 		binary.Write(&buf, binary.BigEndian, uint32(0644)) // New mode
 		binary.Write(&buf, binary.BigEndian, uint32(1))    // Set uid
@@ -429,7 +429,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 
 		// Test invalid mode
 		buf.Reset()
-		binary.Write(&buf, binary.BigEndian, handle)
+		xdrEncodeFileHandle(&buf, handle)                    // Properly encode handle with length prefix
 		binary.Write(&buf, binary.BigEndian, uint32(1))      // Set mode
 		binary.Write(&buf, binary.BigEndian, uint32(0x8000)) // Invalid mode
 
@@ -497,8 +497,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 
 		// Test successful create operation
 		var buf bytes.Buffer
-		binary.Write(&buf, binary.BigEndian, dirHandle)
-		
+		xdrEncodeFileHandle(&buf, dirHandle) // Properly encode handle with length prefix
+
 		// Write filename
 		filename := "newfile.txt"
 		binary.Write(&buf, binary.BigEndian, uint32(len(filename)))
@@ -509,9 +509,23 @@ func TestNFSOperationsErrors(t *testing.T) {
 			buf.Write(make([]byte, padding))
 		}
 
-		// Create mode and attributes
-		binary.Write(&buf, binary.BigEndian, uint32(0)) // Create mode
-		binary.Write(&buf, binary.BigEndian, uint32(0644)) // Mode
+		// createhow3 (UNCHECKED=0, GUARDED=1, EXCLUSIVE=2)
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // UNCHECKED
+
+		// sattr3 structure:
+		// set_mode (bool) + mode if true
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_mode = TRUE
+		binary.Write(&buf, binary.BigEndian, uint32(0644)) // mode
+		// set_uid (bool)
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_uid = FALSE
+		// set_gid (bool)
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_gid = FALSE
+		// set_size (bool)
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_size = FALSE
+		// set_atime (0=DONT_CHANGE, 1=SET_TO_SERVER_TIME, 2=SET_TO_CLIENT_TIME)
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // DONT_CHANGE
+		// set_mtime (0=DONT_CHANGE, 1=SET_TO_SERVER_TIME, 2=SET_TO_CLIENT_TIME)
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // DONT_CHANGE
 
 		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
@@ -549,8 +563,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		
 		// Test with invalid mode
 		buf.Reset()
-		binary.Write(&buf, binary.BigEndian, dirHandle)
-		
+		xdrEncodeFileHandle(&buf, dirHandle) // Properly encode handle with length prefix
+
 		// Write filename
 		filename = "invalidmode.txt"
 		binary.Write(&buf, binary.BigEndian, uint32(len(filename)))
@@ -561,9 +575,17 @@ func TestNFSOperationsErrors(t *testing.T) {
 			buf.Write(make([]byte, padding))
 		}
 
-		// Create mode and invalid attributes
-		binary.Write(&buf, binary.BigEndian, uint32(0)) // Create mode
-		binary.Write(&buf, binary.BigEndian, uint32(0x8000)) // Invalid mode
+		// createhow3 (UNCHECKED=0, GUARDED=1, EXCLUSIVE=2)
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // UNCHECKED
+
+		// sattr3 structure with invalid mode:
+		binary.Write(&buf, binary.BigEndian, uint32(1))       // set_mode = TRUE
+		binary.Write(&buf, binary.BigEndian, uint32(0x8000))  // Invalid mode
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_uid = FALSE
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_gid = FALSE
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_size = FALSE
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_atime = DONT_CHANGE
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mtime = DONT_CHANGE
 
 		authCtx = &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
@@ -628,8 +650,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 
 		// Test successful mkdir operation
 		var buf bytes.Buffer
-		binary.Write(&buf, binary.BigEndian, dirHandle)
-		
+		xdrEncodeFileHandle(&buf, dirHandle) // Properly encode handle with length prefix
+
 		// Write dirname
 		dirname := "newdir"
 		binary.Write(&buf, binary.BigEndian, uint32(len(dirname)))
@@ -682,8 +704,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		
 		// Test with invalid mode
 		buf.Reset()
-		binary.Write(&buf, binary.BigEndian, dirHandle)
-		
+		xdrEncodeFileHandle(&buf, dirHandle) // Properly encode handle with length prefix
+
 		// Write dirname
 		dirname = "invalidmode"
 		binary.Write(&buf, binary.BigEndian, uint32(len(dirname)))
@@ -760,7 +782,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 
 		// Test successful symlink operation
 		var buf bytes.Buffer
-		binary.Write(&buf, binary.BigEndian, dirHandle)
+		xdrEncodeFileHandle(&buf, dirHandle) // Properly encode handle with length prefix
 
 		// Write symlink name
 		symlinkName := "testlink"
@@ -814,7 +836,10 @@ func TestNFSOperationsErrors(t *testing.T) {
 		}
 		info, err := symlinkFS.Lstat("/testdir/testlink")
 		if err != nil {
-			t.Errorf("Symlink was not created: %v", err)
+			t.Fatalf("Symlink was not created: %v", err)
+		}
+		if info == nil {
+			t.Fatalf("Lstat returned nil info")
 		}
 		if info.Mode()&os.ModeSymlink == 0 {
 			t.Errorf("Created path is not a symlink")
@@ -822,7 +847,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 
 		// Test with empty target (should fail)
 		buf.Reset()
-		binary.Write(&buf, binary.BigEndian, dirHandle)
+		xdrEncodeFileHandle(&buf, dirHandle) // Properly encode handle with length prefix
 
 		symlinkName = "badlink"
 		binary.Write(&buf, binary.BigEndian, uint32(len(symlinkName)))
@@ -912,7 +937,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 
 		// Test successful readlink operation
 		var buf bytes.Buffer
-		binary.Write(&buf, binary.BigEndian, symlinkHandle)
+		xdrEncodeFileHandle(&buf, symlinkHandle) // Properly encode handle with length prefix
 
 		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
@@ -942,9 +967,10 @@ func TestNFSOperationsErrors(t *testing.T) {
 			}
 
 			if hasAttrs == 1 {
-				// Skip file attributes: mode, nlink, uid, gid (4 bytes each) + size, mtime, atime (8 bytes each)
-				// Total: 4*4 + 8*3 = 40 bytes
-				attrBuf := make([]byte, 40)
+				// Skip file attributes (RFC 1813 fattr3 structure):
+				// ftype(4) + mode(4) + nlink(4) + uid(4) + gid(4) + size(8) + used(8) +
+				// rdev(8) + fsid(8) + fileid(8) + atime(8) + mtime(8) + ctime(8) = 84 bytes
+				attrBuf := make([]byte, 84)
 				if _, err := r.Read(attrBuf); err != nil {
 					t.Fatalf("Failed to read attributes: %v", err)
 				}
@@ -975,7 +1001,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		fileHandle := server.handler.fileMap.Allocate(fileNode)
 
 		buf.Reset()
-		binary.Write(&buf, binary.BigEndian, fileHandle)
+		xdrEncodeFileHandle(&buf, fileHandle) // Properly encode handle with length prefix
 
 		authCtx = &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)

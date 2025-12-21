@@ -7,10 +7,11 @@ import (
 )
 
 // handleMountCall handles mount protocol operations
+// Supports both MOUNT v1 and v3 for compatibility with different clients
 func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
-	// Check version first
-	if call.Header.Version != MOUNT_V3 {
-		reply.Status = PROG_MISMATCH
+	// Check version - accept v1 or v3
+	if call.Header.Version != 1 && call.Header.Version != MOUNT_V3 {
+		reply.AcceptStatus = PROG_MISMATCH
 		return reply, nil
 	}
 
@@ -25,7 +26,6 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 				var buf bytes.Buffer
 				xdrEncodeUint32(&buf, NFSERR_DELAY) // Server is busy
 				reply.Data = buf.Bytes()
-				reply.Status = MSG_ACCEPTED
 
 				// Record rate limit exceeded
 				if h.server.handler.metrics != nil {
@@ -38,60 +38,76 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 
 		mountPath, err := xdrDecodeString(body)
 		if err != nil {
-			var buf bytes.Buffer
-			xdrEncodeUint32(&buf, GARBAGE_ARGS)
-			reply.Data = buf.Bytes()
-			reply.Status = GARBAGE_ARGS
+			reply.AcceptStatus = GARBAGE_ARGS
 			return reply, nil
 		}
 
 		// Create mount point with timeout
 		node, err := h.server.handler.Lookup(mountPath)
 		if err != nil {
+			// MNT3 response: fhs_status (MNT3ERR_NOENT = 2)
 			var buf bytes.Buffer
-			xdrEncodeUint32(&buf, NFSERR_NOENT)
+			xdrEncodeUint32(&buf, 2) // MNT3ERR_NOENT
 			reply.Data = buf.Bytes()
-			reply.Status = MSG_ACCEPTED
 			return reply, nil
 		}
 
 		// Allocate file handle for root
 		handle := h.server.handler.fileMap.Allocate(node)
+		if h.server.options.Debug {
+			h.server.logger.Printf("MOUNT: Allocated handle %d for path '%s', fileMap count: %d", handle, mountPath, h.server.handler.fileMap.Count())
+		}
 
-		// Encode response
+		// Encode MNT3 response
+		// fhs_status = 0 (MNT3_OK)
+		// fhandle3 (variable length opaque handle)
+		// auth_flavors (list of supported auth flavors)
 		var buf bytes.Buffer
-		xdrEncodeUint32(&buf, NFS_OK)
+		xdrEncodeUint32(&buf, 0) // MNT3_OK
+		// fhandle3 is opaque<FHSIZE3> - write length + data
+		xdrEncodeUint32(&buf, 8) // handle size
 		binary.Write(&buf, binary.BigEndian, handle)
+		// auth_flavors - array of supported authentication flavors
+		xdrEncodeUint32(&buf, 1)        // 1 flavor
+		xdrEncodeUint32(&buf, AUTH_SYS) // AUTH_SYS
 		reply.Data = buf.Bytes()
 		return reply, nil
 
 	case 2: // DUMP
 		// Return empty list of mounts
 		var buf bytes.Buffer
-		xdrEncodeUint32(&buf, 0) // No entries
+		xdrEncodeUint32(&buf, 0) // No entries (NULL pointer in linked list)
 		reply.Data = buf.Bytes()
 		return reply, nil
 
 	case 3: // UMNT
-		unmountPath, err := xdrDecodeString(body)
+		_, err := xdrDecodeString(body)
 		if err != nil {
-			var buf bytes.Buffer
-			xdrEncodeUint32(&buf, GARBAGE_ARGS)
-			reply.Data = buf.Bytes()
-			reply.Status = GARBAGE_ARGS
+			reply.AcceptStatus = GARBAGE_ARGS
 			return reply, nil
 		}
 
-		// Find and release any file handles for this path
-		// Note: In a real implementation, we would track mount points separately
-		// Reduced logging - only log in debug mode
-		if h.server.options.Debug {
-			h.server.logger.Printf("Unmounting %s", unmountPath)
-		}
+		// UMNT has no return value
+		return reply, nil
+
+	case 4: // UMNTALL
+		// No arguments, no return value
+		return reply, nil
+
+	case 5: // EXPORT
+		// Return list of exported filesystems
+		// Each entry: ex_dir (string), ex_groups (list)
+		// We export "/" to all
+		var buf bytes.Buffer
+		xdrEncodeUint32(&buf, 1)    // Has entry (1 = true)
+		xdrEncodeString(&buf, "/")  // Export path
+		xdrEncodeUint32(&buf, 0)    // No group restrictions (null pointer)
+		xdrEncodeUint32(&buf, 0)    // End of list
+		reply.Data = buf.Bytes()
 		return reply, nil
 
 	default:
-		reply.Status = PROC_UNAVAIL
+		reply.AcceptStatus = PROC_UNAVAIL
 		return reply, nil
 	}
 }

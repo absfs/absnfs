@@ -89,27 +89,27 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 
 	t.Run("invalid file handles", func(t *testing.T) {
 		invalidHandle := uint64(999999) // Non-existent handle
-		
+
 		testCases := []struct {
 			name      string
 			procedure uint32
 			setupBuf  func() *bytes.Buffer
 		}{
 			{
-				"GETATTR invalid handle", 
+				"GETATTR invalid handle",
 				NFSPROC3_GETATTR,
 				func() *bytes.Buffer {
 					var buf bytes.Buffer
-					binary.Write(&buf, binary.BigEndian, invalidHandle)
+					xdrEncodeFileHandle(&buf, invalidHandle) // Properly encode handle
 					return &buf
 				},
 			},
 			{
-				"SETATTR invalid handle", 
+				"SETATTR invalid handle",
 				NFSPROC3_SETATTR,
 				func() *bytes.Buffer {
 					var buf bytes.Buffer
-					binary.Write(&buf, binary.BigEndian, invalidHandle)
+					xdrEncodeFileHandle(&buf, invalidHandle) // Properly encode handle
 					// Add setmode flag
 					binary.Write(&buf, binary.BigEndian, uint32(1))
 					binary.Write(&buf, binary.BigEndian, uint32(0644))
@@ -121,27 +121,27 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				},
 			},
 			{
-				"READ invalid handle", 
+				"READ invalid handle",
 				NFSPROC3_READ,
 				func() *bytes.Buffer {
 					var buf bytes.Buffer
-					binary.Write(&buf, binary.BigEndian, invalidHandle)
+					xdrEncodeFileHandle(&buf, invalidHandle) // Properly encode handle
 					binary.Write(&buf, binary.BigEndian, uint64(0))  // offset
 					binary.Write(&buf, binary.BigEndian, uint32(10)) // count
 					return &buf
 				},
 			},
 			{
-				"WRITE invalid handle", 
+				"WRITE invalid handle",
 				NFSPROC3_WRITE,
 				func() *bytes.Buffer {
 					var buf bytes.Buffer
-					binary.Write(&buf, binary.BigEndian, invalidHandle)
-					binary.Write(&buf, binary.BigEndian, uint64(0))   // offset
-					binary.Write(&buf, binary.BigEndian, uint32(5))   // count
-					binary.Write(&buf, binary.BigEndian, uint32(1))   // stable
-					binary.Write(&buf, binary.BigEndian, uint32(5))   // data length
-					buf.Write([]byte("hello"))                        // data
+					xdrEncodeFileHandle(&buf, invalidHandle) // Properly encode handle
+					binary.Write(&buf, binary.BigEndian, uint64(0))  // offset
+					binary.Write(&buf, binary.BigEndian, uint32(5))  // count
+					binary.Write(&buf, binary.BigEndian, uint32(1))  // stable
+					binary.Write(&buf, binary.BigEndian, uint32(5))  // data length
+					buf.Write([]byte("hello"))                       // data
 					return &buf
 				},
 			},
@@ -190,7 +190,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 			}
 
 			var buf bytes.Buffer
-			binary.Write(&buf, binary.BigEndian, fileHandle) // Use file handle instead of dir handle
+			xdrEncodeFileHandle(&buf, fileHandle) // Use file handle instead of dir handle (properly encoded)
 			xdrEncodeString(&buf, "some_name")
 
 			reply := &RPCReply{}
@@ -268,7 +268,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 			}
 
 			var buf bytes.Buffer
-			binary.Write(&buf, binary.BigEndian, fileHandle)
+			xdrEncodeFileHandle(&buf, fileHandle) // Properly encode handle
 			// Set mode flag
 			binary.Write(&buf, binary.BigEndian, uint32(1))
 			// Set invalid mode (S_IFMT bit set)
@@ -314,8 +314,8 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				t.Fatalf("handleNFSCall failed: %v", err)
 			}
 
-			if result.Status != PROG_MISMATCH {
-				t.Errorf("Expected PROG_MISMATCH status, got %d", result.Status)
+			if result.AcceptStatus != PROG_MISMATCH {
+				t.Errorf("Expected PROG_MISMATCH AcceptStatus, got %d", result.AcceptStatus)
 			}
 		})
 		
