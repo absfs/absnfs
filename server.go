@@ -1,6 +1,7 @@
 package absnfs
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -16,13 +17,16 @@ import (
 
 // ServerOptions defines the configuration for the NFS server
 type ServerOptions struct {
-	Name     string // Server name
-	UID      uint32 // Server UID
-	GID      uint32 // Server GID
-	ReadOnly bool   // Read-only mode
-	Port     int    // Port to listen on (0 = random port, default NFS port is 2049)
-	Hostname string // Hostname to bind to
-	Debug    bool   // Enable debug logging
+	Name          string // Server name
+	UID           uint32 // Server UID
+	GID           uint32 // Server GID
+	ReadOnly      bool   // Read-only mode
+	Port          int    // Port to listen on (0 = random port, default NFS port is 2049)
+	MountPort     int    // Port for mount daemon (0 = same as NFS port, 635 = standard mountd port)
+	Hostname      string // Hostname to bind to
+	Debug         bool   // Enable debug logging
+	UsePortmapper bool   // Whether to start portmapper service (requires root for port 111)
+	UseRecordMarking bool // Use RPC record marking (required for standard NFS clients)
 }
 
 // connectionState tracks the state of an active connection
@@ -36,6 +40,8 @@ type Server struct {
 	options        ServerOptions
 	handler        *AbsfsNFS
 	listener       net.Listener
+	mountListener  net.Listener  // Separate listener for mount daemon
+	portmapper     *Portmapper   // Portmapper service
 	logger         *log.Logger
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -381,6 +387,58 @@ func (s *Server) Listen() error {
 	return nil
 }
 
+// StartWithPortmapper starts the NFS server with portmapper service.
+// This is required for standard NFS clients that expect to query portmapper.
+// Note: Portmapper requires root/administrator privileges to bind to port 111.
+func (s *Server) StartWithPortmapper() error {
+	if s.handler == nil {
+		return fmt.Errorf("no handler set")
+	}
+
+	// Enable record marking for standard NFS clients
+	s.options.UseRecordMarking = true
+
+	// Start portmapper
+	s.portmapper = NewPortmapper()
+	s.portmapper.SetDebug(s.options.Debug)
+	if err := s.portmapper.Start(); err != nil {
+		return fmt.Errorf("failed to start portmapper: %w", err)
+	}
+
+	// Start the NFS server
+	if err := s.Listen(); err != nil {
+		s.portmapper.Stop()
+		return err
+	}
+
+	// Register services with portmapper
+	nfsPort := uint32(s.options.Port)
+	if nfsPort == 0 {
+		nfsPort = 2049
+	}
+
+	// Register NFS service
+	s.portmapper.RegisterService(NFS_PROGRAM, NFS_V3, IPPROTO_TCP, nfsPort)
+
+	// Register MOUNT service (same port in this implementation)
+	// Register for both v1 and v3 since some clients (like showmount) use v1
+	mountPort := uint32(s.options.MountPort)
+	if mountPort == 0 {
+		mountPort = nfsPort // Use NFS port for mount if not specified
+	}
+	s.portmapper.RegisterService(MOUNT_PROGRAM, 1, IPPROTO_TCP, mountPort) // v1
+	s.portmapper.RegisterService(MOUNT_PROGRAM, MOUNT_V3, IPPROTO_TCP, mountPort) // v3
+
+	s.logger.Printf("NFS server started with portmapper (NFS port: %d, Mount port: %d)", nfsPort, mountPort)
+
+	return nil
+}
+
+// GetPort returns the port the server is listening on
+func (s *Server) GetPort() int {
+	return s.options.Port
+}
+
 // isAddrInUse checks if the error is "address already in use"
 func isAddrInUse(err error) bool {
 	if err == nil {
@@ -516,7 +574,11 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 			go func() {
 				defer s.wg.Done()
 				defer s.unregisterConnection(conn) // Ensure connection is unregistered when done
-				s.handleConnection(conn, procHandler)
+				if s.options.UseRecordMarking {
+					s.handleConnectionWithRecordMarking(conn, procHandler)
+				} else {
+					s.handleConnection(conn, procHandler)
+				}
 			}()
 		}
 	}
@@ -675,7 +737,7 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 }
 
 func (s *Server) readRPCCall(conn net.Conn) (*RPCCall, io.Reader, error) {
-	// Read the RPC call
+	// Read the RPC call (without record marking - legacy mode)
 	call, err := DecodeRPCCall(conn)
 	if err != nil {
 		return nil, nil, err
@@ -689,15 +751,197 @@ func (s *Server) writeRPCReply(conn net.Conn, reply *RPCReply) error {
 	return EncodeRPCReply(conn, reply)
 }
 
+// readRPCCallWithRecordMarking reads an RPC call with record marking framing
+func (s *Server) readRPCCallWithRecordMarking(rmConn *RecordMarkingConn) (*RPCCall, []byte, error) {
+	// Read complete record with framing
+	data, err := rmConn.ReadRecord()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Decode the RPC call from the record data
+	reader := bytes.NewReader(data)
+	call, err := DecodeRPCCall(reader)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Return remaining bytes as the body
+	remaining := data[len(data)-reader.Len():]
+	return call, remaining, nil
+}
+
+// writeRPCReplyWithRecordMarking writes an RPC reply with record marking framing
+func (s *Server) writeRPCReplyWithRecordMarking(rmConn *RecordMarkingConn, reply *RPCReply) error {
+	// Encode the reply to a buffer
+	var buf bytes.Buffer
+	if err := EncodeRPCReply(&buf, reply); err != nil {
+		return err
+	}
+
+	// Write with record marking
+	return rmConn.WriteRecord(buf.Bytes())
+}
+
+// handleConnectionWithRecordMarking handles a connection with RFC 1831 record marking
+func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *NFSProcedureHandler) {
+	defer conn.Close()
+
+	const (
+		readTimeout  = 30 * time.Second
+		writeTimeout = 30 * time.Second
+	)
+
+	// Create record marking wrapper
+	rmConn := NewRecordMarkingConn(conn, conn)
+
+	// Generate a unique connection ID for per-connection rate limiting
+	connID := fmt.Sprintf("%p", conn)
+	defer func() {
+		if s.handler != nil && s.handler.rateLimiter != nil {
+			s.handler.rateLimiter.CleanupConnection(connID)
+		}
+	}()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+			if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+				return
+			}
+
+			// Read RPC call with record marking
+			call, bodyData, readErr := s.readRPCCallWithRecordMarking(rmConn)
+			if readErr != nil {
+				// Always log in debug mode for troubleshooting
+				if s.options.Debug {
+					s.logger.Printf("RPC read error: %v (EOF=%v, timeout=%v, reset=%v)",
+						readErr, readErr == io.EOF, isTimeoutError(readErr), isConnectionResetError(readErr))
+				}
+				return
+			}
+
+			if s.options.Debug {
+				s.logger.Printf("Received RPC call: prog=%d vers=%d proc=%d",
+					call.Header.Program, call.Header.Version, call.Header.Procedure)
+			}
+
+			s.updateConnectionActivity(conn)
+
+			// Extract client IP and port for authentication
+			authCtx := &AuthContext{
+				Credential: &call.Credential,
+			}
+			if remoteAddr := conn.RemoteAddr(); remoteAddr != nil {
+				if tcpAddr, ok := remoteAddr.(*net.TCPAddr); ok {
+					authCtx.ClientIP = tcpAddr.IP.String()
+					authCtx.ClientPort = tcpAddr.Port
+				} else {
+					addrStr := remoteAddr.String()
+					host, port, err := net.SplitHostPort(addrStr)
+					if err == nil {
+						authCtx.ClientIP = host
+						if p, err := net.LookupPort("tcp", port); err == nil {
+							authCtx.ClientPort = p
+						}
+					}
+				}
+			}
+
+			// Check rate limit
+			if s.handler != nil && s.handler.rateLimiter != nil && s.handler.options.EnableRateLimiting {
+				if !s.handler.rateLimiter.AllowRequest(authCtx.ClientIP, connID) {
+					reply := &RPCReply{
+						Header: call.Header,
+						Status: MSG_DENIED,
+						Verifier: RPCVerifier{
+							Flavor: 0,
+							Body:   []byte{},
+						},
+					}
+					if s.options.Debug {
+						s.logger.Printf("Rate limit exceeded for client %s", authCtx.ClientIP)
+					}
+					if s.handler.metrics != nil {
+						s.handler.metrics.RecordRateLimitExceeded()
+					}
+					if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err == nil {
+						s.writeRPCReplyWithRecordMarking(rmConn, reply)
+					}
+					continue
+				}
+			}
+
+			// Create a reader from the body data
+			bodyReader := bytes.NewReader(bodyData)
+
+			// Handle the call
+			var reply *RPCReply
+			var handleErr error
+
+			if s.handler != nil && s.handler.workerPool != nil {
+				result := s.handler.ExecuteWithWorker(func() interface{} {
+					r, e := procHandler.HandleCall(call, bodyReader, authCtx)
+					return struct {
+						Reply *RPCReply
+						Err   error
+					}{r, e}
+				})
+				typedResult := result.(struct {
+					Reply *RPCReply
+					Err   error
+				})
+				reply, handleErr = typedResult.Reply, typedResult.Err
+			} else {
+				reply, handleErr = procHandler.HandleCall(call, bodyReader, authCtx)
+			}
+
+			if handleErr != nil {
+				if s.options.Debug {
+					s.logger.Printf("handle error: %v", handleErr)
+				}
+				continue
+			}
+
+			if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+				return
+			}
+
+			if writeErr := s.writeRPCReplyWithRecordMarking(rmConn, reply); writeErr != nil {
+				if !isTimeoutError(writeErr) && !isConnectionResetError(writeErr) {
+					if s.options.Debug {
+						s.logger.Printf("write error: %v", writeErr)
+					}
+				}
+				return
+			}
+
+			s.updateConnectionActivity(conn)
+		}
+	}
+}
+
 // Stop stops the NFS server
 func (s *Server) Stop() error {
 	s.cancel() // Signal all goroutines to stop
+
+	// Stop portmapper if running
+	if s.portmapper != nil {
+		s.portmapper.Stop()
+	}
 
 	// Close listener to stop accepting new connections
 	if s.listener != nil {
 		s.listener.Close()
 	}
-	
+
+	// Close mount listener if separate
+	if s.mountListener != nil {
+		s.mountListener.Close()
+	}
+
 	// Close all active connections
 	s.closeAllConnections()
 
