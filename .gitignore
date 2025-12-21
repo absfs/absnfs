@@ -50,3 +50,8 @@ WorkingChangelog.md
 .claude/
 CLAUDE.md
 .project_meta/
+
+# Compiled example binaries
+examples/*/composed-workspace
+examples/*/fusion-drive
+examples/*/*-server
