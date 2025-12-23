@@ -1,6 +1,7 @@
 package absnfs
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"testing"
@@ -445,6 +446,265 @@ func TestAbsfsNFSMetricsAPI(t *testing.T) {
 		healthy := nfs.IsHealthy()
 		if !healthy {
 			t.Error("Expected healthy when no metrics collector")
+		}
+	})
+}
+
+// Tests for encodeFileAttributes with all file types
+func TestEncodeFileAttributesAllTypes(t *testing.T) {
+	now := time.Now()
+
+	t.Run("block device", func(t *testing.T) {
+		attrs := &NFSAttrs{
+			Mode: os.ModeDevice | os.FileMode(0644),
+			Size: 0,
+		}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
+
+		var buf bytes.Buffer
+		err := encodeFileAttributes(&buf, attrs)
+		if err != nil {
+			t.Fatalf("Failed to encode block device: %v", err)
+		}
+		if buf.Len() != 84 {
+			t.Errorf("Expected 84 bytes, got %d", buf.Len())
+		}
+	})
+
+	t.Run("character device", func(t *testing.T) {
+		attrs := &NFSAttrs{
+			Mode: os.ModeDevice | os.ModeCharDevice | os.FileMode(0644),
+			Size: 0,
+		}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
+
+		var buf bytes.Buffer
+		err := encodeFileAttributes(&buf, attrs)
+		if err != nil {
+			t.Fatalf("Failed to encode char device: %v", err)
+		}
+	})
+
+	t.Run("socket", func(t *testing.T) {
+		attrs := &NFSAttrs{
+			Mode: os.ModeSocket | os.FileMode(0644),
+			Size: 0,
+		}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
+
+		var buf bytes.Buffer
+		err := encodeFileAttributes(&buf, attrs)
+		if err != nil {
+			t.Fatalf("Failed to encode socket: %v", err)
+		}
+	})
+
+	t.Run("named pipe", func(t *testing.T) {
+		attrs := &NFSAttrs{
+			Mode: os.ModeNamedPipe | os.FileMode(0644),
+			Size: 0,
+		}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
+
+		var buf bytes.Buffer
+		err := encodeFileAttributes(&buf, attrs)
+		if err != nil {
+			t.Fatalf("Failed to encode named pipe: %v", err)
+		}
+	})
+}
+
+// Tests for encodeWccAttr
+func TestEncodeWccAttrCoverage(t *testing.T) {
+	now := time.Now()
+
+	t.Run("successful encoding", func(t *testing.T) {
+		attrs := &NFSAttrs{
+			Mode: os.FileMode(0644),
+			Size: 1024,
+		}
+		attrs.SetMtime(now)
+
+		var buf bytes.Buffer
+		err := encodeWccAttr(&buf, attrs)
+		if err != nil {
+			t.Fatalf("Failed to encode wcc attr: %v", err)
+		}
+		// Size: 8 (size) + 4+4 (mtime) + 4+4 (ctime) = 24 bytes
+		if buf.Len() != 24 {
+			t.Errorf("Expected 24 bytes, got %d", buf.Len())
+		}
+	})
+
+	t.Run("error on write", func(t *testing.T) {
+		attrs := &NFSAttrs{
+			Size: 1024,
+		}
+		attrs.SetMtime(now)
+
+		fw := &wccFailingWriter{failAfter: 0}
+		err := encodeWccAttr(fw, attrs)
+		if err == nil {
+			t.Error("Expected error from failing writer")
+		}
+	})
+}
+
+// wccFailingWriter fails after specified number of writes (for wcc tests)
+type wccFailingWriter struct {
+	writes    int
+	failAfter int
+}
+
+func (w *wccFailingWriter) Write(p []byte) (n int, err error) {
+	if w.writes >= w.failAfter {
+		return 0, errors.New("write failed")
+	}
+	w.writes++
+	return len(p), nil
+}
+
+// Tests for NewDirCache with edge cases
+func TestNewDirCacheCoverage(t *testing.T) {
+	t.Run("default values for zero inputs", func(t *testing.T) {
+		cache := NewDirCache(0, 0, 0)
+		if cache == nil {
+			t.Fatal("Expected non-nil cache")
+		}
+		// Defaults should be applied
+		if cache.maxEntries <= 0 {
+			t.Error("Expected positive maxEntries default")
+		}
+		if cache.maxDirSize <= 0 {
+			t.Error("Expected positive maxDirSize default")
+		}
+		if cache.timeout <= 0 {
+			t.Error("Expected positive timeout default")
+		}
+	})
+
+	t.Run("negative values trigger defaults", func(t *testing.T) {
+		cache := NewDirCache(-1*time.Second, -1, -1)
+		if cache == nil {
+			t.Fatal("Expected non-nil cache")
+		}
+		if cache.maxEntries <= 0 {
+			t.Error("Expected positive maxEntries after negative input")
+		}
+	})
+
+	t.Run("custom values preserved", func(t *testing.T) {
+		cache := NewDirCache(30*time.Second, 500, 5000)
+		if cache.timeout != 30*time.Second {
+			t.Errorf("Expected 30s timeout, got %v", cache.timeout)
+		}
+		if cache.maxEntries != 500 {
+			t.Errorf("Expected 500 maxEntries, got %d", cache.maxEntries)
+		}
+		if cache.maxDirSize != 5000 {
+			t.Errorf("Expected 5000 maxDirSize, got %d", cache.maxDirSize)
+		}
+	})
+}
+
+// Tests for NewAttrCache with edge cases
+func TestNewAttrCacheCoverage(t *testing.T) {
+	t.Run("zero size uses default", func(t *testing.T) {
+		cache := NewAttrCache(5*time.Second, 0)
+		if cache == nil {
+			t.Fatal("Expected non-nil cache")
+		}
+		if cache.maxSize <= 0 {
+			t.Error("Expected positive maxSize default")
+		}
+	})
+
+	t.Run("negative size uses default", func(t *testing.T) {
+		cache := NewAttrCache(5*time.Second, -100)
+		if cache == nil {
+			t.Fatal("Expected non-nil cache")
+		}
+		if cache.maxSize <= 0 {
+			t.Error("Expected positive maxSize after negative input")
+		}
+	})
+
+	t.Run("positive values", func(t *testing.T) {
+		cache := NewAttrCache(10*time.Second, 500)
+		if cache == nil {
+			t.Fatal("Expected non-nil cache")
+		}
+		if cache.maxSize != 500 {
+			t.Errorf("Expected maxSize 500, got %d", cache.maxSize)
+		}
+	})
+}
+
+// Tests for AttrCache removeFromAccessLog
+func TestAttrCacheRemoveFromAccessLog(t *testing.T) {
+	t.Run("remove non-existent path", func(t *testing.T) {
+		cache := NewAttrCache(5*time.Second, 100)
+		// Should not panic
+		cache.removeFromAccessLog("/nonexistent")
+	})
+
+	t.Run("remove existing path", func(t *testing.T) {
+		cache := NewAttrCache(5*time.Second, 100)
+		attrs := &NFSAttrs{
+			Mode: os.FileMode(0644),
+			Size: 100,
+		}
+		cache.Put("/test/file", attrs)
+		cache.removeFromAccessLog("/test/file")
+		// Verify the element was removed from list
+		cache.mu.RLock()
+		cached, ok := cache.cache["/test/file"]
+		cache.mu.RUnlock()
+		if ok && cached.listElement != nil {
+			t.Error("Expected listElement to be nil after removeFromAccessLog")
+		}
+	})
+}
+
+// Tests for DirCache removeFromAccessList
+func TestDirCacheRemoveFromAccessList(t *testing.T) {
+	t.Run("remove non-existent path", func(t *testing.T) {
+		cache := NewDirCache(5*time.Second, 100, 1000)
+		// Should not panic
+		cache.removeFromAccessList("/nonexistent")
+	})
+
+	t.Run("remove existing path", func(t *testing.T) {
+		cache := NewDirCache(5*time.Second, 100, 1000)
+		cache.Put("/test/dir", []os.FileInfo{})
+		cache.removeFromAccessList("/test/dir")
+		// Verify the element was removed from list
+		cache.mu.RLock()
+		cached, ok := cache.entries["/test/dir"]
+		cache.mu.RUnlock()
+		if ok && cached.listElement != nil {
+			t.Error("Expected listElement to be nil after removeFromAccessList")
+		}
+	})
+}
+
+// Tests for DirCache Put with oversized directory
+func TestDirCachePutOversized(t *testing.T) {
+	t.Run("reject directory exceeding maxDirSize", func(t *testing.T) {
+		cache := NewDirCache(5*time.Second, 100, 10) // maxDirSize = 10
+
+		// Create more entries than allowed
+		entries := make([]os.FileInfo, 20)
+		cache.Put("/large/dir", entries)
+
+		// Should not be cached
+		_, found := cache.Get("/large/dir")
+		if found {
+			t.Error("Expected oversized directory to not be cached")
 		}
 	})
 }
