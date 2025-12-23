@@ -43,7 +43,7 @@ import (
 )
 
 // Version represents the current version of the absnfs package
-const Version = "0.1.0"
+const Version = "1.0.3"
 
 // NOTE: absfs.SymlinkFileSystem from the absfs package is now the standard interface.
 // The local SymlinkFileSystem interface below is kept for backwards compatibility
