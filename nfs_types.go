@@ -34,7 +34,6 @@ type FileHandle struct {
 	Handle uint64
 }
 
-
 // FileAttribute represents NFS file attributes
 type FileAttribute struct {
 	Type                uint32

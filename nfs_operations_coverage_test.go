@@ -32,7 +32,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 	t.Run("binary.Read errors", func(t *testing.T) {
 		// Test with invalid reader that always returns error
 		badReader := &badReader{}
-		
+
 		testCases := []struct {
 			name      string
 			procedure uint32
@@ -71,7 +71,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				if err != nil {
 					t.Fatalf("handleNFSCall should not return error for bad reader: %v", err)
 				}
-				
+
 				// Should get GARBAGE_ARGS in the reply
 				if data, ok := result.Data.([]byte); ok {
 					var status uint32
@@ -125,7 +125,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				NFSPROC3_READ,
 				func() *bytes.Buffer {
 					var buf bytes.Buffer
-					xdrEncodeFileHandle(&buf, invalidHandle) // Properly encode handle
+					xdrEncodeFileHandle(&buf, invalidHandle)         // Properly encode handle
 					binary.Write(&buf, binary.BigEndian, uint64(0))  // offset
 					binary.Write(&buf, binary.BigEndian, uint32(10)) // count
 					return &buf
@@ -136,12 +136,12 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				NFSPROC3_WRITE,
 				func() *bytes.Buffer {
 					var buf bytes.Buffer
-					xdrEncodeFileHandle(&buf, invalidHandle) // Properly encode handle
-					binary.Write(&buf, binary.BigEndian, uint64(0))  // offset
-					binary.Write(&buf, binary.BigEndian, uint32(5))  // count
-					binary.Write(&buf, binary.BigEndian, uint32(1))  // stable
-					binary.Write(&buf, binary.BigEndian, uint32(5))  // data length
-					buf.Write([]byte("hello"))                       // data
+					xdrEncodeFileHandle(&buf, invalidHandle)        // Properly encode handle
+					binary.Write(&buf, binary.BigEndian, uint64(0)) // offset
+					binary.Write(&buf, binary.BigEndian, uint32(5)) // count
+					binary.Write(&buf, binary.BigEndian, uint32(1)) // stable
+					binary.Write(&buf, binary.BigEndian, uint32(5)) // data length
+					buf.Write([]byte("hello"))                      // data
 					return &buf
 				},
 			},
@@ -163,7 +163,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				if err != nil {
 					t.Fatalf("handleNFSCall should not return error: %v", err)
 				}
-				
+
 				// Should get NFSERR_NOENT in the reply
 				if data, ok := result.Data.([]byte); ok {
 					var status uint32
@@ -217,7 +217,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 		t.Run("WRITE with read-only mode", func(t *testing.T) {
 			// Create a new AbsfsNFS with read-only option
 			readOnlyFS, _ := New(server.handler.fs, ExportOptions{ReadOnly: true})
-			
+
 			// Create a new server and set the read-only handler
 			readOnlyServer, _ := NewServer(ServerOptions{})
 			readOnlyServer.SetHandler(readOnlyFS)
@@ -232,11 +232,11 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 
 			var buf bytes.Buffer
 			binary.Write(&buf, binary.BigEndian, fileHandle)
-			binary.Write(&buf, binary.BigEndian, uint64(0))    // offset
-			binary.Write(&buf, binary.BigEndian, uint32(5))    // count
-			binary.Write(&buf, binary.BigEndian, uint32(1))    // stable
-			binary.Write(&buf, binary.BigEndian, uint32(5))    // data length
-			buf.Write([]byte("hello"))                         // data
+			binary.Write(&buf, binary.BigEndian, uint64(0)) // offset
+			binary.Write(&buf, binary.BigEndian, uint32(5)) // count
+			binary.Write(&buf, binary.BigEndian, uint32(1)) // stable
+			binary.Write(&buf, binary.BigEndian, uint32(5)) // data length
+			buf.Write([]byte("hello"))                      // data
 
 			reply := &RPCReply{}
 			authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
@@ -257,7 +257,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				t.Errorf("Expected []byte data in reply, got %T", result.Data)
 			}
 		})
-		
+
 		// Test SETATTR with invalid mode
 		t.Run("SETATTR with invalid mode", func(t *testing.T) {
 			call := &RPCCall{
@@ -297,7 +297,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				t.Errorf("Expected []byte data in reply, got %T", result.Data)
 			}
 		})
-		
+
 		// Test invalid program version
 		t.Run("Invalid version", func(t *testing.T) {
 			call := &RPCCall{
@@ -318,7 +318,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				t.Errorf("Expected PROG_MISMATCH AcceptStatus, got %d", result.AcceptStatus)
 			}
 		})
-		
+
 		// Test READ with count mismatch
 		t.Run("WRITE count mismatch", func(t *testing.T) {
 			call := &RPCCall{
@@ -330,11 +330,11 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 
 			var buf bytes.Buffer
 			binary.Write(&buf, binary.BigEndian, fileHandle)
-			binary.Write(&buf, binary.BigEndian, uint64(0))    // offset
-			binary.Write(&buf, binary.BigEndian, uint32(10))   // count - intentionally different from data length
-			binary.Write(&buf, binary.BigEndian, uint32(1))    // stable
-			binary.Write(&buf, binary.BigEndian, uint32(5))    // data length
-			buf.Write([]byte("hello"))                         // data
+			binary.Write(&buf, binary.BigEndian, uint64(0))  // offset
+			binary.Write(&buf, binary.BigEndian, uint32(10)) // count - intentionally different from data length
+			binary.Write(&buf, binary.BigEndian, uint32(1))  // stable
+			binary.Write(&buf, binary.BigEndian, uint32(5))  // data length
+			buf.Write([]byte("hello"))                       // data
 
 			reply := &RPCReply{}
 			authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
@@ -362,14 +362,14 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 func TestFileAttributeEncodeErrors(t *testing.T) {
 	badWriter := &badWriter{}
 	attrs := &NFSAttrs{
-		Mode:  0644,
-		Uid:   1000,
-		Gid:   1000,
-		Size:  1024,
+		Mode: 0644,
+		Uid:  1000,
+		Gid:  1000,
+		Size: 1024,
 		// Mtime: time.Now()
 		// Atime: time.Now()
 	}
-	
+
 	err := encodeFileAttributes(badWriter, attrs)
 	if err == nil {
 		t.Error("Expected error when writing to bad writer")

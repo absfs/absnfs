@@ -22,14 +22,14 @@ const (
 
 // BatchRequest represents a single operation in a batch
 type BatchRequest struct {
-	Type       BatchType      // Type of operation
-	FileHandle uint64         // File handle for the operation
-	Offset     int64          // Offset for read/write operations
-	Length     int            // Length for read/write operations
-	Data       []byte         // Data for write operations
-	Time       time.Time      // Time the request was added to the batch
+	Type       BatchType         // Type of operation
+	FileHandle uint64            // File handle for the operation
+	Offset     int64             // Offset for read/write operations
+	Length     int               // Length for read/write operations
+	Data       []byte            // Data for write operations
+	Time       time.Time         // Time the request was added to the batch
 	ResultChan chan *BatchResult // Channel to send results back to caller
-	Context    context.Context // Context for cancellation
+	Context    context.Context   // Context for cancellation
 }
 
 // BatchResult represents the result of a batched operation
@@ -64,7 +64,7 @@ type BatchProcessor struct {
 // NewBatchProcessor creates a new batch processor
 func NewBatchProcessor(nfs *AbsfsNFS, maxSize int) *BatchProcessor {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	bp := &BatchProcessor{
 		enabled:   nfs.options.BatchOperations,
 		maxSize:   maxSize,
@@ -74,18 +74,18 @@ func NewBatchProcessor(nfs *AbsfsNFS, maxSize int) *BatchProcessor {
 		ctx:       ctx,
 		cancel:    cancel,
 	}
-	
+
 	// Initialize empty batches for each type
 	bp.batches[BatchTypeRead] = &Batch{Type: BatchTypeRead, MaxSize: maxSize}
 	bp.batches[BatchTypeWrite] = &Batch{Type: BatchTypeWrite, MaxSize: maxSize}
 	bp.batches[BatchTypeGetAttr] = &Batch{Type: BatchTypeGetAttr, MaxSize: maxSize}
 	bp.batches[BatchTypeSetAttr] = &Batch{Type: BatchTypeSetAttr, MaxSize: maxSize}
 	bp.batches[BatchTypeDirRead] = &Batch{Type: BatchTypeDirRead, MaxSize: maxSize}
-	
+
 	// Start batch processing goroutine
 	bp.wg.Add(1)
 	go bp.processBatches()
-	
+
 	return bp
 }
 
@@ -96,16 +96,16 @@ func (bp *BatchProcessor) AddRequest(req *BatchRequest) bool {
 	if !bp.enabled {
 		return true
 	}
-	
+
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
-	
+
 	batch, exists := bp.batches[req.Type]
 	if !exists {
 		// Unknown batch type, return true to process individually
 		return true
 	}
-	
+
 	batch.mu.Lock()
 
 	// If this is the first request in the batch, set the ready time
@@ -139,21 +139,21 @@ func (bp *BatchProcessor) AddRequest(req *BatchRequest) bool {
 // processBatches is a background goroutine that processes batches when they're ready
 func (bp *BatchProcessor) processBatches() {
 	defer bp.wg.Done()
-	
+
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-bp.ctx.Done():
 			return
 		case <-ticker.C:
 			now := time.Now()
-			
+
 			bp.mu.Lock()
 			for typ, batch := range bp.batches {
 				batch.mu.Lock()
-				
+
 				// Process batch if it's ready and has requests
 				if len(batch.Requests) > 0 && now.After(batch.ReadyTime) {
 					// Create a new empty batch
@@ -161,11 +161,11 @@ func (bp *BatchProcessor) processBatches() {
 						Type:    typ,
 						MaxSize: batch.MaxSize,
 					}
-					
+
 					// Process the ready batch asynchronously
 					go bp.processBatch(batch)
 				}
-				
+
 				batch.mu.Unlock()
 			}
 			bp.mu.Unlock()
@@ -196,7 +196,7 @@ func (bp *BatchProcessor) processReadBatch(batch *Batch) {
 	for _, req := range batch.Requests {
 		fileGroups[req.FileHandle] = append(fileGroups[req.FileHandle], req)
 	}
-	
+
 	// Process each file's requests as a group
 	for fileHandle, requests := range fileGroups {
 		// Sort requests by offset (can optimize to read larger contiguous chunks)
@@ -213,7 +213,7 @@ func (bp *BatchProcessor) processReadBatch(batch *Batch) {
 			}
 			continue
 		}
-		
+
 		// Process each read request
 		for _, req := range requests {
 			// Check if the request has been cancelled
@@ -260,7 +260,7 @@ func (bp *BatchProcessor) processWriteBatch(batch *Batch) {
 	for _, req := range batch.Requests {
 		fileGroups[req.FileHandle] = append(fileGroups[req.FileHandle], req)
 	}
-	
+
 	// Process each file's requests as a group
 	for fileHandle, requests := range fileGroups {
 		// Get the file
@@ -276,7 +276,7 @@ func (bp *BatchProcessor) processWriteBatch(batch *Batch) {
 			}
 			continue
 		}
-		
+
 		// Check if the server is in read-only mode
 		if bp.processor.options.ReadOnly {
 			for _, req := range requests {
@@ -288,7 +288,7 @@ func (bp *BatchProcessor) processWriteBatch(batch *Batch) {
 			}
 			continue
 		}
-		
+
 		// Process each write request
 		for _, req := range requests {
 			// Check if the request has been cancelled
@@ -323,7 +323,7 @@ func (bp *BatchProcessor) processWriteBatch(batch *Batch) {
 				Status: NFS_OK,
 			}
 			close(req.ResultChan)
-			
+
 			// Invalidate attribute cache for written file
 			path := ""
 			if node, ok := file.(*NFSNode); ok {
@@ -361,17 +361,17 @@ func (bp *BatchProcessor) processGetAttrBatch(batch *Batch) {
 			close(req.ResultChan)
 			continue
 		}
-		
+
 		// Get file attributes
 		var attrs *NFSAttrs
 		path := ""
-		
+
 		if node, ok := file.(*NFSNode); ok {
 			path = node.path
 			// Try to get attributes from cache first
 			attrs = bp.processor.attrCache.Get(path, bp.processor)
 		}
-		
+
 		// If not in cache or not an NFSNode, get attributes directly
 		if attrs == nil {
 			info, err := file.Stat()
@@ -383,7 +383,7 @@ func (bp *BatchProcessor) processGetAttrBatch(batch *Batch) {
 				close(req.ResultChan)
 				continue
 			}
-			
+
 			// Create attributes
 			modTime := info.ModTime()
 			attrs = &NFSAttrs{
@@ -394,13 +394,13 @@ func (bp *BatchProcessor) processGetAttrBatch(batch *Batch) {
 			}
 			attrs.SetMtime(modTime)
 			attrs.SetAtime(modTime) // Use ModTime as Atime since absfs doesn't expose Atime
-			
+
 			// Cache the attributes if path is available
 			if path != "" {
 				bp.processor.attrCache.Put(path, attrs)
 			}
 		}
-		
+
 		// Encode attributes into a buffer for the result
 		var buf bytes.Buffer
 		if err := encodeFileAttributes(&buf, attrs); err != nil {
@@ -664,14 +664,14 @@ func (bp *BatchProcessor) BatchGetAttr(ctx context.Context, fileHandle uint64) (
 func (bp *BatchProcessor) GetStats() (enabled bool, batchesByType map[BatchType]int) {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
-	
+
 	batchesByType = make(map[BatchType]int)
-	
+
 	for typ, batch := range bp.batches {
 		batch.mu.Lock()
 		batchesByType[typ] = len(batch.Requests)
 		batch.mu.Unlock()
 	}
-	
+
 	return bp.enabled, batchesByType
 }

@@ -236,7 +236,7 @@ func TestWorkerPoolStats(t *testing.T) {
 			break
 		}
 	}
-	
+
 	if !success {
 		_, activeWorkers, _ = pool.Stats()
 		t.Logf("Active workers did not return to 0 within retry period, got %d", activeWorkers)

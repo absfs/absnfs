@@ -77,11 +77,11 @@ func TestAuthenticationEnforcement(t *testing.T) {
 
 		// Create a valid AUTH_SYS credential
 		var credBody bytes.Buffer
-		binary.Write(&credBody, binary.BigEndian, uint32(12345))      // Stamp
-		binary.Write(&credBody, binary.BigEndian, uint32(0))          // Machine name length (empty)
-		binary.Write(&credBody, binary.BigEndian, uint32(1000))       // UID
-		binary.Write(&credBody, binary.BigEndian, uint32(1000))       // GID
-		binary.Write(&credBody, binary.BigEndian, uint32(0))          // Number of auxiliary GIDs
+		binary.Write(&credBody, binary.BigEndian, uint32(12345)) // Stamp
+		binary.Write(&credBody, binary.BigEndian, uint32(0))     // Machine name length (empty)
+		binary.Write(&credBody, binary.BigEndian, uint32(1000))  // UID
+		binary.Write(&credBody, binary.BigEndian, uint32(1000))  // GID
+		binary.Write(&credBody, binary.BigEndian, uint32(0))     // Number of auxiliary GIDs
 
 		call := &RPCCall{
 			Header: RPCMsgHeader{
@@ -253,11 +253,11 @@ func TestAuthenticationEnforcement(t *testing.T) {
 
 		// Create AUTH_SYS credential with UID=0 (root)
 		var credBody bytes.Buffer
-		binary.Write(&credBody, binary.BigEndian, uint32(12345))      // Stamp
-		binary.Write(&credBody, binary.BigEndian, uint32(0))          // Machine name length
-		binary.Write(&credBody, binary.BigEndian, uint32(0))          // UID = 0 (root)
-		binary.Write(&credBody, binary.BigEndian, uint32(0))          // GID = 0
-		binary.Write(&credBody, binary.BigEndian, uint32(0))          // No aux GIDs
+		binary.Write(&credBody, binary.BigEndian, uint32(12345)) // Stamp
+		binary.Write(&credBody, binary.BigEndian, uint32(0))     // Machine name length
+		binary.Write(&credBody, binary.BigEndian, uint32(0))     // UID = 0 (root)
+		binary.Write(&credBody, binary.BigEndian, uint32(0))     // GID = 0
+		binary.Write(&credBody, binary.BigEndian, uint32(0))     // No aux GIDs
 
 		call := &RPCCall{
 			Header: RPCMsgHeader{
@@ -312,11 +312,11 @@ func TestAuthenticationEnforcement(t *testing.T) {
 
 		// Create AUTH_SYS credential with UID=1000 (non-root)
 		var credBody bytes.Buffer
-		binary.Write(&credBody, binary.BigEndian, uint32(12345))      // Stamp
-		binary.Write(&credBody, binary.BigEndian, uint32(0))          // Machine name length
-		binary.Write(&credBody, binary.BigEndian, uint32(1000))       // UID = 1000
-		binary.Write(&credBody, binary.BigEndian, uint32(1000))       // GID = 1000
-		binary.Write(&credBody, binary.BigEndian, uint32(0))          // No aux GIDs
+		binary.Write(&credBody, binary.BigEndian, uint32(12345)) // Stamp
+		binary.Write(&credBody, binary.BigEndian, uint32(0))     // Machine name length
+		binary.Write(&credBody, binary.BigEndian, uint32(1000))  // UID = 1000
+		binary.Write(&credBody, binary.BigEndian, uint32(1000))  // GID = 1000
+		binary.Write(&credBody, binary.BigEndian, uint32(0))     // No aux GIDs
 
 		authCtx := &AuthContext{
 			ClientIP:   "127.0.0.1",
@@ -347,15 +347,15 @@ func TestAuthenticationEnforcement(t *testing.T) {
 func TestParseAuthSysCredential(t *testing.T) {
 	t.Run("Valid AUTH_SYS credential", func(t *testing.T) {
 		var buf bytes.Buffer
-		binary.Write(&buf, binary.BigEndian, uint32(12345))             // Stamp
-		binary.Write(&buf, binary.BigEndian, uint32(7))                 // Machine name length
-		buf.Write([]byte("testbox"))                                    // Machine name
-		buf.Write([]byte{0})                                            // Padding
-		binary.Write(&buf, binary.BigEndian, uint32(1000))              // UID
-		binary.Write(&buf, binary.BigEndian, uint32(1000))              // GID
-		binary.Write(&buf, binary.BigEndian, uint32(2))                 // Aux GID count
-		binary.Write(&buf, binary.BigEndian, uint32(1001))              // Aux GID 1
-		binary.Write(&buf, binary.BigEndian, uint32(1002))              // Aux GID 2
+		binary.Write(&buf, binary.BigEndian, uint32(12345)) // Stamp
+		binary.Write(&buf, binary.BigEndian, uint32(7))     // Machine name length
+		buf.Write([]byte("testbox"))                        // Machine name
+		buf.Write([]byte{0})                                // Padding
+		binary.Write(&buf, binary.BigEndian, uint32(1000))  // UID
+		binary.Write(&buf, binary.BigEndian, uint32(1000))  // GID
+		binary.Write(&buf, binary.BigEndian, uint32(2))     // Aux GID count
+		binary.Write(&buf, binary.BigEndian, uint32(1001))  // Aux GID 1
+		binary.Write(&buf, binary.BigEndian, uint32(1002))  // Aux GID 2
 
 		cred, err := ParseAuthSysCredential(buf.Bytes())
 		if err != nil {
@@ -394,11 +394,11 @@ func TestParseAuthSysCredential(t *testing.T) {
 
 	t.Run("Too many auxiliary GIDs", func(t *testing.T) {
 		var buf bytes.Buffer
-		binary.Write(&buf, binary.BigEndian, uint32(12345))   // Stamp
-		binary.Write(&buf, binary.BigEndian, uint32(0))       // Machine name length
-		binary.Write(&buf, binary.BigEndian, uint32(1000))    // UID
-		binary.Write(&buf, binary.BigEndian, uint32(1000))    // GID
-		binary.Write(&buf, binary.BigEndian, uint32(100))     // Too many aux GIDs
+		binary.Write(&buf, binary.BigEndian, uint32(12345)) // Stamp
+		binary.Write(&buf, binary.BigEndian, uint32(0))     // Machine name length
+		binary.Write(&buf, binary.BigEndian, uint32(1000))  // UID
+		binary.Write(&buf, binary.BigEndian, uint32(1000))  // GID
+		binary.Write(&buf, binary.BigEndian, uint32(100))   // Too many aux GIDs
 
 		_, err := ParseAuthSysCredential(buf.Bytes())
 		if err == nil {

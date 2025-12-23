@@ -157,7 +157,7 @@ func (p *WorkerPool) Stop() {
 
 	// Signal all workers to stop
 	p.cancel()
-	
+
 	// Close the task queue
 	// Use defer and recover to safely handle potential "close of closed channel" panic
 	func() {
@@ -168,7 +168,7 @@ func (p *WorkerPool) Stop() {
 		}()
 		close(p.taskQueue)
 	}()
-	
+
 	// Wait for all workers to finish
 	p.wg.Wait()
 

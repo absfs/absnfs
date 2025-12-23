@@ -1436,7 +1436,7 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		} else {
 			xdrEncodeUint32(&buf, 0)
 		}
-		
+
 		reply.Data = buf.Bytes()
 		return reply, nil
 
@@ -1603,7 +1603,7 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		} else {
 			xdrEncodeUint32(&buf, 0)
 		}
-		
+
 		reply.Data = buf.Bytes()
 		return reply, nil
 
@@ -1723,7 +1723,7 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		binary.Write(&buf, binary.BigEndian, uint32(65536)) // 64KB
 		// rtmult - Suggested multiple for read transfer size
 		binary.Write(&buf, binary.BigEndian, uint32(4096)) // 4KB
-		
+
 		// wtmax - Max write transfer size
 		binary.Write(&buf, binary.BigEndian, uint32(1048576)) // 1MB
 		// wtpref - Preferred write transfer size
@@ -1736,13 +1736,13 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 		// maxfilesize - Maximum file size
 		binary.Write(&buf, binary.BigEndian, uint64(1099511627776)) // 1TB
-		
+
 		// time_delta - Server time granularity
 		// seconds
 		binary.Write(&buf, binary.BigEndian, uint32(0))
 		// nanoseconds
 		binary.Write(&buf, binary.BigEndian, uint32(1000000)) // 1ms
-		
+
 		// properties - File system properties
 		var properties uint32 = 0
 		if h.server.handler.options.ReadOnly {
@@ -1870,33 +1870,33 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 
 		// Check access permissions based on file mode and read-only flag
 		var accessAllowed uint32 = 0
-		
+
 		// ACCESS3_READ (1) - Read data from file or read a directory
 		if access&1 != 0 {
 			accessAllowed |= 1
 		}
-		
+
 		// ACCESS3_LOOKUP (2) - Look up a name in a directory (only for directories)
 		if access&2 != 0 && attrs.Mode&os.ModeDir != 0 {
 			accessAllowed |= 2
 		}
-		
+
 		if !h.server.handler.options.ReadOnly {
 			// ACCESS3_MODIFY (4) - Rewrite existing file data or modify directory
 			if access&4 != 0 {
 				accessAllowed |= 4
 			}
-			
+
 			// ACCESS3_EXTEND (8) - Add to a file or create a subdirectory
 			if access&8 != 0 {
 				accessAllowed |= 8
 			}
-			
+
 			// ACCESS3_DELETE (16) - Delete a file or directory entry
 			if access&16 != 0 {
 				accessAllowed |= 16
 			}
-			
+
 			// ACCESS3_EXECUTE (32) - Execute file or search directory
 			if access&32 != 0 && (attrs.Mode&0111 != 0) {
 				accessAllowed |= 32
@@ -2198,7 +2198,7 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			// dir_wcc: wcc_data
 			xdrEncodeUint32(&buf, 1) // pre_op_attr: attributes_follow = TRUE
 			encodeWccAttr(&buf, dirPreAttrs)
-			xdrEncodeUint32(&buf, 1) // post_op_attr: attributes_follow = TRUE
+			xdrEncodeUint32(&buf, 1)                // post_op_attr: attributes_follow = TRUE
 			encodeFileAttributes(&buf, dirPreAttrs) // same as pre since no change
 			reply.Data = buf.Bytes()
 			return reply, nil
@@ -2211,7 +2211,7 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 			// dir_wcc: wcc_data
 			xdrEncodeUint32(&buf, 1) // pre_op_attr: attributes_follow = TRUE
 			encodeWccAttr(&buf, dirPreAttrs)
-			xdrEncodeUint32(&buf, 1) // post_op_attr: attributes_follow = TRUE
+			xdrEncodeUint32(&buf, 1)                // post_op_attr: attributes_follow = TRUE
 			encodeFileAttributes(&buf, dirPreAttrs) // same as pre since no change
 			reply.Data = buf.Bytes()
 			return reply, nil

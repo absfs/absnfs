@@ -20,7 +20,7 @@ func (n *AbsfsNFS) GetMetrics() NFSMetrics {
 			StartTime: time.Now(),
 		}
 	}
-	
+
 	return n.metrics.GetMetrics()
 }
 
@@ -30,7 +30,7 @@ func (n *AbsfsNFS) IsHealthy() bool {
 		// If metrics collection is not initialized, assume server is healthy
 		return true
 	}
-	
+
 	return n.metrics.IsHealthy()
 }
 
@@ -41,25 +41,25 @@ func (n *AbsfsNFS) RecordOperationStart(opType string) func(err error) {
 		// If metrics collection is not initialized, return a no-op function
 		return func(err error) {}
 	}
-	
+
 	// Record operation count
 	n.metrics.IncrementOperationCount(opType)
-	
+
 	// Record start time for latency tracking
 	startTime := time.Now()
-	
+
 	// Return a function that will be called when the operation completes
 	return func(err error) {
 		// Record latency
 		if opType == "READ" || opType == "WRITE" {
 			n.metrics.RecordLatency(opType, time.Since(startTime))
 		}
-		
+
 		// Record error if any
 		if err != nil {
 			// Determine error type
 			errorType := "UNKNOWN"
-			
+
 			// This is a simplified example - in a real implementation, you would
 			// examine the error to determine its type more precisely
 			if n.options.ReadOnly && opType == "WRITE" {
@@ -71,7 +71,7 @@ func (n *AbsfsNFS) RecordOperationStart(opType string) func(err error) {
 			} else if isResourceError(err) {
 				errorType = "RESOURCE"
 			}
-			
+
 			n.metrics.RecordError(errorType)
 		}
 	}

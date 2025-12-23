@@ -103,7 +103,7 @@ func TestBatchProcessor(t *testing.T) {
 	// Test concurrent batch operations - using fewer operations and shorter timeouts
 	t.Run("ConcurrentBatchOperations", func(t *testing.T) {
 		// Create multiple concurrent batch operations
-		const numOperations = 4 // Reduced from 10
+		const numOperations = 4                                                 // Reduced from 10
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second) // Shorter timeout
 		defer cancel()
 
@@ -201,15 +201,15 @@ func TestBatchOptions(t *testing.T) {
 
 			// Verify options were applied correctly
 			if server.options.BatchOperations != tc.expectOn {
-				t.Errorf("BatchOperations: expected %v, got %v", 
+				t.Errorf("BatchOperations: expected %v, got %v",
 					tc.expectOn, server.options.BatchOperations)
 			}
-			
+
 			if server.options.MaxBatchSize != tc.expectMax {
 				t.Errorf("MaxBatchSize: expected %d, got %d",
 					tc.expectMax, server.options.MaxBatchSize)
 			}
-			
+
 			// Verify batch processor state
 			enabled, _ := server.batchProc.GetStats()
 			if enabled != server.options.BatchOperations {

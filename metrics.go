@@ -32,36 +32,36 @@ type NFSMetrics struct {
 	P95WriteLatency time.Duration
 
 	// Cache metrics
-	CacheHitRate        float64
-	ReadAheadHitRate    float64
-	AttrCacheSize       int
-	AttrCacheCapacity   int
-	ReadAheadBufferSize int64
-	DirCacheHitRate     float64
-	NegativeCacheSize   int     // Number of negative cache entries
+	CacheHitRate         float64
+	ReadAheadHitRate     float64
+	AttrCacheSize        int
+	AttrCacheCapacity    int
+	ReadAheadBufferSize  int64
+	DirCacheHitRate      float64
+	NegativeCacheSize    int     // Number of negative cache entries
 	NegativeCacheHitRate float64 // Hit rate for negative cache lookups
 
 	// Connection metrics
-	ActiveConnections    int
-	TotalConnections     uint64
-	RejectedConnections  uint64
+	ActiveConnections   int
+	TotalConnections    uint64
+	RejectedConnections uint64
 
 	// TLS metrics
-	TLSHandshakes           uint64 // Successful TLS handshakes
-	TLSHandshakeFailures    uint64 // Failed TLS handshakes
-	TLSClientCertProvided   uint64 // Connections with client certificates
-	TLSClientCertValidated  uint64 // Successfully validated client certificates
-	TLSClientCertRejected   uint64 // Rejected client certificates
-	TLSSessionReused        uint64 // TLS session resumptions
-	TLSVersion12            uint64 // Connections using TLS 1.2
-	TLSVersion13            uint64 // Connections using TLS 1.3
+	TLSHandshakes          uint64 // Successful TLS handshakes
+	TLSHandshakeFailures   uint64 // Failed TLS handshakes
+	TLSClientCertProvided  uint64 // Connections with client certificates
+	TLSClientCertValidated uint64 // Successfully validated client certificates
+	TLSClientCertRejected  uint64 // Rejected client certificates
+	TLSSessionReused       uint64 // TLS session resumptions
+	TLSVersion12           uint64 // Connections using TLS 1.2
+	TLSVersion13           uint64 // Connections using TLS 1.3
 
 	// Error metrics
-	ErrorCount       uint64
-	AuthFailures     uint64
-	AccessViolations uint64
-	StaleHandles     uint64
-	ResourceErrors   uint64
+	ErrorCount        uint64
+	AuthFailures      uint64
+	AccessViolations  uint64
+	StaleHandles      uint64
+	ResourceErrors    uint64
 	RateLimitExceeded uint64
 
 	// Timeout metrics
@@ -76,42 +76,42 @@ type NFSMetrics struct {
 	TotalTimeouts   uint64
 
 	// Time-based metrics
-	StartTime time.Time
+	StartTime     time.Time
 	UptimeSeconds int64
 }
 
 // MetricsCollector handles collecting and aggregating metrics
 type MetricsCollector struct {
-	mutex          sync.RWMutex
-	metrics        NFSMetrics
-	attrCacheHits  uint64
-	attrCacheMisses uint64
-	readAheadHits     uint64
-	readAheadMisses   uint64
-	dirCacheHits      uint64
-	dirCacheMisses    uint64
-	negativeCacheHits uint64
+	mutex               sync.RWMutex
+	metrics             NFSMetrics
+	attrCacheHits       uint64
+	attrCacheMisses     uint64
+	readAheadHits       uint64
+	readAheadMisses     uint64
+	dirCacheHits        uint64
+	dirCacheMisses      uint64
+	negativeCacheHits   uint64
 	negativeCacheMisses uint64
 
 	// For latency tracking
 	latencyMutex   sync.Mutex
 	readLatencies  []time.Duration
 	writeLatencies []time.Duration
-	
+
 	// Maximum number of latency samples to keep
 	maxLatencySamples int
-	
+
 	// Reference to server components for gathering metrics
-	server         *AbsfsNFS
+	server *AbsfsNFS
 }
 
 // NewMetricsCollector creates a new metrics collector
 func NewMetricsCollector(server *AbsfsNFS) *MetricsCollector {
 	return &MetricsCollector{
-		server:           server,
+		server:            server,
 		maxLatencySamples: 1000, // Keep the last 1000 latency samples
-		readLatencies:    make([]time.Duration, 0, 1000),
-		writeLatencies:   make([]time.Duration, 0, 1000),
+		readLatencies:     make([]time.Duration, 0, 1000),
+		writeLatencies:    make([]time.Duration, 0, 1000),
 		metrics: NFSMetrics{
 			StartTime: time.Now(),
 		},
@@ -121,7 +121,7 @@ func NewMetricsCollector(server *AbsfsNFS) *MetricsCollector {
 // IncrementOperationCount increments the count for the specified operation type
 func (m *MetricsCollector) IncrementOperationCount(opType string) {
 	atomic.AddUint64(&m.metrics.TotalOperations, 1)
-	
+
 	switch opType {
 	case "READ":
 		atomic.AddUint64(&m.metrics.ReadOperations, 1)
@@ -152,7 +152,7 @@ func (m *MetricsCollector) IncrementOperationCount(opType string) {
 func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) {
 	m.latencyMutex.Lock()
 	defer m.latencyMutex.Unlock()
-	
+
 	switch opType {
 	case "READ":
 		// Update max latency atomically
@@ -165,14 +165,14 @@ func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) 
 				break // Successfully updated
 			}
 		}
-		
+
 		// Add to latency samples for percentile calculation
 		m.readLatencies = append(m.readLatencies, duration)
 		if len(m.readLatencies) > m.maxLatencySamples {
 			// Remove oldest entry
 			m.readLatencies = m.readLatencies[1:]
 		}
-		
+
 		// Update average latency
 		if len(m.readLatencies) > 0 {
 			var sum time.Duration
@@ -180,7 +180,7 @@ func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) 
 				sum += d
 			}
 			m.metrics.AvgReadLatency = sum / time.Duration(len(m.readLatencies))
-			
+
 			// Calculate 95th percentile
 			if len(m.readLatencies) >= 20 { // Need enough samples for meaningful percentile
 				sorted := make([]time.Duration, len(m.readLatencies))
@@ -190,7 +190,7 @@ func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) 
 				m.metrics.P95ReadLatency = sorted[idx]
 			}
 		}
-		
+
 	case "WRITE":
 		// Update max latency atomically
 		for {
@@ -202,14 +202,14 @@ func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) 
 				break // Successfully updated
 			}
 		}
-		
+
 		// Add to latency samples for percentile calculation
 		m.writeLatencies = append(m.writeLatencies, duration)
 		if len(m.writeLatencies) > m.maxLatencySamples {
 			// Remove oldest entry
 			m.writeLatencies = m.writeLatencies[1:]
 		}
-		
+
 		// Update average latency
 		if len(m.writeLatencies) > 0 {
 			var sum time.Duration
@@ -217,7 +217,7 @@ func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) 
 				sum += d
 			}
 			m.metrics.AvgWriteLatency = sum / time.Duration(len(m.writeLatencies))
-			
+
 			// Calculate 95th percentile
 			if len(m.writeLatencies) >= 20 { // Need enough samples for meaningful percentile
 				sorted := make([]time.Duration, len(m.writeLatencies))
@@ -328,7 +328,7 @@ func (m *MetricsCollector) RecordTimeout(opType string) {
 // RecordConnection records a new connection
 func (m *MetricsCollector) RecordConnection() {
 	atomic.AddUint64(&m.metrics.TotalConnections, 1)
-	
+
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	m.metrics.ActiveConnections++
@@ -388,10 +388,10 @@ func (m *MetricsCollector) updateCacheHitRate() {
 	hits := atomic.LoadUint64(&m.attrCacheHits)
 	misses := atomic.LoadUint64(&m.attrCacheMisses)
 	total := hits + misses
-	
+
 	if total > 0 {
 		hitRate := float64(hits) / float64(total)
-		
+
 		m.mutex.Lock()
 		m.metrics.CacheHitRate = hitRate
 		m.mutex.Unlock()
@@ -403,10 +403,10 @@ func (m *MetricsCollector) updateReadAheadHitRate() {
 	hits := atomic.LoadUint64(&m.readAheadHits)
 	misses := atomic.LoadUint64(&m.readAheadMisses)
 	total := hits + misses
-	
+
 	if total > 0 {
 		hitRate := float64(hits) / float64(total)
-		
+
 		m.mutex.Lock()
 		m.metrics.ReadAheadHitRate = hitRate
 		m.mutex.Unlock()
@@ -471,19 +471,19 @@ func (m *MetricsCollector) updateCacheMetrics() {
 func (m *MetricsCollector) GetMetrics() NFSMetrics {
 	// Update dynamic metrics before returning
 	m.updateCacheMetrics()
-	
+
 	// Update uptime
 	m.mutex.Lock()
 	m.metrics.UptimeSeconds = int64(time.Since(m.metrics.StartTime).Seconds())
 	m.mutex.Unlock()
-	
+
 	// Return a copy of the metrics to ensure thread safety
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
-	
+
 	// Create a copy of the metrics
 	metricsCopy := m.metrics
-	
+
 	return metricsCopy
 }
 
@@ -502,21 +502,21 @@ func (m *MetricsCollector) IsHealthy() bool {
 	// Basic health check logic
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
-	
+
 	// Consider the server unhealthy if:
-	
+
 	// 1. Error rate is too high (more than 50% of operations in the last period)
-	errorRate := float64(m.metrics.ErrorCount) / float64(m.metrics.TotalOperations + 1) // Add 1 to avoid division by zero
+	errorRate := float64(m.metrics.ErrorCount) / float64(m.metrics.TotalOperations+1) // Add 1 to avoid division by zero
 	if errorRate > 0.5 {
 		return false
 	}
-	
+
 	// 2. Read/write latency is too high (more than 5 seconds for 95th percentile)
 	maxAllowedLatency := 5 * time.Second
 	if m.metrics.P95ReadLatency > maxAllowedLatency || m.metrics.P95WriteLatency > maxAllowedLatency {
 		return false
 	}
-	
+
 	// Otherwise consider the server healthy
 	return true
 }

@@ -535,7 +535,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if result.Status != MSG_ACCEPTED {
 			t.Errorf("Expected MSG_ACCEPTED status, got %v", result.Status)
 		}
-		
+
 		// Verify status in reply data
 		if result.Data != nil {
 			data := result.Data.([]byte)
@@ -547,20 +547,20 @@ func TestNFSOperationsErrors(t *testing.T) {
 			if status != NFS_OK {
 				t.Errorf("Expected NFS_OK in reply data, got %v", status)
 			}
-			
+
 			// Skip file handle
 			var handle uint32
 			if err := binary.Read(r, binary.BigEndian, &handle); err != nil {
 				t.Fatalf("Failed to read handle from reply data: %v", err)
 			}
 		}
-		
+
 		// Verify file was created
 		_, err = server.handler.fs.Stat("/newfile.txt")
 		if err != nil {
 			t.Errorf("File was not created: %v", err)
 		}
-		
+
 		// Test with invalid mode
 		buf.Reset()
 		xdrEncodeFileHandle(&buf, dirHandle) // Properly encode handle with length prefix
@@ -579,20 +579,20 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(0)) // UNCHECKED
 
 		// sattr3 structure with invalid mode:
-		binary.Write(&buf, binary.BigEndian, uint32(1))       // set_mode = TRUE
-		binary.Write(&buf, binary.BigEndian, uint32(0x8000))  // Invalid mode
-		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_uid = FALSE
-		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_gid = FALSE
-		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_size = FALSE
-		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_atime = DONT_CHANGE
-		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mtime = DONT_CHANGE
+		binary.Write(&buf, binary.BigEndian, uint32(1))      // set_mode = TRUE
+		binary.Write(&buf, binary.BigEndian, uint32(0x8000)) // Invalid mode
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // set_uid = FALSE
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // set_gid = FALSE
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // set_size = FALSE
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // set_atime = DONT_CHANGE
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // set_mtime = DONT_CHANGE
 
 		authCtx = &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
-		
+
 		// Verify error status in reply data
 		if result.Data != nil {
 			data := result.Data.([]byte)
@@ -673,7 +673,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if result.Status != MSG_ACCEPTED {
 			t.Errorf("Expected MSG_ACCEPTED status, got %v", result.Status)
 		}
-		
+
 		// Verify status in reply data
 		if result.Data != nil {
 			data := result.Data.([]byte)
@@ -685,14 +685,14 @@ func TestNFSOperationsErrors(t *testing.T) {
 			if status != NFS_OK {
 				t.Errorf("Expected NFS_OK in reply data, got %v", status)
 			}
-			
+
 			// Skip file handle
 			var handle uint32
 			if err := binary.Read(r, binary.BigEndian, &handle); err != nil {
 				t.Fatalf("Failed to read handle from reply data: %v", err)
 			}
 		}
-		
+
 		// Verify directory was created
 		info, err := server.handler.fs.Stat("/newdir")
 		if err != nil {
@@ -701,7 +701,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if !info.IsDir() {
 			t.Errorf("Created path is not a directory")
 		}
-		
+
 		// Test with invalid mode
 		buf.Reset()
 		xdrEncodeFileHandle(&buf, dirHandle) // Properly encode handle with length prefix
@@ -724,7 +724,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("handleNFSCall failed: %v", err)
 		}
-		
+
 		// Verify error status in reply data
 		if result.Data != nil {
 			data := result.Data.([]byte)

@@ -19,9 +19,9 @@ type RateLimiterConfig struct {
 	PerConnectionBurstSize         int // Burst allowance per connection
 
 	// Per-operation type limits
-	ReadLargeOpsPerSecond     int // Large reads (>64KB) per second per IP
-	WriteLargeOpsPerSecond    int // Large writes (>64KB) per second per IP
-	ReaddirOpsPerSecond       int // READDIR operations per second per IP
+	ReadLargeOpsPerSecond  int // Large reads (>64KB) per second per IP
+	WriteLargeOpsPerSecond int // Large writes (>64KB) per second per IP
+	ReaddirOpsPerSecond    int // READDIR operations per second per IP
 
 	// Mount operation limits
 	MountOpsPerMinute int // MOUNT operations per minute per IP
@@ -54,11 +54,11 @@ func DefaultRateLimiterConfig() RateLimiterConfig {
 
 // TokenBucket implements a token bucket rate limiter
 type TokenBucket struct {
-	mu           sync.Mutex
-	tokens       float64
-	maxTokens    float64
-	refillRate   float64 // tokens per second
-	lastRefill   time.Time
+	mu         sync.Mutex
+	tokens     float64
+	maxTokens  float64
+	refillRate float64 // tokens per second
+	lastRefill time.Time
 }
 
 // NewTokenBucket creates a new token bucket
@@ -142,10 +142,10 @@ func (tb *TokenBucket) Tokens() float64 {
 
 // SlidingWindow implements a sliding window rate limiter
 type SlidingWindow struct {
-	mu        sync.Mutex
-	window    time.Duration
-	maxCount  int
-	requests  []time.Time
+	mu       sync.Mutex
+	window   time.Duration
+	maxCount int
+	requests []time.Time
 }
 
 // NewSlidingWindow creates a new sliding window rate limiter
@@ -203,21 +203,21 @@ func (sw *SlidingWindow) Count() int {
 
 // PerIPLimiter manages rate limiters per IP address
 type PerIPLimiter struct {
-	mu       sync.RWMutex
-	limiters map[string]*TokenBucket
-	rate     float64
-	burst    int
-	lastCleanup time.Time
+	mu              sync.RWMutex
+	limiters        map[string]*TokenBucket
+	rate            float64
+	burst           int
+	lastCleanup     time.Time
 	cleanupInterval time.Duration
 }
 
 // NewPerIPLimiter creates a new per-IP rate limiter
 func NewPerIPLimiter(rate float64, burst int, cleanupInterval time.Duration) *PerIPLimiter {
 	return &PerIPLimiter{
-		limiters: make(map[string]*TokenBucket),
-		rate:     rate,
-		burst:    burst,
-		lastCleanup: time.Now(),
+		limiters:        make(map[string]*TokenBucket),
+		rate:            rate,
+		burst:           burst,
+		lastCleanup:     time.Now(),
 		cleanupInterval: cleanupInterval,
 	}
 }
@@ -276,11 +276,11 @@ const (
 
 // PerOperationLimiter manages rate limiters per operation type per IP
 type PerOperationLimiter struct {
-	mu       sync.RWMutex
-	limiters map[string]map[OperationType]*TokenBucket
-	rates    map[OperationType]float64
-	bursts   map[OperationType]int
-	lastCleanup time.Time
+	mu              sync.RWMutex
+	limiters        map[string]map[OperationType]*TokenBucket
+	rates           map[OperationType]float64
+	bursts          map[OperationType]int
+	lastCleanup     time.Time
 	cleanupInterval time.Duration
 }
 
@@ -301,10 +301,10 @@ func NewPerOperationLimiter(config RateLimiterConfig) *PerOperationLimiter {
 	}
 
 	return &PerOperationLimiter{
-		limiters: make(map[string]map[OperationType]*TokenBucket),
-		rates:    rates,
-		bursts:   bursts,
-		lastCleanup: time.Now(),
+		limiters:        make(map[string]map[OperationType]*TokenBucket),
+		rates:           rates,
+		bursts:          bursts,
+		lastCleanup:     time.Now(),
 		cleanupInterval: config.CleanupInterval,
 	}
 }
@@ -355,22 +355,22 @@ func (pol *PerOperationLimiter) cleanup() {
 
 // RateLimiter manages all rate limiting for the NFS server
 type RateLimiter struct {
-	config              RateLimiterConfig
-	globalLimiter       *TokenBucket
-	perIPLimiter        *PerIPLimiter
+	config               RateLimiterConfig
+	globalLimiter        *TokenBucket
+	perIPLimiter         *PerIPLimiter
 	perConnectionLimiter sync.Map // map[connID]*TokenBucket
-	perOperationLimiter *PerOperationLimiter
-	fileHandlesPerIP    sync.Map // map[IP]int
-	fileHandlesGlobal   int
-	fileHandlesMu       sync.Mutex
+	perOperationLimiter  *PerOperationLimiter
+	fileHandlesPerIP     sync.Map // map[IP]int
+	fileHandlesGlobal    int
+	fileHandlesMu        sync.Mutex
 }
 
 // NewRateLimiter creates a new rate limiter with the given configuration
 func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
 	return &RateLimiter{
-		config:        config,
-		globalLimiter: NewTokenBucket(float64(config.GlobalRequestsPerSecond), config.GlobalRequestsPerSecond),
-		perIPLimiter:  NewPerIPLimiter(float64(config.PerIPRequestsPerSecond), config.PerIPBurstSize, config.CleanupInterval),
+		config:              config,
+		globalLimiter:       NewTokenBucket(float64(config.GlobalRequestsPerSecond), config.GlobalRequestsPerSecond),
+		perIPLimiter:        NewPerIPLimiter(float64(config.PerIPRequestsPerSecond), config.PerIPBurstSize, config.CleanupInterval),
 		perOperationLimiter: NewPerOperationLimiter(config),
 	}
 }

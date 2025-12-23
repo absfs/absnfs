@@ -128,9 +128,9 @@ func TestPortmapperServerConnection(t *testing.T) {
 		var args bytes.Buffer
 		binary.Write(&args, binary.BigEndian, uint32(NFS_PROGRAM))
 		binary.Write(&args, binary.BigEndian, uint32(NFS_V3))
-		xdrEncodeString(&args, "tcp")  // netid
-		xdrEncodeString(&args, "")     // r_addr (ignored)
-		xdrEncodeString(&args, "")     // r_owner
+		xdrEncodeString(&args, "tcp") // netid
+		xdrEncodeString(&args, "")    // r_addr (ignored)
+		xdrEncodeString(&args, "")    // r_owner
 
 		resp := sendPortmapperCall(t, testPort, 3, 3, args.Bytes()) // proc 3 = GETADDR, version 3
 		if resp == nil {
@@ -165,16 +165,16 @@ func sendPortmapperCall(t *testing.T, port int, procedure uint32, version uint32
 
 	// Build RPC call
 	var call bytes.Buffer
-	binary.Write(&call, binary.BigEndian, uint32(1))                // XID
-	binary.Write(&call, binary.BigEndian, uint32(RPC_CALL))         // Message type
-	binary.Write(&call, binary.BigEndian, uint32(2))                // RPC version
+	binary.Write(&call, binary.BigEndian, uint32(1))                 // XID
+	binary.Write(&call, binary.BigEndian, uint32(RPC_CALL))          // Message type
+	binary.Write(&call, binary.BigEndian, uint32(2))                 // RPC version
 	binary.Write(&call, binary.BigEndian, uint32(PortmapperProgram)) // Program
-	binary.Write(&call, binary.BigEndian, version)                  // Version
-	binary.Write(&call, binary.BigEndian, procedure)                // Procedure
-	binary.Write(&call, binary.BigEndian, uint32(0))                // Auth flavor
-	binary.Write(&call, binary.BigEndian, uint32(0))                // Auth length
-	binary.Write(&call, binary.BigEndian, uint32(0))                // Verifier flavor
-	binary.Write(&call, binary.BigEndian, uint32(0))                // Verifier length
+	binary.Write(&call, binary.BigEndian, version)                   // Version
+	binary.Write(&call, binary.BigEndian, procedure)                 // Procedure
+	binary.Write(&call, binary.BigEndian, uint32(0))                 // Auth flavor
+	binary.Write(&call, binary.BigEndian, uint32(0))                 // Auth length
+	binary.Write(&call, binary.BigEndian, uint32(0))                 // Verifier flavor
+	binary.Write(&call, binary.BigEndian, uint32(0))                 // Verifier length
 	if args != nil {
 		call.Write(args)
 	}

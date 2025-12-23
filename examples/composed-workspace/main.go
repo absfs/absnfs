@@ -3,10 +3,10 @@
 // This example demonstrates how to create an NFS server that exports
 // a virtual filesystem composed of multiple absfs filesystems:
 //
-//   /project   - Real filesystem directory (read-write)
-//   /scratch   - In-memory temp space (fast, volatile)
-//   /libs      - Read-only view of a library/vendor directory
-//   /shared    - Another real directory for shared files
+//	/project   - Real filesystem directory (read-write)
+//	/scratch   - In-memory temp space (fast, volatile)
+//	/libs      - Read-only view of a library/vendor directory
+//	/shared    - Another real directory for shared files
 //
 // This creates a unified "workspace" view that clients can mount,
 // with different storage characteristics for different paths.

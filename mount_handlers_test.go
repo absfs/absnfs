@@ -382,8 +382,8 @@ func TestHandleMountCall(t *testing.T) {
 			if status != NFS_OK {
 				t.Errorf("Expected NFS_OK in reply data, got %v", status)
 			}
-			
-			// Skip validation of the actual handle value since it might be 
+
+			// Skip validation of the actual handle value since it might be
 			// implementation-dependent. Just check we can read it.
 			var handle uint32
 			if err := binary.Read(r, binary.BigEndian, &handle); err != nil {
@@ -523,7 +523,7 @@ func TestHandleMountCall(t *testing.T) {
 		if result.Status != MSG_ACCEPTED {
 			t.Errorf("Expected MSG_ACCEPTED status, got %v", result.Status)
 		}
-		
+
 		// UMNT returns an empty response, so no data to check
 	})
 }

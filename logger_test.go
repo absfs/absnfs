@@ -438,16 +438,16 @@ func TestSlogLogger_Close(t *testing.T) {
 // TestLogConfig_AllFields tests all LogConfig fields
 func TestLogConfig_AllFields(t *testing.T) {
 	config := LogConfig{
-		Level:          "debug",
-		Format:         "json",
-		Output:         "/var/log/nfs.log",
-		LogClientIPs:   true,
-		LogOperations:  true,
-		LogFileAccess:  true,
-		MaxSize:        100,
-		MaxBackups:     5,
-		MaxAge:         30,
-		Compress:       true,
+		Level:         "debug",
+		Format:        "json",
+		Output:        "/var/log/nfs.log",
+		LogClientIPs:  true,
+		LogOperations: true,
+		LogFileAccess: true,
+		MaxSize:       100,
+		MaxBackups:    5,
+		MaxAge:        30,
+		Compress:      true,
 	}
 
 	// Verify all fields are accessible

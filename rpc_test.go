@@ -67,7 +67,7 @@ func TestXDREncoding(t *testing.T) {
 		if err == nil {
 			t.Error("Expected error decoding truncated string")
 		}
-		
+
 		// Test encoding error path
 		failWriter := &failingWriter{failOn: "length"}
 		err = xdrEncodeString(failWriter, "test")
@@ -165,7 +165,7 @@ func TestRPCSuccessPaths(t *testing.T) {
 			t.Errorf("Expected data 'test data', got '%s'", string(dataBytes))
 		}
 	})
-	
+
 	t.Run("encode reply with NFSAttrs data", func(t *testing.T) {
 		// Create test attributes
 		attrs := &NFSAttrs{
@@ -222,7 +222,7 @@ func TestRPCSuccessPaths(t *testing.T) {
 			t.Errorf("Expected mode %d, got %d", attrs.Mode.Perm(), mode)
 		}
 	})
-	
+
 	t.Run("encode reply with uint32 data", func(t *testing.T) {
 		statusCode := uint32(NFSERR_NOENT)
 
@@ -260,7 +260,7 @@ func TestRPCSuccessPaths(t *testing.T) {
 			t.Errorf("Expected status code %d, got %d", statusCode, encodedStatus)
 		}
 	})
-	
+
 	t.Run("encode reply with string data", func(t *testing.T) {
 		testString := "error message"
 
@@ -449,19 +449,19 @@ func TestRPCAuthLengthValidation(t *testing.T) {
 	t.Run("valid credential length at boundary", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		// Write valid RPC call with max credential length
-		binary.Write(buf, binary.BigEndian, uint32(1))      // XID
-		binary.Write(buf, binary.BigEndian, uint32(0))      // RPC_CALL
-		binary.Write(buf, binary.BigEndian, uint32(2))      // RPC Version
-		binary.Write(buf, binary.BigEndian, uint32(100003)) // NFS Program
-		binary.Write(buf, binary.BigEndian, uint32(3))      // Version
-		binary.Write(buf, binary.BigEndian, uint32(0))      // Procedure
-		binary.Write(buf, binary.BigEndian, uint32(0))      // Auth flavor
+		binary.Write(buf, binary.BigEndian, uint32(1))                   // XID
+		binary.Write(buf, binary.BigEndian, uint32(0))                   // RPC_CALL
+		binary.Write(buf, binary.BigEndian, uint32(2))                   // RPC Version
+		binary.Write(buf, binary.BigEndian, uint32(100003))              // NFS Program
+		binary.Write(buf, binary.BigEndian, uint32(3))                   // Version
+		binary.Write(buf, binary.BigEndian, uint32(0))                   // Procedure
+		binary.Write(buf, binary.BigEndian, uint32(0))                   // Auth flavor
 		binary.Write(buf, binary.BigEndian, uint32(MAX_RPC_AUTH_LENGTH)) // Max auth length
 		// Write credential body
 		credBody := make([]byte, MAX_RPC_AUTH_LENGTH)
 		buf.Write(credBody)
-		binary.Write(buf, binary.BigEndian, uint32(0))      // Verifier flavor
-		binary.Write(buf, binary.BigEndian, uint32(0))      // Verifier length
+		binary.Write(buf, binary.BigEndian, uint32(0)) // Verifier flavor
+		binary.Write(buf, binary.BigEndian, uint32(0)) // Verifier length
 
 		call, err := DecodeRPCCall(buf)
 		if err != nil {
@@ -475,15 +475,15 @@ func TestRPCAuthLengthValidation(t *testing.T) {
 	t.Run("valid verifier length at boundary", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		// Write valid RPC call with max verifier length
-		binary.Write(buf, binary.BigEndian, uint32(1))      // XID
-		binary.Write(buf, binary.BigEndian, uint32(0))      // RPC_CALL
-		binary.Write(buf, binary.BigEndian, uint32(2))      // RPC Version
-		binary.Write(buf, binary.BigEndian, uint32(100003)) // NFS Program
-		binary.Write(buf, binary.BigEndian, uint32(3))      // Version
-		binary.Write(buf, binary.BigEndian, uint32(0))      // Procedure
-		binary.Write(buf, binary.BigEndian, uint32(0))      // Auth flavor
-		binary.Write(buf, binary.BigEndian, uint32(0))      // Auth length
-		binary.Write(buf, binary.BigEndian, uint32(0))      // Verifier flavor
+		binary.Write(buf, binary.BigEndian, uint32(1))                   // XID
+		binary.Write(buf, binary.BigEndian, uint32(0))                   // RPC_CALL
+		binary.Write(buf, binary.BigEndian, uint32(2))                   // RPC Version
+		binary.Write(buf, binary.BigEndian, uint32(100003))              // NFS Program
+		binary.Write(buf, binary.BigEndian, uint32(3))                   // Version
+		binary.Write(buf, binary.BigEndian, uint32(0))                   // Procedure
+		binary.Write(buf, binary.BigEndian, uint32(0))                   // Auth flavor
+		binary.Write(buf, binary.BigEndian, uint32(0))                   // Auth length
+		binary.Write(buf, binary.BigEndian, uint32(0))                   // Verifier flavor
 		binary.Write(buf, binary.BigEndian, uint32(MAX_RPC_AUTH_LENGTH)) // Max verifier length
 		// Write verifier body
 		verBody := make([]byte, MAX_RPC_AUTH_LENGTH)

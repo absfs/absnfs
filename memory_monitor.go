@@ -166,9 +166,9 @@ func (m *MemoryMonitor) reduceCacheSizes(reductionFactor float64) {
 	// Log the changes being made
 	m.nfs.logger.Printf("Reducing cache sizes due to memory pressure:")
 	m.nfs.logger.Printf(" - Attribute cache: %d → %d entries", attrCacheSize, newAttrCacheSize)
-	m.nfs.logger.Printf(" - Read-ahead files: %d → %d (currently using %d)", 
+	m.nfs.logger.Printf(" - Read-ahead files: %d → %d (currently using %d)",
 		m.nfs.options.ReadAheadMaxFiles, newReadAheadMaxFiles, fileCount)
-	m.nfs.logger.Printf(" - Read-ahead memory: %d → %d bytes (currently using %d)", 
+	m.nfs.logger.Printf(" - Read-ahead memory: %d → %d bytes (currently using %d)",
 		m.nfs.options.ReadAheadMaxMemory, newReadAheadMaxMemory, memoryUsage)
 
 	// Create new attribute cache with reduced size

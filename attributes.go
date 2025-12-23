@@ -19,22 +19,23 @@ const (
 
 // encodeFileAttributes writes NFSv3 fattr3 structure to an io.Writer in XDR format
 // Per RFC 1813, fattr3 contains:
-//   ftype3     type       - file type
-//   mode3      mode       - protection mode bits
-//   uint32     nlink      - number of hard links
-//   uid3       uid        - owner user id
-//   gid3       gid        - owner group id
-//   size3      size       - file size in bytes
-//   size3      used       - disk space used
-//   specdata3  rdev       - device info (specdata1, specdata2)
-//   uint64     fsid       - filesystem id
-//   fileid3    fileid     - file id (inode)
-//   nfstime3   atime      - access time (seconds, nseconds)
-//   nfstime3   mtime      - modify time (seconds, nseconds)
-//   nfstime3   ctime      - change time (seconds, nseconds)
+//
+//	ftype3     type       - file type
+//	mode3      mode       - protection mode bits
+//	uint32     nlink      - number of hard links
+//	uid3       uid        - owner user id
+//	gid3       gid        - owner group id
+//	size3      size       - file size in bytes
+//	size3      used       - disk space used
+//	specdata3  rdev       - device info (specdata1, specdata2)
+//	uint64     fsid       - filesystem id
+//	fileid3    fileid     - file id (inode)
+//	nfstime3   atime      - access time (seconds, nseconds)
+//	nfstime3   mtime      - modify time (seconds, nseconds)
+//	nfstime3   ctime      - change time (seconds, nseconds)
 func encodeFileAttributes(w io.Writer, attrs *NFSAttrs) error {
 	// Determine file type from mode
-	var ftype uint32 = NF3REG
+	var ftype uint32
 	mode := attrs.Mode
 	switch mode & os.ModeType {
 	case os.ModeDir:

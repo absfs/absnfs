@@ -99,10 +99,10 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 		// Each entry: ex_dir (string), ex_groups (list)
 		// We export "/" to all
 		var buf bytes.Buffer
-		xdrEncodeUint32(&buf, 1)    // Has entry (1 = true)
-		xdrEncodeString(&buf, "/")  // Export path
-		xdrEncodeUint32(&buf, 0)    // No group restrictions (null pointer)
-		xdrEncodeUint32(&buf, 0)    // End of list
+		xdrEncodeUint32(&buf, 1)   // Has entry (1 = true)
+		xdrEncodeString(&buf, "/") // Export path
+		xdrEncodeUint32(&buf, 0)   // No group restrictions (null pointer)
+		xdrEncodeUint32(&buf, 0)   // End of list
 		reply.Data = buf.Bytes()
 		return reply, nil
 

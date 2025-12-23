@@ -9,7 +9,7 @@ import (
 
 func TestAttrCache(t *testing.T) {
 	t.Run("basic operations", func(t *testing.T) {
-		cache := NewAttrCache(2 * time.Second, 1000)
+		cache := NewAttrCache(2*time.Second, 1000)
 
 		// Test initial state
 		if attrs := cache.Get("/test.txt", nil); attrs != nil {
@@ -18,12 +18,12 @@ func TestAttrCache(t *testing.T) {
 
 		// Test Put and Get
 		initialAttrs := &NFSAttrs{
-			Mode:  0644,
-			Size:  1234,
+			Mode: 0644,
+			Size: 1234,
 			// Mtime: time.Now()
 			// Atime: time.Now()
-			Uid:   1000,
-			Gid:   1000,
+			Uid: 1000,
+			Gid: 1000,
 		}
 		cache.Put("/test.txt", initialAttrs)
 
@@ -50,18 +50,18 @@ func TestAttrCache(t *testing.T) {
 	})
 
 	t.Run("cache eviction", func(t *testing.T) {
-		cache := NewAttrCache(10 * time.Second, 5)
+		cache := NewAttrCache(10*time.Second, 5)
 
 		// Add entries until eviction occurs
 		for i := 0; i < 10; i++ {
 			path := fmt.Sprintf("/file%d.txt", i)
 			attrs := &NFSAttrs{
-				Mode:  0644,
-				Size:  int64(i * 1000),
+				Mode: 0644,
+				Size: int64(i * 1000),
 				// Mtime: time.Now()
 				// Atime: time.Now()
-				Uid:   1000,
-				Gid:   1000,
+				Uid: 1000,
+				Gid: 1000,
 			}
 			cache.Put(path, attrs)
 		}
@@ -81,7 +81,7 @@ func TestAttrCache(t *testing.T) {
 	})
 
 	t.Run("concurrent operations", func(t *testing.T) {
-		cache := NewAttrCache(5 * time.Second, 1000)
+		cache := NewAttrCache(5*time.Second, 1000)
 		var wg sync.WaitGroup
 		numGoroutines := 5
 		numOperations := 100
@@ -95,12 +95,12 @@ func TestAttrCache(t *testing.T) {
 					path := fmt.Sprintf("/file%d_%d.txt", id, j)
 					// Put
 					attrs := &NFSAttrs{
-						Mode:  0644,
-						Size:  int64(j * 1000),
+						Mode: 0644,
+						Size: int64(j * 1000),
 						// Mtime: time.Now()
 						// Atime: time.Now()
-						Uid:   uint32(id),
-						Gid:   uint32(id),
+						Uid: uint32(id),
+						Gid: uint32(id),
 					}
 					cache.Put(path, attrs)
 
@@ -165,7 +165,7 @@ func TestReadAheadBuffer(t *testing.T) {
 			t.Errorf("Expected 50 bytes, got %d", len(readData))
 		}
 		for i := range readData {
-			if readData[i] != byte(i + 50) {
+			if readData[i] != byte(i+50) {
 				t.Errorf("Data mismatch at position %d: expected %d, got %d", i, i+50, readData[i])
 			}
 		}
@@ -219,8 +219,8 @@ func TestReadAheadBuffer(t *testing.T) {
 	})
 
 	t.Run("memory limits", func(t *testing.T) {
-		buffer := NewReadAheadBuffer(100)    // 100 byte buffer size
-		buffer.Configure(10, 300)            // Max 10 files, 300 bytes total (only room for 3 buffers)
+		buffer := NewReadAheadBuffer(100) // 100 byte buffer size
+		buffer.Configure(10, 300)         // Max 10 files, 300 bytes total (only room for 3 buffers)
 
 		testData := make([]byte, 100)
 

@@ -209,43 +209,43 @@ func TestServerHandleConnection(t *testing.T) {
 			}
 			if err := xdrEncodeUint32(srv, call.Header.Xid); err != nil {
 				t.Errorf("Failed to encode XID: %v", err)
-					return
+				return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.MsgType); err != nil {
 				t.Errorf("Failed to encode message type: %v", err)
-					return
+				return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.RPCVersion); err != nil {
 				t.Errorf("Failed to encode RPC version: %v", err)
-					return
+				return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.Program); err != nil {
 				t.Errorf("Failed to encode program: %v", err)
-					return
+				return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.Version); err != nil {
 				t.Errorf("Failed to encode version: %v", err)
-					return
+				return
 			}
 			if err := xdrEncodeUint32(srv, call.Header.Procedure); err != nil {
 				t.Errorf("Failed to encode procedure: %v", err)
-					return
+				return
 			}
 			if err := xdrEncodeUint32(srv, call.Credential.Flavor); err != nil {
 				t.Errorf("Failed to encode credential flavor: %v", err)
-					return
+				return
 			}
 			if err := xdrEncodeUint32(srv, 0); err != nil { // credential body length
 				t.Errorf("Failed to encode credential length: %v", err)
-					return
+				return
 			}
 			if err := xdrEncodeUint32(srv, call.Verifier.Flavor); err != nil {
 				t.Errorf("Failed to encode verifier flavor: %v", err)
-					return
+				return
 			}
 			if err := xdrEncodeUint32(srv, 0); err != nil { // verifier body length
 				t.Errorf("Failed to encode verifier length: %v", err)
-					return
+				return
 			}
 			// Block on read to trigger write timeout
 			buf := make([]byte, 1024)
@@ -311,41 +311,41 @@ func TestServerHandleConnection(t *testing.T) {
 					}
 					if err := xdrEncodeUint32(srv, call.Header.Xid); err != nil {
 						t.Errorf("Failed to encode XID: %v", err)
-							return
+						return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.MsgType); err != nil {
 						t.Errorf("Failed to encode message type: %v", err)
-							return
+						return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.RPCVersion); err != nil {
 						t.Errorf("Failed to encode RPC version: %v", err)
-							return
+						return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.Program); err != nil {
 						t.Errorf("Failed to encode program: %v", err)
-							return
+						return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.Version); err != nil {
 						t.Errorf("Failed to encode version: %v", err)
-							return
+						return
 					}
 					if err := xdrEncodeUint32(srv, call.Header.Procedure); err != nil {
 						t.Errorf("Failed to encode procedure: %v", err)
-							return
+						return
 					}
 					if err := xdrEncodeUint32(srv, call.Credential.Flavor); err != nil {
 						t.Errorf("Failed to encode credential flavor: %v", err)
-							return
+						return
 					}
 					if err := xdrEncodeUint32(srv, 0); err != nil { // credential body length
 					}
 					if err := xdrEncodeUint32(srv, call.Verifier.Flavor); err != nil {
 						t.Errorf("Failed to encode verifier flavor: %v", err)
-							return
+						return
 					}
 					if err := xdrEncodeUint32(srv, 0); err != nil { // verifier body length
 						t.Errorf("Failed to encode verifier length: %v", err)
-							return
+						return
 					}
 				}()
 

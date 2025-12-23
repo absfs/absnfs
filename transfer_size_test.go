@@ -18,7 +18,7 @@ func TestTransferSize(t *testing.T) {
 	for i := range testData {
 		testData[i] = byte(i % 256)
 	}
-	
+
 	f, err := fs.Create("/testfile")
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
@@ -31,15 +31,15 @@ func TestTransferSize(t *testing.T) {
 
 	// Test cases for different transfer sizes
 	testCases := []struct {
-		name        string
+		name         string
 		transferSize int
-		readSize    int64
-		expected    int
+		readSize     int64
+		expected     int
 	}{
-		{"Small transfer size", 1024, 2048, 1024},         // TransferSize limits read
-		{"Medium transfer size", 4096, 2048, 2048},        // Read request is smaller than limit
-		{"Large transfer size", 1024 * 1024, 2048, 2048},  // Read request is much smaller than limit
-		{"Zero transfer size", 0, 2048, 2048},             // Default 64K used when 0
+		{"Small transfer size", 1024, 2048, 1024},        // TransferSize limits read
+		{"Medium transfer size", 4096, 2048, 2048},       // Read request is smaller than limit
+		{"Large transfer size", 1024 * 1024, 2048, 2048}, // Read request is much smaller than limit
+		{"Zero transfer size", 0, 2048, 2048},            // Default 64K used when 0
 	}
 
 	for _, tc := range testCases {
@@ -55,7 +55,7 @@ func TestTransferSize(t *testing.T) {
 
 			// Verify transfer size was set correctly
 			if tc.transferSize == 0 && server.options.TransferSize != 65536 {
-				t.Errorf("Default transfer size not set correctly: got %d, want %d", 
+				t.Errorf("Default transfer size not set correctly: got %d, want %d",
 					server.options.TransferSize, 65536)
 			} else if tc.transferSize > 0 && server.options.TransferSize != tc.transferSize {
 				t.Errorf("Transfer size not set correctly: got %d, want %d",
@@ -106,15 +106,15 @@ func TestWriteTransferSize(t *testing.T) {
 
 	// Test cases for different transfer sizes
 	testCases := []struct {
-		name        string
+		name         string
 		transferSize int
-		writeSize   int
-		expected    int64
+		writeSize    int
+		expected     int64
 	}{
-		{"Small transfer size", 1024, 2048, 1024},         // TransferSize limits write
-		{"Medium transfer size", 4096, 2048, 2048},        // Write request is smaller than limit
-		{"Large transfer size", 1024 * 1024, 2048, 2048},  // Write request is much smaller than limit
-		{"Zero transfer size", 0, 2048, 2048},             // Default 64K used when 0
+		{"Small transfer size", 1024, 2048, 1024},        // TransferSize limits write
+		{"Medium transfer size", 4096, 2048, 2048},       // Write request is smaller than limit
+		{"Large transfer size", 1024 * 1024, 2048, 2048}, // Write request is much smaller than limit
+		{"Zero transfer size", 0, 2048, 2048},            // Default 64K used when 0
 	}
 
 	for _, tc := range testCases {

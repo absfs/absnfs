@@ -17,16 +17,16 @@ import (
 
 // ServerOptions defines the configuration for the NFS server
 type ServerOptions struct {
-	Name          string // Server name
-	UID           uint32 // Server UID
-	GID           uint32 // Server GID
-	ReadOnly      bool   // Read-only mode
-	Port          int    // Port to listen on (0 = random port, default NFS port is 2049)
-	MountPort     int    // Port for mount daemon (0 = same as NFS port, 635 = standard mountd port)
-	Hostname      string // Hostname to bind to
-	Debug         bool   // Enable debug logging
-	UsePortmapper bool   // Whether to start portmapper service (requires root for port 111)
-	UseRecordMarking bool // Use RPC record marking (required for standard NFS clients)
+	Name             string // Server name
+	UID              uint32 // Server UID
+	GID              uint32 // Server GID
+	ReadOnly         bool   // Read-only mode
+	Port             int    // Port to listen on (0 = random port, default NFS port is 2049)
+	MountPort        int    // Port for mount daemon (0 = same as NFS port, 635 = standard mountd port)
+	Hostname         string // Hostname to bind to
+	Debug            bool   // Enable debug logging
+	UsePortmapper    bool   // Whether to start portmapper service (requires root for port 111)
+	UseRecordMarking bool   // Use RPC record marking (required for standard NFS clients)
 }
 
 // connectionState tracks the state of an active connection
@@ -37,21 +37,21 @@ type connectionState struct {
 
 // Server represents an NFS server instance
 type Server struct {
-	options        ServerOptions
-	handler        *AbsfsNFS
-	listener       net.Listener
-	mountListener  net.Listener  // Separate listener for mount daemon
-	portmapper     *Portmapper   // Portmapper service
-	logger         *log.Logger
-	ctx            context.Context
-	cancel         context.CancelFunc
-	wg             sync.WaitGroup
-	acceptErrs     atomic.Int32 // Counter for accept errors to prevent excessive logging
+	options       ServerOptions
+	handler       *AbsfsNFS
+	listener      net.Listener
+	mountListener net.Listener // Separate listener for mount daemon
+	portmapper    *Portmapper  // Portmapper service
+	logger        *log.Logger
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	acceptErrs    atomic.Int32 // Counter for accept errors to prevent excessive logging
 
 	// Connection management
-	connMutex      sync.Mutex
-	activeConns    map[net.Conn]*connectionState  // Map of active connections and their state
-	connCount      int                            // Current connection count
+	connMutex   sync.Mutex
+	activeConns map[net.Conn]*connectionState // Map of active connections and their state
+	connCount   int                           // Current connection count
 }
 
 // NewServer creates a new NFS server
@@ -278,7 +278,7 @@ func (s *Server) cleanupIdleConnections() {
 func (s *Server) idleConnectionCleanupLoop() {
 	// Default check interval is 1 minute or IdleTimeout/2, whichever is shorter
 	checkInterval := 1 * time.Minute
-	
+
 	if s.handler != nil && s.handler.options.IdleTimeout > 0 {
 		// Use half the idle timeout as a reasonable check interval
 		halfTimeout := s.handler.options.IdleTimeout / 2
@@ -286,10 +286,10 @@ func (s *Server) idleConnectionCleanupLoop() {
 			checkInterval = halfTimeout
 		}
 	}
-	
+
 	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -304,7 +304,7 @@ func (s *Server) Listen() error {
 	if s.handler == nil {
 		return fmt.Errorf("no handler set")
 	}
-	
+
 	// Start periodic idle connection cleanup if needed
 	if s.handler.options.IdleTimeout > 0 {
 		s.wg.Add(1)
@@ -312,7 +312,7 @@ func (s *Server) Listen() error {
 			defer s.wg.Done()
 			s.idleConnectionCleanupLoop()
 		}()
-		
+
 		if s.options.Debug {
 			s.logger.Printf("Connection management enabled (max connections: %d, idle timeout: %v)",
 				s.handler.options.MaxConnections, s.handler.options.IdleTimeout)
@@ -426,7 +426,7 @@ func (s *Server) StartWithPortmapper() error {
 	if mountPort == 0 {
 		mountPort = nfsPort // Use NFS port for mount if not specified
 	}
-	s.portmapper.RegisterService(MOUNT_PROGRAM, 1, IPPROTO_TCP, mountPort) // v1
+	s.portmapper.RegisterService(MOUNT_PROGRAM, 1, IPPROTO_TCP, mountPort)        // v1
 	s.portmapper.RegisterService(MOUNT_PROGRAM, MOUNT_V3, IPPROTO_TCP, mountPort) // v3
 
 	s.logger.Printf("NFS server started with portmapper (NFS port: %d, Mount port: %d)", nfsPort, mountPort)
@@ -493,7 +493,7 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 				continue
 			}
 			s.acceptErrs.Store(0) // Reset error counter on successful accept
-			
+
 			// Extract client IP from connection
 			clientAddr := conn.RemoteAddr().String()
 			clientIP, _, err := net.SplitHostPort(clientAddr)
@@ -528,7 +528,7 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 				conn.Close()
 				continue
 			}
-			
+
 			// Configure TCP connection options if this is a TCP connection
 			if tcpConn, ok := conn.(*net.TCPConn); ok && s.handler != nil {
 				// Apply TCP keepalive setting
@@ -560,7 +560,7 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 						s.logger.Printf("Warning: failed to set receive buffer size: %v", err)
 					}
 				}
-				
+
 				if s.options.Debug {
 					s.logger.Printf("Configured TCP connection (keepalive: %v, nodelay: %v, sendbuf: %d, recvbuf: %d)",
 						s.handler.options.TCPKeepAlive,
@@ -729,7 +729,7 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 				}
 				return
 			}
-			
+
 			// Update last activity time for this connection after successful write
 			s.updateConnectionActivity(conn)
 		}
@@ -998,9 +998,9 @@ func isConnectionResetError(err error) bool {
 		return false
 	}
 	errStr := err.Error()
-	return strings.Contains(errStr, "connection reset by peer") || 
-		   strings.Contains(errStr, "broken pipe") ||
-		   strings.Contains(errStr, "EOF") ||
-		   strings.Contains(errStr, "i/o timeout") ||
-		   strings.Contains(errStr, "use of closed network connection")
+	return strings.Contains(errStr, "connection reset by peer") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "EOF") ||
+		strings.Contains(errStr, "i/o timeout") ||
+		strings.Contains(errStr, "use of closed network connection")
 }

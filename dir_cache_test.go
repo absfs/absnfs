@@ -92,10 +92,10 @@ func TestDirCacheConfiguration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create server with the specified dir cache configuration
 			options := ExportOptions{
-				EnableDirCache:       tc.enableDirCache,
-				DirCacheTimeout:      tc.cacheTimeout,
-				DirCacheMaxEntries:   tc.cacheMaxEntries,
-				DirCacheMaxDirSize:   tc.cacheMaxDirSize,
+				EnableDirCache:     tc.enableDirCache,
+				DirCacheTimeout:    tc.cacheTimeout,
+				DirCacheMaxEntries: tc.cacheMaxEntries,
+				DirCacheMaxDirSize: tc.cacheMaxDirSize,
 			}
 			server, err := New(fs, options)
 			if err != nil {
@@ -164,7 +164,7 @@ func TestDirCacheBasicFunctionality(t *testing.T) {
 	// First read should miss cache
 	node := &NFSNode{
 		SymlinkFileSystem: fs,
-		path:       "/testdir",
+		path:              "/testdir",
 		attrs: &NFSAttrs{
 			Mode: os.ModeDir | 0755,
 		},
@@ -239,7 +239,7 @@ func TestDirCacheExpiration(t *testing.T) {
 
 	node := &NFSNode{
 		SymlinkFileSystem: fs,
-		path:       "/testdir",
+		path:              "/testdir",
 		attrs: &NFSAttrs{
 			Mode: os.ModeDir | 0755,
 		},
@@ -307,7 +307,7 @@ func TestDirCacheLRUEviction(t *testing.T) {
 		dirPath := "/testdir" + string(rune('0'+i))
 		node := &NFSNode{
 			SymlinkFileSystem: fs,
-			path:       dirPath,
+			path:              dirPath,
 			attrs: &NFSAttrs{
 				Mode: os.ModeDir | 0755,
 			},
@@ -327,7 +327,7 @@ func TestDirCacheLRUEviction(t *testing.T) {
 	// Read 4th directory - should evict LRU (first one)
 	node4 := &NFSNode{
 		SymlinkFileSystem: fs,
-		path:       "/testdir3",
+		path:              "/testdir3",
 		attrs: &NFSAttrs{
 			Mode: os.ModeDir | 0755,
 		},
@@ -385,7 +385,7 @@ func TestDirCacheInvalidation(t *testing.T) {
 
 	node := &NFSNode{
 		SymlinkFileSystem: fs,
-		path:       "/testdir",
+		path:              "/testdir",
 		attrs: &NFSAttrs{
 			Mode: os.ModeDir | 0755,
 		},
@@ -463,7 +463,7 @@ func TestDirCacheLargeDirSize(t *testing.T) {
 
 	node := &NFSNode{
 		SymlinkFileSystem: fs,
-		path:       "/largedir",
+		path:              "/largedir",
 		attrs: &NFSAttrs{
 			Mode: os.ModeDir | 0755,
 		},
@@ -533,7 +533,7 @@ func TestDirCacheClear(t *testing.T) {
 		dirPath := "/testdir" + string(rune('0'+i))
 		node := &NFSNode{
 			SymlinkFileSystem: fs,
-			path:       dirPath,
+			path:              dirPath,
 			attrs: &NFSAttrs{
 				Mode: os.ModeDir | 0755,
 			},
@@ -593,7 +593,7 @@ func TestDirCacheMetricsTracking(t *testing.T) {
 
 	node := &NFSNode{
 		SymlinkFileSystem: fs,
-		path:       "/testdir",
+		path:              "/testdir",
 		attrs: &NFSAttrs{
 			Mode: os.ModeDir | 0755,
 		},

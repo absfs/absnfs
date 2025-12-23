@@ -10,13 +10,13 @@ import (
 
 // AttrCache provides caching for file attributes and negative lookups
 type AttrCache struct {
-	mu              sync.RWMutex
-	cache           map[string]*CachedAttrs
-	ttl             time.Duration
-	negativeTTL     time.Duration // TTL for negative cache entries
-	maxSize         int           // Maximum number of entries in the cache
-	accessList      *list.List    // Doubly-linked list for O(1) LRU tracking
-	enableNegative  bool          // Enable negative caching
+	mu             sync.RWMutex
+	cache          map[string]*CachedAttrs
+	ttl            time.Duration
+	negativeTTL    time.Duration // TTL for negative cache entries
+	maxSize        int           // Maximum number of entries in the cache
+	accessList     *list.List    // Doubly-linked list for O(1) LRU tracking
+	enableNegative bool          // Enable negative caching
 }
 
 // CachedAttrs represents cached file attributes with expiration
@@ -299,7 +299,7 @@ func (c *AttrCache) Clear() {
 func (c *AttrCache) Size() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	return len(c.cache)
 }
 
@@ -307,7 +307,7 @@ func (c *AttrCache) Size() int {
 func (c *AttrCache) MaxSize() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	return c.maxSize
 }
 
@@ -458,10 +458,10 @@ func NewReadAheadBuffer(size int) *ReadAheadBuffer {
 func (b *ReadAheadBuffer) Configure(maxFiles int, maxMemory int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	b.maxFiles = maxFiles
 	b.maxMemory = maxMemory
-	
+
 	// If current usage exceeds new limits, evict buffers
 	b.enforceMemoryLimits()
 }
@@ -470,7 +470,7 @@ func (b *ReadAheadBuffer) Configure(maxFiles int, maxMemory int64) {
 func (b *ReadAheadBuffer) Size() int64 {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	
+
 	return b.currentUsage
 }
 
@@ -478,7 +478,7 @@ func (b *ReadAheadBuffer) Size() int64 {
 func (b *ReadAheadBuffer) Stats() (int, int64) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	
+
 	return len(b.buffers), b.currentUsage
 }
 
@@ -554,7 +554,7 @@ func (b *ReadAheadBuffer) Fill(path string, data []byte, offset int64) {
 			// Need to evict at least one buffer
 			b.enforceMemoryLimits()
 		}
-		
+
 		// Create new buffer
 		buffer = &FileBuffer{
 			data: make([]byte, b.bufferSize),
@@ -566,14 +566,14 @@ func (b *ReadAheadBuffer) Fill(path string, data []byte, offset int64) {
 
 	buffer.offset = offset
 	buffer.lastUse = time.Now()
-	
+
 	// Only copy up to buffer capacity
 	buffer.dataLen = len(data)
 	if buffer.dataLen > len(buffer.data) {
 		buffer.dataLen = len(buffer.data)
 	}
 	copy(buffer.data[:buffer.dataLen], data)
-	
+
 	// Update access order
 	b.updateAccessOrder(path)
 }
@@ -584,7 +584,7 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int, server ...*
 	if len(server) > 0 {
 		s = server[0]
 	}
-	
+
 	b.mu.RLock()
 	buffer, exists := b.buffers[path]
 	if !exists {
@@ -605,17 +605,17 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int, server ...*
 
 		return nil, false
 	}
-	
+
 	// Check if buffer has the requested data
 	// Special case: handle reads that are exactly at the end of the buffer
 	if offset == buffer.offset+int64(buffer.dataLen) {
 		b.mu.RUnlock()
-		
+
 		// Record cache hit in metrics
 		if s != nil {
 			s.RecordReadAheadHit()
 		}
-		
+
 		return []byte{}, true // Empty result indicates EOF
 	}
 
@@ -638,30 +638,30 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int, server ...*
 
 		return nil, false
 	}
-	
+
 	// Calculate start and end positions in buffer
 	start := int(offset - buffer.offset)
 	if start >= buffer.dataLen {
 		b.mu.RUnlock()
-		
+
 		// Record cache hit in metrics
 		if s != nil {
 			s.RecordReadAheadHit()
 		}
-		
+
 		return []byte{}, true
 	}
-	
+
 	end := start + count
 	if end > buffer.dataLen {
 		end = buffer.dataLen
 	}
-	
+
 	// Copy data from buffer
 	result := make([]byte, end-start)
 	copy(result, buffer.data[start:end])
 	b.mu.RUnlock()
-	
+
 	// Update access time and order (requires write lock)
 	b.mu.Lock()
 	if buff, ok := b.buffers[path]; ok {
@@ -669,7 +669,7 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int, server ...*
 		b.updateAccessOrder(path)
 	}
 	b.mu.Unlock()
-	
+
 	// Record cache hit in metrics
 	if s != nil {
 		s.RecordReadAheadHit()
@@ -727,14 +727,14 @@ func (b *ReadAheadBuffer) Resize(maxFiles int, maxMemory int64) {
 
 // DirCache provides caching for directory entries
 type DirCache struct {
-	entries     map[string]*CachedDirEntry
-	accessList  *list.List
-	mu          sync.RWMutex
-	timeout     time.Duration
-	maxEntries  int
-	maxDirSize  int
-	hits        uint64
-	misses      uint64
+	entries    map[string]*CachedDirEntry
+	accessList *list.List
+	mu         sync.RWMutex
+	timeout    time.Duration
+	maxEntries int
+	maxDirSize int
+	hits       uint64
+	misses     uint64
 }
 
 // CachedDirEntry represents cached directory entries with expiration

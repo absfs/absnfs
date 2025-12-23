@@ -342,7 +342,7 @@ func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset in
 	if data, ok := s.readBuf.Read(node.path, offset, int(count), s); ok {
 		return data, nil
 	}
-	
+
 	// Get the file handle for this node and use batch processing if enabled
 	var fileHandle uint64
 	var useBatch bool
@@ -490,7 +490,7 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 	if dataLength > s.options.TransferSize {
 		data = data[:s.options.TransferSize]
 	}
-	
+
 	// Get the file handle for this node and use batch processing if enabled
 	var fileHandle uint64
 	var useBatch bool

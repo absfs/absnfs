@@ -107,8 +107,8 @@ func TestMemoryStatsUpdate(t *testing.T) {
 		t.Error("Stats timestamp did not update")
 	}
 
-	// Clean up
-	data = nil
+	// Clean up - allow GC to reclaim memory
+	_ = data
 }
 
 func TestCacheReductionCalculation(t *testing.T) {
@@ -227,7 +227,7 @@ func TestMemoryPressureHandling(t *testing.T) {
 
 	// Clean up
 	server.stopMemoryMonitoring()
-	allData = nil
+	_ = allData // allow GC to reclaim
 	runtime.GC()
 }
 

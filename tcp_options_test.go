@@ -78,7 +78,7 @@ func TestTCPOptions(t *testing.T) {
 	}
 
 	// Verify we have a valid connection
-	// Note: We don't need to read any response since we're just testing that the 
+	// Note: We don't need to read any response since we're just testing that the
 	// TCP options are applied correctly. The server will likely close the connection
 	// since we're not sending a valid RPC request.
 }
@@ -125,11 +125,11 @@ func TestTCPOptionsCustomValues(t *testing.T) {
 
 	// Create NFS server with custom TCP options
 	options := ExportOptions{
-		TCPKeepAlive:         false, // Disable keep-alive
-		TCPNoDelay:           false, // Enable Nagle's algorithm
-		SendBufferSize:       1048576, // 1MB
-		ReceiveBufferSize:    524288,  // 512KB
-		hasExplicitTCPSettings: true,  // Mark as explicitly set
+		TCPKeepAlive:           false,   // Disable keep-alive
+		TCPNoDelay:             false,   // Enable Nagle's algorithm
+		SendBufferSize:         1048576, // 1MB
+		ReceiveBufferSize:      524288,  // 512KB
+		hasExplicitTCPSettings: true,    // Mark as explicitly set
 	}
 
 	server, err := New(fs, options)

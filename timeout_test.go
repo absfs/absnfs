@@ -299,10 +299,10 @@ func TestCreateTimeout(t *testing.T) {
 	defer cancel()
 
 	attrs := &NFSAttrs{
-		Mode:  0644,
-		Uid:   1000,
-		Gid:   1000,
-		Size:  0,
+		Mode: 0644,
+		Uid:  1000,
+		Gid:  1000,
+		Size: 0,
 		// Mtime: time.Now()
 		// Atime: time.Now()
 	}

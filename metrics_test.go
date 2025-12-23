@@ -29,8 +29,8 @@ func TestMetricsCollection(t *testing.T) {
 
 	// Test operation counting
 	operationTypes := []string{
-		"READ", "WRITE", "LOOKUP", "GETATTR", 
-		"CREATE", "REMOVE", "RENAME", "MKDIR", 
+		"READ", "WRITE", "LOOKUP", "GETATTR",
+		"CREATE", "REMOVE", "RENAME", "MKDIR",
 		"RMDIR", "READDIR", "ACCESS",
 	}
 
@@ -152,7 +152,7 @@ func TestGetMetricsMethod(t *testing.T) {
 
 	// Verify metrics were updated
 	if updatedMetrics.TotalOperations <= metrics.TotalOperations {
-		t.Errorf("Expected total operations to increase, got %d -> %d", 
+		t.Errorf("Expected total operations to increase, got %d -> %d",
 			metrics.TotalOperations, updatedMetrics.TotalOperations)
 	}
 

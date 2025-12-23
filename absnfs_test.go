@@ -18,12 +18,12 @@ import (
 func TestNFSAttrs(t *testing.T) {
 	t.Run("validity and invalidation", func(t *testing.T) {
 		attrs := &NFSAttrs{
-			Mode:  0644,
-			Size:  1234,
+			Mode: 0644,
+			Size: 1234,
 			// Mtime: time.Now()
 			// Atime: time.Now()
-			Uid:   1000,
-			Gid:   1000,
+			Uid: 1000,
+			Gid: 1000,
 		}
 
 		// Test initial state
@@ -257,7 +257,7 @@ func TestReadWrite(t *testing.T) {
 		}
 
 		attrs := &NFSAttrs{
-			Mode:  0644,
+			Mode: 0644,
 			// Mtime: time.Now()
 			// Atime: time.Now()
 		}
@@ -509,16 +509,16 @@ func (m *mockFS) Chown(path string, uid, gid int) error { return m.statError }
 func (m *mockFS) Chtimes(path string, atime time.Time, mtime time.Time) error {
 	return m.statError
 }
-func (m *mockFS) Symlink(oldname, newname string) error { return m.statError }
-func (m *mockFS) Readlink(path string) (string, error)  { return "", m.statError }
-func (m *mockFS) Lchown(path string, uid, gid int) error { return m.statError }
+func (m *mockFS) Symlink(oldname, newname string) error      { return m.statError }
+func (m *mockFS) Readlink(path string) (string, error)       { return "", m.statError }
+func (m *mockFS) Lchown(path string, uid, gid int) error     { return m.statError }
 func (m *mockFS) ReadDir(path string) ([]fs.DirEntry, error) { return nil, m.statError }
-func (m *mockFS) ReadFile(path string) ([]byte, error) { return nil, m.statError }
-func (m *mockFS) Sub(dir string) (fs.FS, error) { return nil, m.statError }
-func (m *mockFS) Getwd() (string, error)                { return "", m.statError }
-func (m *mockFS) ListSeparator() uint8                  { return '/' }
-func (m *mockFS) Separator() uint8                      { return '/' }
-func (m *mockFS) TempDir() string                       { return "/tmp" }
+func (m *mockFS) ReadFile(path string) ([]byte, error)       { return nil, m.statError }
+func (m *mockFS) Sub(dir string) (fs.FS, error)              { return nil, m.statError }
+func (m *mockFS) Getwd() (string, error)                     { return "", m.statError }
+func (m *mockFS) ListSeparator() uint8                       { return '/' }
+func (m *mockFS) Separator() uint8                           { return '/' }
+func (m *mockFS) TempDir() string                            { return "/tmp" }
 
 func TestAbsfsNFSClose(t *testing.T) {
 	t.Run("basic close cleanup", func(t *testing.T) {
@@ -547,8 +547,8 @@ func TestAbsfsNFSClose(t *testing.T) {
 		// Add some items to cache
 		testPath := "/testdir"
 		nfs.attrCache.Put(testPath, &NFSAttrs{
-			Mode:  0755,
-			Size:  0,
+			Mode: 0755,
+			Size: 0,
 			// Mtime: time.Now()
 			// Atime: time.Now()
 		})
@@ -690,8 +690,8 @@ func TestAbsfsNFSClose(t *testing.T) {
 		for i := 0; i < 100; i++ {
 			path := fmt.Sprintf("/path%d", i)
 			nfs.attrCache.Put(path, &NFSAttrs{
-				Mode:  0644,
-				Size:  int64(i * 1024),
+				Mode: 0644,
+				Size: int64(i * 1024),
 				// Mtime: time.Now()
 				// Atime: time.Now()
 			})

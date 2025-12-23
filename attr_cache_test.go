@@ -143,7 +143,7 @@ func TestAttrCacheSizeLimit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to get attributes for file %s: %v", filePath, err)
 		}
-		
+
 		// Basic verification that we got valid attributes
 		if attrs == nil || !attrs.Mode.IsRegular() {
 			t.Errorf("Invalid or missing cached attributes for %s", filePath)
@@ -215,7 +215,7 @@ func TestAttrCacheTimeout(t *testing.T) {
 
 	// The mode should reflect the changes
 	if attrs3.Mode != 0777 {
-		t.Errorf("Attributes were not refreshed after cache expiry: got %o, want %o", 
+		t.Errorf("Attributes were not refreshed after cache expiry: got %o, want %o",
 			attrs3.Mode, 0777)
 	}
 }

@@ -8,10 +8,10 @@ import (
 // TestInvalidFileHandleError tests the InvalidFileHandleError type
 func TestInvalidFileHandleError(t *testing.T) {
 	tests := []struct {
-		name           string
-		handle         uint64
-		reason         string
-		expectedMsg    string
+		name        string
+		handle      uint64
+		reason      string
+		expectedMsg string
 	}{
 		{
 			name:        "with reason",
@@ -53,10 +53,10 @@ func TestInvalidFileHandleError(t *testing.T) {
 // TestNotSupportedError tests the NotSupportedError type
 func TestNotSupportedError(t *testing.T) {
 	tests := []struct {
-		name           string
-		operation      string
-		reason         string
-		expectedMsg    string
+		name        string
+		operation   string
+		reason      string
+		expectedMsg string
 	}{
 		{
 			name:        "with reason",
@@ -279,4 +279,3 @@ func (e *wrappedError) Error() string {
 func (e *wrappedError) Unwrap() error {
 	return e.inner
 }
-

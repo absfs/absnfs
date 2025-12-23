@@ -15,18 +15,18 @@ func TestGetExportOptions(t *testing.T) {
 	}
 
 	originalOptions := ExportOptions{
-		ReadOnly:             true,
-		AllowedIPs:           []string{"192.168.1.0/24", "10.0.0.1"},
-		Squash:               "root",
-		AttrCacheSize:        5000,
-		AttrCacheTimeout:     10 * time.Second,
-		ReadAheadMaxMemory:   50 * 1024 * 1024,
-		ReadAheadMaxFiles:    50,
-		MemoryHighWatermark:  0.75,
-		MemoryLowWatermark:   0.5,
-		MaxWorkers:           8,
-		BatchOperations:      true,
-		MaxBatchSize:         15,
+		ReadOnly:            true,
+		AllowedIPs:          []string{"192.168.1.0/24", "10.0.0.1"},
+		Squash:              "root",
+		AttrCacheSize:       5000,
+		AttrCacheTimeout:    10 * time.Second,
+		ReadAheadMaxMemory:  50 * 1024 * 1024,
+		ReadAheadMaxFiles:   50,
+		MemoryHighWatermark: 0.75,
+		MemoryLowWatermark:  0.5,
+		MaxWorkers:          8,
+		BatchOperations:     true,
+		MaxBatchSize:        15,
 	}
 
 	server, err := New(fs, originalOptions)
@@ -73,16 +73,16 @@ func TestUpdateExportOptions_SafeFields(t *testing.T) {
 	}
 
 	initialOptions := ExportOptions{
-		ReadOnly:             false,
-		AttrCacheSize:        1000,
-		AttrCacheTimeout:     5 * time.Second,
-		ReadAheadMaxMemory:   100 * 1024 * 1024,
-		ReadAheadMaxFiles:    100,
-		MemoryHighWatermark:  0.8,
-		MemoryLowWatermark:   0.6,
-		MaxWorkers:           4,
-		BatchOperations:      false,
-		MaxBatchSize:         10,
+		ReadOnly:            false,
+		AttrCacheSize:       1000,
+		AttrCacheTimeout:    5 * time.Second,
+		ReadAheadMaxMemory:  100 * 1024 * 1024,
+		ReadAheadMaxFiles:   100,
+		MemoryHighWatermark: 0.8,
+		MemoryLowWatermark:  0.6,
+		MaxWorkers:          4,
+		BatchOperations:     false,
+		MaxBatchSize:        10,
 	}
 
 	server, err := New(fs, initialOptions)
@@ -93,17 +93,17 @@ func TestUpdateExportOptions_SafeFields(t *testing.T) {
 
 	// Update safe fields
 	updatedOptions := ExportOptions{
-		ReadOnly:             true,
-		AllowedIPs:           []string{"10.0.0.0/8"},
-		AttrCacheSize:        2000,
-		AttrCacheTimeout:     10 * time.Second,
-		ReadAheadMaxMemory:   200 * 1024 * 1024,
-		ReadAheadMaxFiles:    200,
-		MemoryHighWatermark:  0.9,
-		MemoryLowWatermark:   0.7,
-		MaxWorkers:           8,
-		BatchOperations:      true,
-		MaxBatchSize:         20,
+		ReadOnly:            true,
+		AllowedIPs:          []string{"10.0.0.0/8"},
+		AttrCacheSize:       2000,
+		AttrCacheTimeout:    10 * time.Second,
+		ReadAheadMaxMemory:  200 * 1024 * 1024,
+		ReadAheadMaxFiles:   200,
+		MemoryHighWatermark: 0.9,
+		MemoryLowWatermark:  0.7,
+		MaxWorkers:          8,
+		BatchOperations:     true,
+		MaxBatchSize:        20,
 	}
 
 	err = server.UpdateExportOptions(updatedOptions)
@@ -320,8 +320,8 @@ func TestAttrCache_Resize(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		path := "/test/file" + string(rune(i))
 		attrs := &NFSAttrs{
-			Mode:  0644,
-			Size:  1024,
+			Mode: 0644,
+			Size: 1024,
 			// Mtime: time.Now()
 		}
 		cache.Put(path, attrs)
@@ -347,7 +347,7 @@ func TestAttrCache_Resize(t *testing.T) {
 	// Resize to a larger size
 	cache.Resize(200)
 
-	size, max = cache.Stats()
+	_, max = cache.Stats()
 	if max != 200 {
 		t.Errorf("Cache max size not updated: got %d, want 200", max)
 	}
@@ -358,8 +358,8 @@ func TestAttrCache_UpdateTTL(t *testing.T) {
 
 	// Add an entry
 	attrs := &NFSAttrs{
-		Mode:  0644,
-		Size:  1024,
+		Mode: 0644,
+		Size: 1024,
 		// Mtime: time.Now()
 	}
 	cache.Put("/test/file", attrs)
@@ -400,7 +400,7 @@ func TestReadAheadBuffer_Resize(t *testing.T) {
 		buffer.Fill(path, data, 0)
 	}
 
-	files, memory := buffer.Stats()
+	files, _ := buffer.Stats()
 	if files != 10 {
 		t.Errorf("Initial buffer files: got %d, want 10", files)
 	}
@@ -408,7 +408,7 @@ func TestReadAheadBuffer_Resize(t *testing.T) {
 	// Resize to smaller limits
 	buffer.Resize(5, 50*1024) // 5 files, 50KB total
 
-	files, memory = buffer.Stats()
+	files, memory := buffer.Stats()
 	if files > 5 {
 		t.Errorf("Buffer not evicted: got %d files, want <=5", files)
 	}

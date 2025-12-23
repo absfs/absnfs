@@ -228,18 +228,18 @@ type RPCVerifier struct {
 
 // AuthSysCredential represents AUTH_SYS credentials (RFC 1831)
 type AuthSysCredential struct {
-	Stamp      uint32   // Arbitrary ID which the client may generate
-	MachineName string  // Name of the client machine (or empty string)
-	UID        uint32   // Caller's effective user ID
-	GID        uint32   // Caller's effective group ID
-	AuxGIDs    []uint32 // Auxiliary group IDs
+	Stamp       uint32   // Arbitrary ID which the client may generate
+	MachineName string   // Name of the client machine (or empty string)
+	UID         uint32   // Caller's effective user ID
+	GID         uint32   // Caller's effective group ID
+	AuxGIDs     []uint32 // Auxiliary group IDs
 }
 
 // RPCReply represents an RPC reply message
 type RPCReply struct {
 	Header       RPCMsgHeader
-	Status       uint32      // reply_stat: MSG_ACCEPTED or MSG_DENIED
-	AcceptStatus uint32      // accept_stat: SUCCESS, PROG_UNAVAIL, etc. (only when Status == MSG_ACCEPTED)
+	Status       uint32 // reply_stat: MSG_ACCEPTED or MSG_DENIED
+	AcceptStatus uint32 // accept_stat: SUCCESS, PROG_UNAVAIL, etc. (only when Status == MSG_ACCEPTED)
 	Verifier     RPCVerifier
 	Data         interface{}
 }
@@ -317,15 +317,16 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 
 // EncodeRPCReply encodes an RPC reply to a writer
 // RFC 1831 reply format:
-//   XID (4 bytes)
-//   msg_type = REPLY (4 bytes)
-//   reply_stat (4 bytes) - MSG_ACCEPTED or MSG_DENIED
-//   [if MSG_ACCEPTED:]
-//     verf (opaque auth) - flavor (4) + length (4) + body
-//     accept_stat (4 bytes) - SUCCESS, PROG_UNAVAIL, etc.
-//     [procedure-specific results]
-//   [if MSG_DENIED:]
-//     reject_stat + auth error info
+//
+//	XID (4 bytes)
+//	msg_type = REPLY (4 bytes)
+//	reply_stat (4 bytes) - MSG_ACCEPTED or MSG_DENIED
+//	[if MSG_ACCEPTED:]
+//	  verf (opaque auth) - flavor (4) + length (4) + body
+//	  accept_stat (4 bytes) - SUCCESS, PROG_UNAVAIL, etc.
+//	  [procedure-specific results]
+//	[if MSG_DENIED:]
+//	  reject_stat + auth error info
 func EncodeRPCReply(w io.Writer, reply *RPCReply) error {
 	// Encode XID
 	if err := xdrEncodeUint32(w, reply.Header.Xid); err != nil {
