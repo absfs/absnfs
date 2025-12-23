@@ -1,6 +1,7 @@
 package absnfs
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -21,6 +22,34 @@ type RPCError struct {
 
 func (e *RPCError) Error() string {
 	return e.Msg
+}
+
+// nfsHandler is a function type for handling individual NFS procedures
+type nfsHandler func(h *NFSProcedureHandler, body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error)
+
+// nfsHandlers maps NFS procedure numbers to their handler functions
+var nfsHandlers = map[uint32]nfsHandler{
+	NFSPROC3_NULL:        (*NFSProcedureHandler).handleNull,
+	NFSPROC3_GETATTR:     (*NFSProcedureHandler).handleGetattr,
+	NFSPROC3_SETATTR:     (*NFSProcedureHandler).handleSetattr,
+	NFSPROC3_LOOKUP:      (*NFSProcedureHandler).handleLookup,
+	NFSPROC3_READLINK:    (*NFSProcedureHandler).handleReadlink,
+	NFSPROC3_READ:        (*NFSProcedureHandler).handleRead,
+	NFSPROC3_WRITE:       (*NFSProcedureHandler).handleWrite,
+	NFSPROC3_CREATE:      (*NFSProcedureHandler).handleCreate,
+	NFSPROC3_MKDIR:       (*NFSProcedureHandler).handleMkdir,
+	NFSPROC3_SYMLINK:     (*NFSProcedureHandler).handleSymlink,
+	NFSPROC3_READDIR:     (*NFSProcedureHandler).handleReaddir,
+	NFSPROC3_READDIRPLUS: (*NFSProcedureHandler).handleReaddirplus,
+	NFSPROC3_FSSTAT:      (*NFSProcedureHandler).handleFsstat,
+	NFSPROC3_FSINFO:      (*NFSProcedureHandler).handleFsinfo,
+	NFSPROC3_PATHCONF:    (*NFSProcedureHandler).handlePathconf,
+	NFSPROC3_ACCESS:      (*NFSProcedureHandler).handleAccess,
+	NFSPROC3_COMMIT:      (*NFSProcedureHandler).handleCommit,
+	NFSPROC3_REMOVE:      (*NFSProcedureHandler).handleRemove,
+	NFSPROC3_RMDIR:       (*NFSProcedureHandler).handleRmdir,
+	NFSPROC3_RENAME:      (*NFSProcedureHandler).handleRename,
+	NFSPROC3_LINK:        (*NFSProcedureHandler).handleLink,
 }
 
 // HandleCall processes an NFS RPC call and returns a reply
@@ -130,4 +159,67 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 	case result := <-replyChan:
 		return result, nil
 	}
+}
+
+// Helper functions for common operations
+
+// nfsErrorReply creates an error response with the given NFS status code
+func nfsErrorReply(reply *RPCReply, status uint32) *RPCReply {
+	var buf bytes.Buffer
+	xdrEncodeUint32(&buf, status)
+	reply.Data = buf.Bytes()
+	return reply
+}
+
+// lookupNode retrieves a node from the file handle map
+// Returns the node and true if found, nil and false otherwise
+func (h *NFSProcedureHandler) lookupNode(handle uint64) (*NFSNode, bool) {
+	file, ok := h.server.handler.fileMap.Get(handle)
+	if !ok {
+		return nil, false
+	}
+	node, ok := file.(*NFSNode)
+	return node, ok
+}
+
+// decodeAndLookupHandle decodes a file handle from the body and looks up the node
+// Returns the node and handle value, or nil if not found (reply.Data will be set with error)
+func (h *NFSProcedureHandler) decodeAndLookupHandle(body io.Reader, reply *RPCReply) (*NFSNode, uint64) {
+	handleVal, err := xdrDecodeFileHandle(body)
+	if err != nil {
+		nfsErrorReply(reply, GARBAGE_ARGS)
+		return nil, 0
+	}
+
+	node, ok := h.lookupNode(handleVal)
+	if !ok {
+		nfsErrorReply(reply, NFSERR_NOENT)
+		return nil, 0
+	}
+
+	return node, handleVal
+}
+
+// encodeWccData encodes wcc_data (pre_op_attr + post_op_attr) to the buffer
+func encodeWccData(buf *bytes.Buffer, preAttrs, postAttrs *NFSAttrs) error {
+	// pre_op_attr: attributes_follow + wcc_attr
+	xdrEncodeUint32(buf, 1) // attributes_follow = TRUE
+	if err := encodeWccAttr(buf, preAttrs); err != nil {
+		return err
+	}
+
+	// post_op_attr: attributes_follow + fattr3
+	xdrEncodeUint32(buf, 1) // attributes_follow = TRUE
+	return encodeFileAttributes(buf, postAttrs)
+}
+
+// encodePostOpAttr encodes post_op_attr to the buffer
+func encodePostOpAttr(buf *bytes.Buffer, attrs *NFSAttrs) error {
+	xdrEncodeUint32(buf, 1) // attributes_follow = TRUE
+	return encodeFileAttributes(buf, attrs)
+}
+
+// encodeNoPostOpAttr encodes an empty post_op_attr (attributes_follow = FALSE)
+func encodeNoPostOpAttr(buf *bytes.Buffer) {
+	xdrEncodeUint32(buf, 0) // attributes_follow = FALSE
 }
