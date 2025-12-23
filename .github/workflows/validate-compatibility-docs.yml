@@ -31,7 +31,7 @@ jobs:
           python .github/scripts/validate_client_reports.py
           
       - name: Update compatibility matrix
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
         run: |
           python .github/scripts/update_compatibility_matrix.py
           
@@ -40,7 +40,7 @@ jobs:
           python .github/scripts/check_progress_consistency.py
           
       - name: Commit updated matrix if changed
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
