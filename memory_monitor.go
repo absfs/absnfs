@@ -2,6 +2,7 @@ package absnfs
 
 import (
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -26,6 +27,8 @@ type MemoryMonitor struct {
 	nfs *AbsfsNFS
 	// Memory usage stats
 	stats memoryStats
+	// Mutex to protect stats access
+	statsMu sync.RWMutex
 	// Is monitoring active?
 	active int32
 	// Channel to signal monitor to stop
@@ -83,7 +86,8 @@ func (m *MemoryMonitor) updateStats() {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
-	// Update stats
+	// Update stats with lock protection
+	m.statsMu.Lock()
 	m.stats.totalMemory = memStats.Sys
 	m.stats.usedMemory = memStats.HeapAlloc
 	if m.stats.totalMemory > 0 {
@@ -92,6 +96,7 @@ func (m *MemoryMonitor) updateStats() {
 		m.stats.usageFraction = 0
 	}
 	m.stats.lastUpdated = time.Now()
+	m.statsMu.Unlock()
 }
 
 // checkMemoryPressure checks if the system is under memory pressure
@@ -105,26 +110,39 @@ func (m *MemoryMonitor) checkMemoryPressure() {
 	lowWatermark := m.nfs.options.MemoryLowWatermark
 
 	// Check if we're under pressure (usage exceeds high watermark)
-	if m.stats.usageFraction >= highWatermark && !m.stats.underPressure {
+	m.statsMu.Lock()
+	usageFraction := m.stats.usageFraction
+	underPressure := m.stats.underPressure
+
+	if usageFraction >= highWatermark && !underPressure {
 		// Transition to pressure state
 		m.stats.underPressure = true
+		m.statsMu.Unlock()
 		m.handleMemoryPressure()
-	} else if m.stats.usageFraction <= lowWatermark && m.stats.underPressure {
+	} else if usageFraction <= lowWatermark && underPressure {
 		// Transition out of pressure state
 		m.stats.underPressure = false
+		m.statsMu.Unlock()
+	} else {
+		m.statsMu.Unlock()
 	}
 }
 
 // handleMemoryPressure takes action to reduce memory usage
 func (m *MemoryMonitor) handleMemoryPressure() {
+	// Read stats with lock protection
+	m.statsMu.RLock()
+	usageFraction := m.stats.usageFraction
+	m.statsMu.RUnlock()
+
 	// Log the memory pressure event
 	m.nfs.logger.Printf("Memory pressure detected: usage at %.2f%% (threshold: %.2f%%)",
-		m.stats.usageFraction*100, m.nfs.options.MemoryHighWatermark*100)
+		usageFraction*100, m.nfs.options.MemoryHighWatermark*100)
 
 	// Calculate reduction factor based on current usage and low watermark target
 	// We want to reduce to reach the low watermark
 	target := m.nfs.options.MemoryLowWatermark
-	current := m.stats.usageFraction
+	current := usageFraction
 	reductionFactor := 1.0 - (target / current)
 
 	// Reduce cache sizes to alleviate memory pressure
@@ -192,5 +210,9 @@ func (m *MemoryMonitor) reduceCacheSizes(reductionFactor float64) {
 func (m *MemoryMonitor) GetMemoryStats() memoryStats {
 	// Update stats before returning
 	m.updateStats()
-	return m.stats
+	// Return a copy with lock protection
+	m.statsMu.RLock()
+	stats := m.stats
+	m.statsMu.RUnlock()
+	return stats
 }

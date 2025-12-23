@@ -129,8 +129,12 @@ func (bp *BatchProcessor) AddRequest(req *BatchRequest) (added bool, triggered b
 		// Unlock the old batch before passing to goroutine to prevent deadlock
 		batch.mu.Unlock()
 
-		// Process the full batch asynchronously
-		go bp.processBatch(batch)
+		// Process the full batch asynchronously with wait group tracking
+		bp.wg.Add(1)
+		go func(b *Batch) {
+			defer bp.wg.Done()
+			bp.processBatch(b)
+		}(batch)
 		return true, true
 	}
 
@@ -164,8 +168,12 @@ func (bp *BatchProcessor) processBatches() {
 						MaxSize: batch.MaxSize,
 					}
 
-					// Process the ready batch asynchronously
-					go bp.processBatch(batch)
+					// Process the ready batch asynchronously with wait group tracking
+					bp.wg.Add(1)
+					go func(b *Batch) {
+						defer bp.wg.Done()
+						bp.processBatch(b)
+					}(batch)
 				}
 
 				batch.mu.Unlock()
