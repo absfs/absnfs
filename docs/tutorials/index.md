@@ -16,11 +16,8 @@ This section provides step-by-step tutorials to help you get started with ABSNFS
 ## Intermediate Tutorials
 
 - [Creating a Read-Only Documentation Server](./read-only-docs-server.md)
-- [Implementing Custom Authentication](./custom-authentication.md)
-- [Building a Multi-Export Server](./multi-export-server.md)
 
 ## Advanced Tutorials
 
-- [Creating a Custom Filesystem Implementation](./custom-filesystem.md)
-- [Optimizing for High Performance](./high-performance.md)
-- [Implementing a Distributed NFS Server](./distributed-nfs.md)
+- [Composed Filesystem Workspace](./composed-filesystem-workspace.md): Multi-layer filesystem with overlay patterns
+- [Fusion Drive Tiered Storage](./fusion-drive-tiered-storage.md): Tiered storage with SSD and HDD tiers

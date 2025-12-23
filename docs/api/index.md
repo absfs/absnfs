@@ -25,6 +25,12 @@ This section provides detailed documentation of the types and functions in the A
 - [Error Codes](./error-codes.md): NFS error codes and their meaning
 - [Error Mapping](./error-mapping.md): How filesystem errors are mapped to NFS errors
 
+## Security and Configuration
+
+- [TLSConfig](./tls-config.md): TLS/SSL encryption configuration
+- [RateLimiter](./rate-limiter.md): Rate limiting and DoS protection
+- [Logging](./logging.md): Structured logging configuration
+
 ## Advanced Topics
 
 - [FileHandleMap](./filehandle-map.md): How file handles are managed

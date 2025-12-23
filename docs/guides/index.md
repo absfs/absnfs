@@ -25,8 +25,6 @@ This section provides how-to guides for common tasks when working with ABSNFS. T
 - [Caching](./caching.md): Understanding and configuring caching
 - [Monitoring](./monitoring.md): Monitoring and debugging ABSNFS
 
-## Integration
+## Advanced
 
-- [Using with Different Filesystems](./using-with-different-filesystems.md): Integrating with various ABSFS implementations
-- [Client Compatibility](./client-compatibility.md): Working with different NFS clients
-- [Service Integration](./service-integration.md): Integrating ABSNFS into larger systems
+- [TLS Encryption](./tls-encryption.md): Securing NFS connections with TLS/SSL
