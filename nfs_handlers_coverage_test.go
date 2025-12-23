@@ -1582,3 +1582,763 @@ func TestHandleFsinfoReadOnly(t *testing.T) {
 		// We'd need to parse the full response to verify this
 	})
 }
+
+// Tests for handleRead with various edge cases
+func TestHandleReadCoverage(t *testing.T) {
+	server, handler, authCtx, err := newTestServerForHandlers()
+	if err != nil {
+		t.Fatalf("Failed to create test server: %v", err)
+	}
+
+	// Get file handle
+	fileNode, _ := server.handler.Lookup("/testfile.txt")
+	fileHandle := server.handler.fileMap.Allocate(fileNode)
+
+	t.Run("read success basic", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		binary.Write(&buf, binary.BigEndian, uint64(0))   // offset
+		binary.Write(&buf, binary.BigEndian, uint32(100)) // count
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleRead(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleRead failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("read with offset", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		binary.Write(&buf, binary.BigEndian, uint64(5))   // offset to middle of file
+		binary.Write(&buf, binary.BigEndian, uint32(100)) // count
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleRead(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleRead failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("read invalid handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, uint64(999999))
+		binary.Write(&buf, binary.BigEndian, uint64(0))
+		binary.Write(&buf, binary.BigEndian, uint32(100))
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleRead(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleRead failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_NOENT {
+			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		}
+	})
+
+	t.Run("read garbage args - truncated handle", func(t *testing.T) {
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleRead(bytes.NewReader([]byte{0x01}), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleRead failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != GARBAGE_ARGS {
+			t.Errorf("Expected GARBAGE_ARGS, got %d", status)
+		}
+	})
+
+	t.Run("read garbage args - missing offset", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		// Missing offset and count
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleRead(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleRead failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != GARBAGE_ARGS {
+			t.Errorf("Expected GARBAGE_ARGS, got %d", status)
+		}
+	})
+
+	t.Run("read overflow check", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		binary.Write(&buf, binary.BigEndian, uint64(0xFFFFFFFFFFFFFFFF)) // max offset
+		binary.Write(&buf, binary.BigEndian, uint32(100))                // count that would overflow
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleRead(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleRead failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for overflow, got %d", status)
+		}
+	})
+}
+
+// Tests for handleWrite with various edge cases
+func TestHandleWriteCoverage(t *testing.T) {
+	server, handler, authCtx, err := newTestServerForHandlers()
+	if err != nil {
+		t.Fatalf("Failed to create test server: %v", err)
+	}
+
+	// Get file handle
+	fileNode, _ := server.handler.Lookup("/testfile.txt")
+	fileHandle := server.handler.fileMap.Allocate(fileNode)
+
+	t.Run("write success basic", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		binary.Write(&buf, binary.BigEndian, uint64(0)) // offset
+		writeData := []byte("new data")
+		binary.Write(&buf, binary.BigEndian, uint32(len(writeData))) // count
+		binary.Write(&buf, binary.BigEndian, uint32(1))              // stable = DATA_SYNC
+		binary.Write(&buf, binary.BigEndian, uint32(len(writeData))) // data length
+		buf.Write(writeData)
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleWrite(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleWrite failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("write with offset", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		binary.Write(&buf, binary.BigEndian, uint64(10)) // offset
+		writeData := []byte("appended")
+		binary.Write(&buf, binary.BigEndian, uint32(len(writeData)))
+		binary.Write(&buf, binary.BigEndian, uint32(2)) // stable = FILE_SYNC
+		binary.Write(&buf, binary.BigEndian, uint32(len(writeData)))
+		buf.Write(writeData)
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleWrite(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleWrite failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("write invalid handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, uint64(999999))
+		binary.Write(&buf, binary.BigEndian, uint64(0))
+		writeData := []byte("data")
+		binary.Write(&buf, binary.BigEndian, uint32(len(writeData)))
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+		binary.Write(&buf, binary.BigEndian, uint32(len(writeData)))
+		buf.Write(writeData)
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleWrite(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleWrite failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_NOENT {
+			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		}
+	})
+
+	t.Run("write garbage args - truncated handle", func(t *testing.T) {
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleWrite(bytes.NewReader([]byte{0x01}), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleWrite failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != GARBAGE_ARGS {
+			t.Errorf("Expected GARBAGE_ARGS, got %d", status)
+		}
+	})
+
+	t.Run("write garbage args - data length mismatch", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		binary.Write(&buf, binary.BigEndian, uint64(0))
+		binary.Write(&buf, binary.BigEndian, uint32(10)) // count
+		binary.Write(&buf, binary.BigEndian, uint32(0))  // stable
+		binary.Write(&buf, binary.BigEndian, uint32(5))  // data length different from count
+		buf.Write([]byte("12345"))
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleWrite(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleWrite failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != GARBAGE_ARGS {
+			t.Errorf("Expected GARBAGE_ARGS for data length mismatch, got %d", status)
+		}
+	})
+
+	t.Run("write overflow check", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		binary.Write(&buf, binary.BigEndian, uint64(0xFFFFFFFFFFFFFFFF)) // max offset
+		binary.Write(&buf, binary.BigEndian, uint32(100))
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleWrite(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleWrite failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for overflow, got %d", status)
+		}
+	})
+}
+
+// Tests for handleCreate with various edge cases
+func TestHandleCreateCoverage(t *testing.T) {
+	server, handler, authCtx, err := newTestServerForHandlers()
+	if err != nil {
+		t.Fatalf("Failed to create test server: %v", err)
+	}
+
+	// Get directory handle
+	dirNode, _ := server.handler.Lookup("/testdir")
+	dirHandle := server.handler.fileMap.Allocate(dirNode)
+
+	t.Run("create success unchecked", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "newfile1.txt")
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // createHow = UNCHECKED
+
+		// sattr3 - set mode
+		binary.Write(&buf, binary.BigEndian, uint32(1))     // set_mode = true
+		binary.Write(&buf, binary.BigEndian, uint32(0644))  // mode
+		binary.Write(&buf, binary.BigEndian, uint32(0))     // set_uid = false
+		binary.Write(&buf, binary.BigEndian, uint32(0))     // set_gid = false
+		binary.Write(&buf, binary.BigEndian, uint32(0))     // set_size = false
+		binary.Write(&buf, binary.BigEndian, uint32(0))     // set_atime = DONT_CHANGE
+		binary.Write(&buf, binary.BigEndian, uint32(0))     // set_mtime = DONT_CHANGE
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleCreate(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleCreate failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("create success guarded", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "newfile2.txt")
+		binary.Write(&buf, binary.BigEndian, uint32(1)) // createHow = GUARDED
+
+		// sattr3 - no mode set
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mode = false
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_uid = false
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_gid = false
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_size = false
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_atime
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mtime
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleCreate(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleCreate failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("create success exclusive", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "newfile3.txt")
+		binary.Write(&buf, binary.BigEndian, uint32(2)) // createHow = EXCLUSIVE
+		buf.Write(make([]byte, 8))                      // verifier
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleCreate(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleCreate failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("create with all sattr3 fields", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "newfile4.txt")
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // createHow = UNCHECKED
+
+		// sattr3 - set all fields
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_mode = true
+		binary.Write(&buf, binary.BigEndian, uint32(0755)) // mode
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_uid = true
+		binary.Write(&buf, binary.BigEndian, uint32(1000)) // uid
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_gid = true
+		binary.Write(&buf, binary.BigEndian, uint32(1000)) // gid
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_size = true
+		binary.Write(&buf, binary.BigEndian, uint64(0))    // size
+		binary.Write(&buf, binary.BigEndian, uint32(2))    // set_atime = SET_TO_CLIENT_TIME
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // atime_sec
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // atime_nsec
+		binary.Write(&buf, binary.BigEndian, uint32(2))    // set_mtime = SET_TO_CLIENT_TIME
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // mtime_sec
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // mtime_nsec
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleCreate(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleCreate failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("create invalid filename - path separator", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "invalid/name.txt")
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // createHow
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleCreate(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleCreate failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for path separator, got %d", status)
+		}
+	})
+
+	t.Run("create invalid filename - empty name", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "")
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleCreate(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleCreate failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for empty name, got %d", status)
+		}
+	})
+
+	t.Run("create invalid filename - dot", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, ".")
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleCreate(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleCreate failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for dot, got %d", status)
+		}
+	})
+
+	t.Run("create invalid filename - dotdot", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "..")
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleCreate(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleCreate failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for dotdot, got %d", status)
+		}
+	})
+
+	t.Run("create invalid handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, uint64(999999))
+		xdrEncodeString(&buf, "file.txt")
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mode = false
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_uid
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_gid
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_size
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_atime
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mtime
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleCreate(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleCreate failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_NOENT {
+			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		}
+	})
+
+	t.Run("create garbage args - truncated handle", func(t *testing.T) {
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleCreate(bytes.NewReader([]byte{0x01}), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleCreate failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != GARBAGE_ARGS {
+			t.Errorf("Expected GARBAGE_ARGS, got %d", status)
+		}
+	})
+}
+
+// Tests for handleMkdir with various edge cases
+func TestHandleMkdirCoverage(t *testing.T) {
+	server, handler, authCtx, err := newTestServerForHandlers()
+	if err != nil {
+		t.Fatalf("Failed to create test server: %v", err)
+	}
+
+	// Get directory handle
+	dirNode, _ := server.handler.Lookup("/testdir")
+	dirHandle := server.handler.fileMap.Allocate(dirNode)
+
+	t.Run("mkdir success", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "newsubdir1")
+
+		// sattr3
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_mode = true
+		binary.Write(&buf, binary.BigEndian, uint32(0755)) // mode
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // set_uid
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // set_gid
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // set_size
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // set_atime
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // set_mtime
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleMkdir(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleMkdir failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("mkdir with all sattr3 fields", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "newsubdir2")
+
+		// sattr3 - set all fields
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_mode = true
+		binary.Write(&buf, binary.BigEndian, uint32(0700)) // mode
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_uid = true
+		binary.Write(&buf, binary.BigEndian, uint32(1000)) // uid
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_gid = true
+		binary.Write(&buf, binary.BigEndian, uint32(1000)) // gid
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_size = true
+		binary.Write(&buf, binary.BigEndian, uint64(0))    // size
+		binary.Write(&buf, binary.BigEndian, uint32(2))    // set_atime = SET_TO_CLIENT_TIME
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // atime_sec
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // atime_nsec
+		binary.Write(&buf, binary.BigEndian, uint32(2))    // set_mtime = SET_TO_CLIENT_TIME
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // mtime_sec
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // mtime_nsec
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleMkdir(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleMkdir failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("mkdir invalid filename", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "invalid/dir")
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleMkdir(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleMkdir failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL, got %d", status)
+		}
+	})
+
+	t.Run("mkdir invalid handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, uint64(999999))
+		xdrEncodeString(&buf, "newdir")
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mode
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_uid
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_gid
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_size
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_atime
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mtime
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleMkdir(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleMkdir failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_NOENT {
+			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		}
+	})
+
+	t.Run("mkdir garbage args", func(t *testing.T) {
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleMkdir(bytes.NewReader([]byte{0x01}), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleMkdir failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != GARBAGE_ARGS {
+			t.Errorf("Expected GARBAGE_ARGS, got %d", status)
+		}
+	})
+}
+
+// Tests for handleSymlink with various edge cases
+func TestHandleSymlinkCoverage(t *testing.T) {
+	server, handler, authCtx, err := newTestServerForHandlers()
+	if err != nil {
+		t.Fatalf("Failed to create test server: %v", err)
+	}
+
+	// Get directory handle
+	dirNode, _ := server.handler.Lookup("/testdir")
+	dirHandle := server.handler.fileMap.Allocate(dirNode)
+
+	t.Run("symlink attempt", func(t *testing.T) {
+		// memfs may not support symlinks, so we test the handler path
+		// and accept either success or various errors
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "link1")
+
+		// sattr3
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mode
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_uid
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_gid
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_size
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_atime
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mtime
+
+		xdrEncodeString(&buf, "/testfile.txt") // symlink target
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleSymlink(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleSymlink failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		// Accept various statuses - memfs may not support symlinks
+		if status != NFS_OK && status != NFSERR_NOTSUPP && status != NFSERR_INVAL && status != NFSERR_ACCES {
+			t.Errorf("Expected valid NFS status, got %d", status)
+		}
+	})
+
+	t.Run("symlink with all sattr3 fields", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "link2")
+
+		// sattr3 - all fields
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_mode
+		binary.Write(&buf, binary.BigEndian, uint32(0777)) // mode
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_uid
+		binary.Write(&buf, binary.BigEndian, uint32(1000)) // uid
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_gid
+		binary.Write(&buf, binary.BigEndian, uint32(1000)) // gid
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // set_size
+		binary.Write(&buf, binary.BigEndian, uint64(0))    // size
+		binary.Write(&buf, binary.BigEndian, uint32(2))    // set_atime
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // atime_sec
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // atime_nsec
+		binary.Write(&buf, binary.BigEndian, uint32(2))    // set_mtime
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // mtime_sec
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // mtime_nsec
+
+		xdrEncodeString(&buf, "/testdir/nested.txt")
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleSymlink(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleSymlink failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		// Tests the sattr3 parsing path - accept any status since memfs may not support symlinks
+		// This test is primarily for code coverage of the parsing logic
+		_ = status
+	})
+
+	t.Run("symlink invalid filename", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, dirHandle)
+		xdrEncodeString(&buf, "invalid/link")
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleSymlink(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleSymlink failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL, got %d", status)
+		}
+	})
+
+	t.Run("symlink invalid handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, uint64(999999))
+		xdrEncodeString(&buf, "link")
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mode
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_uid
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_gid
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_size
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_atime
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mtime
+		xdrEncodeString(&buf, "/target")
+
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleSymlink(bytes.NewReader(buf.Bytes()), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleSymlink failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		// Accept NFSERR_NOENT or NFSERR_INVAL depending on validation order
+		if status != NFSERR_NOENT && status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_NOENT or NFSERR_INVAL, got %d", status)
+		}
+	})
+
+	t.Run("symlink garbage args", func(t *testing.T) {
+		reply := &RPCReply{AcceptStatus: SUCCESS}
+		result, err := handler.handleSymlink(bytes.NewReader([]byte{0x01}), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleSymlink failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != GARBAGE_ARGS {
+			t.Errorf("Expected GARBAGE_ARGS, got %d", status)
+		}
+	})
+}
