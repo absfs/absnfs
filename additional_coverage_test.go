@@ -845,12 +845,12 @@ func TestBatchWriteReadOnlyMode(t *testing.T) {
 func TestBatchInvalidHandle(t *testing.T) {
 	mfs, _ := memfs.NewFS()
 	config := DefaultRateLimiterConfig()
-	// Use larger batch size to avoid race condition
+	// MaxBatchSize=1 triggers immediate processing - previously caused race condition
 	nfs, _ := New(mfs, ExportOptions{
 		EnableRateLimiting: false,
 		RateLimitConfig:    &config,
 		BatchOperations:    true,
-		MaxBatchSize:       100,
+		MaxBatchSize:       1,
 	})
 	defer nfs.Close()
 
@@ -860,16 +860,79 @@ func TestBatchInvalidHandle(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
 		_, status, _ := nfs.batchProc.BatchRead(ctx, invalidHandle, 0, 10)
-		// Should return error for invalid handle (NFSERR_NOENT) or timeout
-		_ = status
+		// Should return error for invalid handle (NFSERR_NOENT)
+		if status != NFSERR_NOENT {
+			t.Logf("Expected NFSERR_NOENT, got %d", status)
+		}
 	})
 
 	t.Run("write with invalid handle", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
 		status, _ := nfs.batchProc.BatchWrite(ctx, invalidHandle, 0, []byte("data"))
-		// Should return error for invalid handle (NFSERR_NOENT) or timeout
-		_ = status
+		// Should return error for invalid handle (NFSERR_NOENT)
+		if status != NFSERR_NOENT {
+			t.Logf("Expected NFSERR_NOENT, got %d", status)
+		}
+	})
+}
+
+// Test that MaxBatchSize=1 works correctly (regression test for race condition fix)
+func TestBatchImmediateProcessing(t *testing.T) {
+	mfs, _ := memfs.NewFS()
+	config := DefaultRateLimiterConfig()
+	nfs, _ := New(mfs, ExportOptions{
+		EnableRateLimiting: false,
+		RateLimitConfig:    &config,
+		BatchOperations:    true,
+		MaxBatchSize:       1, // Every request triggers immediate batch processing
+	})
+	defer nfs.Close()
+
+	f, _ := mfs.Create("/testfile.txt")
+	f.Write([]byte("test content for batch"))
+	f.Close()
+
+	node, _ := nfs.Lookup("/testfile.txt")
+	handle := nfs.fileMap.Allocate(node)
+
+	t.Run("read with immediate batch", func(t *testing.T) {
+		ctx := context.Background()
+		data, status, err := nfs.batchProc.BatchRead(ctx, handle, 0, 10)
+		if err != nil {
+			t.Errorf("BatchRead failed: %v", err)
+		}
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+		if len(data) == 0 {
+			t.Error("Expected data to be returned")
+		}
+	})
+
+	t.Run("write with immediate batch", func(t *testing.T) {
+		ctx := context.Background()
+		status, err := nfs.batchProc.BatchWrite(ctx, handle, 0, []byte("new data"))
+		if err != nil {
+			t.Errorf("BatchWrite failed: %v", err)
+		}
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("getattr with immediate batch", func(t *testing.T) {
+		ctx := context.Background()
+		data, status, err := nfs.batchProc.BatchGetAttr(ctx, handle)
+		if err != nil {
+			t.Errorf("BatchGetAttr failed: %v", err)
+		}
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+		if len(data) == 0 {
+			t.Error("Expected attribute data to be returned")
+		}
 	})
 }
 

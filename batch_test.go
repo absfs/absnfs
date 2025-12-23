@@ -110,7 +110,7 @@ func TestBatchProcessor(t *testing.T) {
 		// First, create an initial batch without waiting for results
 		for i := 0; i < numOperations/2; i++ {
 			// Add a read request without waiting for it
-			server.batchProc.AddRequest(&BatchRequest{
+			_, _ = server.batchProc.AddRequest(&BatchRequest{
 				Type:       BatchTypeRead,
 				FileHandle: fileHandle,
 				Offset:     0,

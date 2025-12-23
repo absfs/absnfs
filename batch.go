@@ -90,11 +90,13 @@ func NewBatchProcessor(nfs *AbsfsNFS, maxSize int) *BatchProcessor {
 }
 
 // AddRequest adds a request to a batch
-// Returns true if the batch was triggered for immediate processing
-func (bp *BatchProcessor) AddRequest(req *BatchRequest) bool {
+// Returns (added, triggered):
+//   - added: true if the request was added to a batch, false if caller should handle individually
+//   - triggered: true if batch processing was triggered (only meaningful when added=true)
+func (bp *BatchProcessor) AddRequest(req *BatchRequest) (added bool, triggered bool) {
 	// If batching is disabled, return immediately to process individually
 	if !bp.enabled {
-		return true
+		return false, false
 	}
 
 	bp.mu.Lock()
@@ -102,8 +104,8 @@ func (bp *BatchProcessor) AddRequest(req *BatchRequest) bool {
 
 	batch, exists := bp.batches[req.Type]
 	if !exists {
-		// Unknown batch type, return true to process individually
-		return true
+		// Unknown batch type, return false to process individually
+		return false, false
 	}
 
 	batch.mu.Lock()
@@ -129,11 +131,11 @@ func (bp *BatchProcessor) AddRequest(req *BatchRequest) bool {
 
 		// Process the full batch asynchronously
 		go bp.processBatch(batch)
-		return true
+		return true, true
 	}
 
 	batch.mu.Unlock()
-	return false
+	return true, false
 }
 
 // processBatches is a background goroutine that processes batches when they're ready
@@ -555,15 +557,15 @@ func (bp *BatchProcessor) BatchRead(ctx context.Context, fileHandle uint64, offs
 	}
 
 	// Add to batch
-	immediate := bp.AddRequest(req)
+	added, _ := bp.AddRequest(req)
 
-	// If processing is immediate, return now
-	if immediate {
+	// If not added to batch, caller should handle individually
+	if !added {
 		close(resultChan)
 		return nil, 0, nil
 	}
 
-	// Wait for result with timeout
+	// Request was added to batch - wait for result (even if triggered immediately)
 	select {
 	case <-ctx.Done():
 		return nil, NFSERR_IO, ctx.Err()
@@ -599,15 +601,15 @@ func (bp *BatchProcessor) BatchWrite(ctx context.Context, fileHandle uint64, off
 	}
 
 	// Add to batch
-	immediate := bp.AddRequest(req)
+	added, _ := bp.AddRequest(req)
 
-	// If processing is immediate, return now
-	if immediate {
+	// If not added to batch, caller should handle individually
+	if !added {
 		close(resultChan)
 		return 0, nil
 	}
 
-	// Wait for result with timeout
+	// Request was added to batch - wait for result (even if triggered immediately)
 	select {
 	case <-ctx.Done():
 		return NFSERR_IO, ctx.Err()
@@ -640,15 +642,15 @@ func (bp *BatchProcessor) BatchGetAttr(ctx context.Context, fileHandle uint64) (
 	}
 
 	// Add to batch
-	immediate := bp.AddRequest(req)
+	added, _ := bp.AddRequest(req)
 
-	// If processing is immediate, return now
-	if immediate {
+	// If not added to batch, caller should handle individually
+	if !added {
 		close(resultChan)
 		return nil, 0, nil
 	}
 
-	// Wait for result with timeout
+	// Request was added to batch - wait for result (even if triggered immediately)
 	select {
 	case <-ctx.Done():
 		return nil, NFSERR_IO, ctx.Err()
