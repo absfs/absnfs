@@ -75,6 +75,7 @@ func main() {
 - [Tutorials](./tutorials/): Step-by-step tutorials for getting started
 - [Examples](./examples/): Complete working examples
 - [Internals](./internals/): How ABSNFS works under the hood
+- [Compatibility](./compatibility/): NFS client compatibility testing and status
 - [Testing](./testing/): Testing approach and code quality information
 
 ## Project Status

@@ -21,6 +21,8 @@ nav:
     url: /examples/
   - title: Internals
     url: /internals/
+  - title: Compatibility
+    url: /compatibility/
   - title: Testing
     url: /testing/
   - title: GitHub
