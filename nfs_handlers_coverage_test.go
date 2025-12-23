@@ -1324,3 +1324,261 @@ func TestHandleAccessReadOnly(t *testing.T) {
 		}
 	})
 }
+
+// Helper to build fsstat/fsinfo request (just a file handle)
+func buildFsRequest(handle uint64) []byte {
+	var buf bytes.Buffer
+	xdrEncodeFileHandle(&buf, handle)
+	return buf.Bytes()
+}
+
+func TestHandleFsstat(t *testing.T) {
+	server, handler, authCtx, err := newTestServerForHandlers()
+	if err != nil {
+		t.Fatalf("Failed to create test server: %v", err)
+	}
+
+	// Get root handle
+	rootNode, _ := server.handler.Lookup("/")
+	rootHandle := server.handler.fileMap.Allocate(rootNode)
+
+	// Get file handle
+	fileNode, _ := server.handler.Lookup("/testfile.txt")
+	fileHandle := server.handler.fileMap.Allocate(fileNode)
+
+	// Get directory handle
+	dirNode, _ := server.handler.Lookup("/testdir")
+	dirHandle := server.handler.fileMap.Allocate(dirNode)
+
+	t.Run("fsstat on root", func(t *testing.T) {
+		body := buildFsRequest(rootHandle)
+		reply := &RPCReply{}
+
+		result, err := handler.handleFsstat(bytes.NewReader(body), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleFsstat failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		if len(data) < 4 {
+			t.Fatalf("Response too short: %d bytes", len(data))
+		}
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("fsstat on file", func(t *testing.T) {
+		body := buildFsRequest(fileHandle)
+		reply := &RPCReply{}
+
+		result, err := handler.handleFsstat(bytes.NewReader(body), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleFsstat failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("fsstat on directory", func(t *testing.T) {
+		body := buildFsRequest(dirHandle)
+		reply := &RPCReply{}
+
+		result, err := handler.handleFsstat(bytes.NewReader(body), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleFsstat failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("invalid handle - truncated", func(t *testing.T) {
+		body := []byte{0x00, 0x00}
+		reply := &RPCReply{}
+
+		result, err := handler.handleFsstat(bytes.NewReader(body), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleFsstat should not return error: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != GARBAGE_ARGS {
+			t.Errorf("Expected GARBAGE_ARGS, got %d", status)
+		}
+	})
+
+	t.Run("non-existent handle", func(t *testing.T) {
+		body := buildFsRequest(999999)
+		reply := &RPCReply{}
+
+		result, err := handler.handleFsstat(bytes.NewReader(body), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleFsstat should not return error: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_NOENT {
+			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		}
+	})
+}
+
+func TestHandleFsinfo(t *testing.T) {
+	server, handler, authCtx, err := newTestServerForHandlers()
+	if err != nil {
+		t.Fatalf("Failed to create test server: %v", err)
+	}
+
+	// Get root handle
+	rootNode, _ := server.handler.Lookup("/")
+	rootHandle := server.handler.fileMap.Allocate(rootNode)
+
+	// Get file handle
+	fileNode, _ := server.handler.Lookup("/testfile.txt")
+	fileHandle := server.handler.fileMap.Allocate(fileNode)
+
+	// Get directory handle
+	dirNode, _ := server.handler.Lookup("/testdir")
+	dirHandle := server.handler.fileMap.Allocate(dirNode)
+
+	t.Run("fsinfo on root", func(t *testing.T) {
+		body := buildFsRequest(rootHandle)
+		reply := &RPCReply{}
+
+		result, err := handler.handleFsinfo(bytes.NewReader(body), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleFsinfo failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		if len(data) < 4 {
+			t.Fatalf("Response too short: %d bytes", len(data))
+		}
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("fsinfo on file", func(t *testing.T) {
+		body := buildFsRequest(fileHandle)
+		reply := &RPCReply{}
+
+		result, err := handler.handleFsinfo(bytes.NewReader(body), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleFsinfo failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("fsinfo on directory", func(t *testing.T) {
+		body := buildFsRequest(dirHandle)
+		reply := &RPCReply{}
+
+		result, err := handler.handleFsinfo(bytes.NewReader(body), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleFsinfo failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("invalid handle - truncated", func(t *testing.T) {
+		body := []byte{0x00, 0x00}
+		reply := &RPCReply{}
+
+		result, err := handler.handleFsinfo(bytes.NewReader(body), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleFsinfo should not return error: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != GARBAGE_ARGS {
+			t.Errorf("Expected GARBAGE_ARGS, got %d", status)
+		}
+	})
+
+	t.Run("non-existent handle", func(t *testing.T) {
+		body := buildFsRequest(999999)
+		reply := &RPCReply{}
+
+		result, err := handler.handleFsinfo(bytes.NewReader(body), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleFsinfo should not return error: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFSERR_NOENT {
+			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		}
+	})
+}
+
+func TestHandleFsinfoReadOnly(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatalf("Failed to create memfs: %v", err)
+	}
+
+	config := DefaultRateLimiterConfig()
+	nfs, err := New(fs, ExportOptions{
+		EnableRateLimiting: false,
+		RateLimitConfig:    &config,
+		ReadOnly:           true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create NFS: %v", err)
+	}
+
+	server := &Server{
+		handler: nfs,
+		options: ServerOptions{Debug: false},
+	}
+
+	handler := &NFSProcedureHandler{server: server}
+	authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
+
+	// Get root handle
+	rootNode, _ := server.handler.Lookup("/")
+	rootHandle := server.handler.fileMap.Allocate(rootNode)
+
+	t.Run("fsinfo on read-only filesystem", func(t *testing.T) {
+		body := buildFsRequest(rootHandle)
+		reply := &RPCReply{}
+
+		result, err := handler.handleFsinfo(bytes.NewReader(body), reply, authCtx)
+		if err != nil {
+			t.Fatalf("handleFsinfo failed: %v", err)
+		}
+
+		data := result.Data.([]byte)
+		status := binary.BigEndian.Uint32(data[0:4])
+		if status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+		// The properties field should include FSF_RDONLY bit
+		// We'd need to parse the full response to verify this
+	})
+}
