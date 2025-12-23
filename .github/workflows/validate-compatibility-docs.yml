@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyyaml markdown frontmatter
+          pip install pyyaml markdown python-frontmatter
 
       - name: Check client report format
         run: |

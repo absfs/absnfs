@@ -2564,10 +2564,10 @@ func TestMemoryMonitorPressure(t *testing.T) {
 func TestSlogLoggerCoverage(t *testing.T) {
 	t.Run("new with file path that doesn't exist", func(t *testing.T) {
 		// This tests the error path when file can't be created
-		// Using a path that requires root permission to create
+		// Using a path with null byte which is invalid on all platforms
 		config := &LogConfig{
 			Level:  "debug",
-			Output: "/root/forbidden/path/file.log",
+			Output: "/path/with\x00null/file.log",
 		}
 		_, err := NewSlogLogger(config)
 		if err == nil {
