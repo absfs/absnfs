@@ -211,30 +211,21 @@ func TestM5_PortmapperBinaryReadErrorChecking(t *testing.T) {
 // consumes all bytes (padded to 4-byte boundary) for oversized handles, keeping
 // the stream in sync.
 func TestM6_XdrDecodeFileHandleOversizedConsumption(t *testing.T) {
-	// Test: 128-byte handle (oversized, > 64 max per NFS3) followed by a sentinel
-	t.Run("oversized_handle_consumed", func(t *testing.T) {
+	// Test: 128-byte handle (oversized, > 64 max per NFS3) is rejected immediately
+	// R12: lengths > 64 return error before any allocation or read
+	t.Run("oversized_handle_rejected", func(t *testing.T) {
 		var buf bytes.Buffer
 		handleLen := uint32(128)
 		binary.Write(&buf, binary.BigEndian, handleLen)
-		buf.Write(make([]byte, 128)) // handle data (already 4-byte aligned)
-
-		// Write a sentinel value after the handle
-		sentinel := uint32(0xDEADBEEF)
-		binary.Write(&buf, binary.BigEndian, sentinel)
+		buf.Write(make([]byte, 128))
 
 		r := bytes.NewReader(buf.Bytes())
 		_, err := xdrDecodeFileHandle(r)
 		if err == nil {
 			t.Fatal("expected error for oversized handle")
 		}
-
-		// Verify the sentinel is readable (handle bytes were consumed)
-		var readSentinel uint32
-		if err := binary.Read(r, binary.BigEndian, &readSentinel); err != nil {
-			t.Fatalf("failed to read sentinel after oversized handle: %v (stream not in sync)", err)
-		}
-		if readSentinel != sentinel {
-			t.Fatalf("sentinel mismatch: got 0x%X, want 0x%X", readSentinel, sentinel)
+		if !bytes.Contains([]byte(err.Error()), []byte("exceeds NFS3 maximum")) {
+			t.Fatalf("expected NFS3 maximum error, got: %v", err)
 		}
 	})
 
