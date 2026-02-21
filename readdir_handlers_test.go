@@ -214,8 +214,8 @@ func TestHandleReaddir(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 
@@ -416,8 +416,8 @@ func TestHandleReaddirplus(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 

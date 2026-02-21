@@ -166,13 +166,13 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 					t.Fatalf("handleNFSCall should not return error: %v", err)
 				}
 
-				// Should get NFSERR_NOENT in the reply
+				// Should get NFSERR_STALE in the reply
 				if data, ok := result.Data.([]byte); ok {
 					var status uint32
 					resBuf := bytes.NewBuffer(data)
 					binary.Read(resBuf, binary.BigEndian, &status)
-					if status != NFSERR_NOENT {
-						t.Errorf("Expected NFSERR_NOENT, got %d", status)
+					if status != NFSERR_STALE {
+						t.Errorf("Expected NFSERR_STALE, got %d", status)
 					}
 				} else {
 					t.Errorf("Expected []byte data in reply, got %T", result.Data)
@@ -247,13 +247,13 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				t.Fatalf("handleNFSCall failed: %v", err)
 			}
 
-			// Should get ACCESS_DENIED in the reply
+			// Should get NFSERR_ROFS in the reply
 			if data, ok := result.Data.([]byte); ok {
 				var status uint32
 				resBuf := bytes.NewBuffer(data)
 				binary.Read(resBuf, binary.BigEndian, &status)
-				if status != ACCESS_DENIED {
-					t.Errorf("Expected ACCESS_DENIED, got %d", status)
+				if status != NFSERR_ROFS {
+					t.Errorf("Expected NFSERR_ROFS, got %d", status)
 				}
 			} else {
 				t.Errorf("Expected []byte data in reply, got %T", result.Data)

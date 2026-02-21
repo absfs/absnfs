@@ -333,8 +333,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 			if err := binary.Read(r, binary.BigEndian, &status); err != nil {
 				t.Fatalf("Failed to read status from reply data: %v", err)
 			}
-			if status != ACCESS_DENIED {
-				t.Errorf("Expected ACCESS_DENIED in reply data, got %v", status)
+			if status != NFSERR_ROFS {
+				t.Errorf("Expected NFSERR_ROFS in reply data, got %v", status)
 			}
 		}
 	})

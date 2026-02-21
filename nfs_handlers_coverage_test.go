@@ -202,8 +202,8 @@ func TestHandleLookup(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 
@@ -415,8 +415,8 @@ func TestHandleAccess(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 
@@ -508,8 +508,8 @@ func TestHandleCommit(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 
@@ -624,8 +624,8 @@ func TestHandlePathconf(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 }
@@ -691,8 +691,8 @@ func TestHandleRemove(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 
@@ -808,8 +808,8 @@ func TestHandleRmdir(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 
@@ -981,8 +981,8 @@ func TestHandleRename(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 
@@ -997,8 +997,8 @@ func TestHandleRename(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 
@@ -1154,8 +1154,8 @@ func TestHandleRemoveReadOnly(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != ACCESS_DENIED {
-			t.Errorf("Expected ACCESS_DENIED, got %d", status)
+		if status != NFSERR_ROFS {
+			t.Errorf("Expected NFSERR_ROFS, got %d", status)
 		}
 	})
 }
@@ -1202,8 +1202,8 @@ func TestHandleRmdirReadOnly(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != ACCESS_DENIED {
-			t.Errorf("Expected ACCESS_DENIED, got %d", status)
+		if status != NFSERR_ROFS {
+			t.Errorf("Expected NFSERR_ROFS, got %d", status)
 		}
 	})
 }
@@ -1251,8 +1251,8 @@ func TestHandleRenameReadOnly(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != ACCESS_DENIED {
-			t.Errorf("Expected ACCESS_DENIED, got %d", status)
+		if status != NFSERR_ROFS {
+			t.Errorf("Expected NFSERR_ROFS, got %d", status)
 		}
 	})
 }
@@ -1428,8 +1428,8 @@ func TestHandleFsstat(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 }
@@ -1530,8 +1530,8 @@ func TestHandleFsinfo(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 }
@@ -1646,8 +1646,8 @@ func TestHandleReadCoverage(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 
@@ -1778,8 +1778,8 @@ func TestHandleWriteCoverage(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 
@@ -2057,8 +2057,8 @@ func TestHandleCreateCoverage(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 
@@ -2186,8 +2186,8 @@ func TestHandleMkdirCoverage(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		if status != NFSERR_NOENT {
-			t.Errorf("Expected NFSERR_NOENT, got %d", status)
+		if status != NFSERR_STALE {
+			t.Errorf("Expected NFSERR_STALE, got %d", status)
 		}
 	})
 
@@ -2322,9 +2322,9 @@ func TestHandleSymlinkCoverage(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		// Accept NFSERR_NOENT or NFSERR_INVAL depending on validation order
-		if status != NFSERR_NOENT && status != NFSERR_INVAL {
-			t.Errorf("Expected NFSERR_NOENT or NFSERR_INVAL, got %d", status)
+		// Accept NFSERR_STALE or NFSERR_INVAL depending on validation order
+		if status != NFSERR_STALE && status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_STALE or NFSERR_INVAL, got %d", status)
 		}
 	})
 
