@@ -25,6 +25,8 @@ type WorkerPool struct {
 	activeWorkers int32
 	// Logger for worker pool events
 	logger *AbsfsNFS
+	// R29: Mutex to serialize Resize calls
+	resizeMu sync.Mutex
 }
 
 // Task represents a unit of work to be processed by a worker
@@ -85,9 +87,12 @@ func (p *WorkerPool) worker(id int) {
 			result := task.Execute()
 			atomic.AddInt32(&p.activeWorkers, -1)
 
-			// Send the result if the result channel is not nil
+			// R14/R33: Non-blocking send to avoid deadlock if receiver is gone
 			if task.ResultChan != nil {
-				task.ResultChan <- result
+				select {
+				case task.ResultChan <- result:
+				default:
+				}
 			}
 
 			// Calculate and log task duration if we have a valid start time
@@ -141,12 +146,8 @@ func (p *WorkerPool) SubmitWait(execute func() interface{}) (interface{}, bool) 
 		return nil, false
 	}
 
-	// Wait for the result
+	// R14: Wait for the result without closing - the worker owns the channel lifetime
 	result, ok := <-resultChan
-	// Close the channel to prevent leaks
-	if ok {
-		close(resultChan)
-	}
 	return result, ok
 }
 
@@ -188,6 +189,10 @@ func (p *WorkerPool) Stats() (maxWorkers int, activeWorkers int, queuedTasks int
 // Resize changes the number of workers in the pool
 // This operation requires stopping and restarting the worker pool
 func (p *WorkerPool) Resize(maxWorkers int) {
+	// R29: Serialize Resize calls to prevent concurrent access
+	p.resizeMu.Lock()
+	defer p.resizeMu.Unlock()
+
 	// Ensure valid worker count
 	if maxWorkers <= 0 {
 		maxWorkers = 1
@@ -214,7 +219,11 @@ func (p *WorkerPool) Resize(maxWorkers int) {
 	var pendingTasks []Task
 	if oldQueue != nil {
 		if !wasRunning {
-			close(oldQueue)
+			// R16: Wrap close in recover to handle already-closed channel
+			func() {
+				defer func() { recover() }()
+				close(oldQueue)
+			}()
 		}
 		for task := range oldQueue {
 			pendingTasks = append(pendingTasks, task)

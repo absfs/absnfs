@@ -166,15 +166,9 @@ func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) 
 
 	switch opType {
 	case "READ":
-		// Update max latency atomically
-		for {
-			current := atomic.LoadInt64((*int64)(&m.metrics.MaxReadLatency))
-			if duration.Nanoseconds() <= current {
-				break
-			}
-			if atomic.CompareAndSwapInt64((*int64)(&m.metrics.MaxReadLatency), current, duration.Nanoseconds()) {
-				break
-			}
+		// R30: Simple comparison under mutex instead of unsafe atomic pointer cast
+		if duration > m.metrics.MaxReadLatency {
+			m.metrics.MaxReadLatency = duration
 		}
 
 		// Write into ring buffer
@@ -188,15 +182,9 @@ func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) 
 		m.updateLatencyStats(m.readLatencies[:m.readLatLen], &m.metrics.AvgReadLatency, &m.metrics.P95ReadLatency)
 
 	case "WRITE":
-		// Update max latency atomically
-		for {
-			current := atomic.LoadInt64((*int64)(&m.metrics.MaxWriteLatency))
-			if duration.Nanoseconds() <= current {
-				break
-			}
-			if atomic.CompareAndSwapInt64((*int64)(&m.metrics.MaxWriteLatency), current, duration.Nanoseconds()) {
-				break
-			}
+		// R30: Simple comparison under mutex instead of unsafe atomic pointer cast
+		if duration > m.metrics.MaxWriteLatency {
+			m.metrics.MaxWriteLatency = duration
 		}
 
 		// Write into ring buffer
@@ -228,7 +216,8 @@ func (m *MetricsCollector) updateLatencyStats(samples []time.Duration, avg *time
 		sorted := make([]time.Duration, n)
 		copy(sorted, samples)
 		sortDurations(sorted)
-		idx := int(float64(n) * 0.95)
+		// R15: Fix off-by-one: use n-1 to stay within bounds
+		idx := int(float64(n-1) * 0.95)
 		*p95 = sorted[idx]
 	}
 }
@@ -480,12 +469,12 @@ func (m *MetricsCollector) GetMetrics() NFSMetrics {
 	m.metrics.UptimeSeconds = int64(time.Since(m.metrics.StartTime).Seconds())
 	m.mutex.Unlock()
 
-	// Return a copy of the metrics to ensure thread safety
+	// R17: Hold both locks for consistent snapshot (latencyMutex protects P95/max values)
 	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-
-	// Create a copy of the metrics
+	m.latencyMutex.Lock()
 	metricsCopy := m.metrics
+	m.latencyMutex.Unlock()
+	m.mutex.RUnlock()
 
 	return metricsCopy
 }
@@ -534,12 +523,14 @@ func (m *MetricsCollector) IsHealthy() bool {
 		}
 	}
 
-	// Check if read/write latency is too high (more than 5 seconds for 95th percentile)
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
+	// R17: Read P95 values under latencyMutex (where they are written)
+	m.latencyMutex.Lock()
+	p95Read := m.metrics.P95ReadLatency
+	p95Write := m.metrics.P95WriteLatency
+	m.latencyMutex.Unlock()
 
 	maxAllowedLatency := 5 * time.Second
-	if m.metrics.P95ReadLatency > maxAllowedLatency || m.metrics.P95WriteLatency > maxAllowedLatency {
+	if p95Read > maxAllowedLatency || p95Write > maxAllowedLatency {
 		return false
 	}
 

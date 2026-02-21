@@ -168,15 +168,18 @@ func (bp *BatchProcessor) processBatches() {
 						MaxSize: batch.MaxSize,
 					}
 
+					// R31: Unlock before goroutine dispatch to match AddRequest pattern
+					batch.mu.Unlock()
+
 					// Process the ready batch asynchronously with wait group tracking
 					bp.wg.Add(1)
 					go func(b *Batch) {
 						defer bp.wg.Done()
 						bp.processBatch(b)
 					}(batch)
+				} else {
+					batch.mu.Unlock()
 				}
-
-				batch.mu.Unlock()
 			}
 			bp.mu.Unlock()
 		}

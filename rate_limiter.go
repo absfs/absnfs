@@ -243,12 +243,19 @@ func (pl *PerIPLimiter) Allow(ip string) bool {
 }
 
 // cleanup removes limiters that are at max capacity (inactive)
+// R32: Bounded to 100 deletions per pass to avoid holding the lock too long
 func (pl *PerIPLimiter) cleanup() {
+	var toDelete []string
 	for ip, limiter := range pl.limiters {
-		// Remove limiters that are full (haven't been used recently)
 		if limiter.Tokens() >= float64(pl.burst) {
-			delete(pl.limiters, ip)
+			toDelete = append(toDelete, ip)
+			if len(toDelete) >= 100 {
+				break
+			}
 		}
+	}
+	for _, ip := range toDelete {
+		delete(pl.limiters, ip)
 	}
 }
 

@@ -2,11 +2,15 @@ package absnfs
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+var _ = sort.Slice // ensure import is used
 
 // TestL1_MemoryMonitorRestart verifies that MemoryMonitor can be restarted
 // after Stop() by recreating the stopCh channel.
@@ -297,6 +301,200 @@ func TestL12_MemoryMonitorNoExplicitGC(t *testing.T) {
 	mon.reduceCacheSizes(0.5)
 
 	// Just verify the function completes without panic
+}
+
+// TestR14_SubmitWaitNoDoubleClose verifies that SubmitWait no longer double-closes
+// the result channel (worker sends on buffered chan, SubmitWait just reads).
+func TestR14_SubmitWaitNoDoubleClose(t *testing.T) {
+	nfs := createTestNFS(t)
+	defer nfs.Close()
+
+	pool := NewWorkerPool(2, nfs)
+	pool.Start()
+	defer pool.Stop()
+
+	// SubmitWait should work without panicking from double-close
+	result, ok := pool.SubmitWait(func() interface{} { return "hello" })
+	if !ok {
+		t.Fatal("expected ok=true from SubmitWait")
+	}
+	if result != "hello" {
+		t.Fatalf("expected 'hello', got %v", result)
+	}
+}
+
+// TestR15_P95IndexCorrect verifies that P95 index uses n-1 to stay in bounds.
+func TestR15_P95IndexCorrect(t *testing.T) {
+	mc := NewMetricsCollector(nil)
+
+	// Record exactly 20 samples (minimum for P95 calculation)
+	for i := 1; i <= 20; i++ {
+		mc.RecordLatency("READ", time.Duration(i)*time.Millisecond)
+	}
+
+	mc.latencyMutex.Lock()
+	p95 := mc.metrics.P95ReadLatency
+	mc.latencyMutex.Unlock()
+
+	// With 20 samples [1ms..20ms], P95 index = int(19 * 0.95) = int(18.05) = 18
+	// sorted[18] = 19ms
+	expected := 19 * time.Millisecond
+	if p95 != expected {
+		t.Fatalf("expected P95=%v, got %v", expected, p95)
+	}
+}
+
+// TestR16_ResizeAfterStopNoPanic verifies that calling Resize after Stop
+// doesn't panic from double-closing the task queue channel.
+func TestR16_ResizeAfterStopNoPanic(t *testing.T) {
+	nfs := createTestNFS(t)
+	defer nfs.Close()
+
+	pool := NewWorkerPool(2, nfs)
+	pool.Start()
+	pool.Stop()
+
+	// This should not panic even though the channel is already closed
+	pool.Resize(4)
+	pool.Stop()
+}
+
+// TestR17_LatencyRaceDetector verifies that concurrent RecordLatency, IsHealthy,
+// and GetMetrics calls don't trigger the race detector.
+func TestR17_LatencyRaceDetector(t *testing.T) {
+	mc := NewMetricsCollector(nil)
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	// Concurrent RecordLatency
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			mc.RecordLatency("READ", time.Duration(i)*time.Microsecond)
+			mc.RecordLatency("WRITE", time.Duration(i)*time.Microsecond)
+		}
+	}()
+
+	// Concurrent IsHealthy
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			mc.IsHealthy()
+		}
+	}()
+
+	// Concurrent GetMetrics
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			mc.GetMetrics()
+		}
+	}()
+
+	wg.Wait()
+}
+
+// TestR29_ConcurrentResize verifies that concurrent Resize calls are serialized
+// and don't cause panics.
+func TestR29_ConcurrentResize(t *testing.T) {
+	nfs := createTestNFS(t)
+	defer nfs.Close()
+
+	pool := NewWorkerPool(2, nfs)
+	pool.Start()
+	defer pool.Stop()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			pool.Resize(n + 1)
+		}(i)
+	}
+	wg.Wait()
+}
+
+// TestR30_MaxLatencySimpleComparison verifies that max latency is tracked
+// correctly using simple comparison under mutex (no unsafe pointer cast).
+func TestR30_MaxLatencySimpleComparison(t *testing.T) {
+	mc := NewMetricsCollector(nil)
+
+	mc.RecordLatency("READ", 10*time.Millisecond)
+	mc.RecordLatency("READ", 50*time.Millisecond)
+	mc.RecordLatency("READ", 30*time.Millisecond)
+
+	mc.latencyMutex.Lock()
+	maxRead := mc.metrics.MaxReadLatency
+	mc.latencyMutex.Unlock()
+
+	if maxRead != 50*time.Millisecond {
+		t.Fatalf("expected max=50ms, got %v", maxRead)
+	}
+}
+
+// TestR31_BatchProcessorUnlockBeforeGoroutine verifies that the timer-based
+// batch processing path works correctly (unlock before goroutine dispatch).
+func TestR31_BatchProcessorUnlockBeforeGoroutine(t *testing.T) {
+	nfs := createTestNFS(t)
+	defer nfs.Close()
+	nfs.options.BatchOperations = true
+
+	// Small delay so timer fires quickly
+	bp := NewBatchProcessor(nfs, 100)
+
+	resultChan := make(chan *BatchResult, 1)
+	req := &BatchRequest{
+		Type:       BatchTypeRead,
+		FileHandle: 999,
+		Offset:     0,
+		Length:     100,
+		Time:       time.Now(),
+		ResultChan: resultChan,
+		Context:    context.Background(),
+	}
+
+	added, _ := bp.AddRequest(req)
+	if !added {
+		t.Fatal("request should have been added")
+	}
+
+	// Wait for timer-based processing (default delay is 10ms, ticker is 5ms)
+	select {
+	case res := <-resultChan:
+		if res == nil {
+			t.Fatal("expected non-nil result")
+		}
+		// We expect an error since file handle 999 doesn't exist
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for timer-based batch processing")
+	}
+
+	bp.Stop()
+}
+
+// TestR32_PerIPLimiterCleanupBounded verifies that cleanup removes at most 100
+// entries per pass instead of iterating the entire map.
+func TestR32_PerIPLimiterCleanupBounded(t *testing.T) {
+	pl := NewPerIPLimiter(1000, 100, time.Minute)
+
+	// Create 200 IP entries that are all at max tokens (eligible for cleanup)
+	for i := 0; i < 200; i++ {
+		ip := fmt.Sprintf("10.0.%d.%d", i/256, i%256)
+		pl.limiters[ip] = NewTokenBucket(1000, 100)
+	}
+
+	initialCount := len(pl.limiters)
+	pl.cleanup()
+
+	remaining := len(pl.limiters)
+	deleted := initialCount - remaining
+
+	// Should have deleted exactly 100 (the bounded max)
+	if deleted != 100 {
+		t.Fatalf("expected 100 deletions, got %d", deleted)
+	}
 }
 
 // createTestNFS creates a minimal AbsfsNFS for testing
