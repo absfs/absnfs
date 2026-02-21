@@ -120,11 +120,13 @@ func (p *WorkerPool) Submit(execute func() interface{}) chan interface{} {
 	}
 
 	// Try to submit the task to the queue with timeout
+	timer := time.NewTimer(50 * time.Millisecond)
+	defer timer.Stop()
 	select {
 	case p.taskQueue <- task:
 		// Task submitted successfully
 		return resultChan
-	case <-time.After(50 * time.Millisecond):
+	case <-timer.C:
 		// Task queue is full, close the result channel
 		close(resultChan)
 		return nil
@@ -208,12 +210,14 @@ func (p *WorkerPool) Resize(maxWorkers int) {
 		p.Stop()
 	}
 
-	// Drain any remaining tasks from the old queue (if it wasn't running, it won't be closed)
-	if !wasRunning && oldQueue != nil {
-		close(oldQueue)
-		// Drain the channel to prevent goroutine leaks
-		for range oldQueue {
-			// Discard remaining tasks
+	// Drain remaining tasks from old queue and notify callers
+	var pendingTasks []Task
+	if oldQueue != nil {
+		if !wasRunning {
+			close(oldQueue)
+		}
+		for task := range oldQueue {
+			pendingTasks = append(pendingTasks, task)
 		}
 	}
 
@@ -228,8 +232,25 @@ func (p *WorkerPool) Resize(maxWorkers int) {
 
 	// Restart the pool if it was running
 	if wasRunning {
-		// Let the old workers finish before starting new ones
-		time.Sleep(10 * time.Millisecond)
 		p.Start()
+
+		// Re-enqueue pending tasks from the old queue
+		for _, task := range pendingTasks {
+			select {
+			case p.taskQueue <- task:
+			default:
+				// Queue full, notify caller of failure
+				if task.ResultChan != nil {
+					task.ResultChan <- nil
+				}
+			}
+		}
+	} else {
+		// Pool wasn't running, notify callers of dropped tasks
+		for _, task := range pendingTasks {
+			if task.ResultChan != nil {
+				task.ResultChan <- nil
+			}
+		}
 	}
 }

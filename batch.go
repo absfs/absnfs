@@ -379,7 +379,7 @@ func (bp *BatchProcessor) processGetAttrBatch(batch *Batch) {
 		if node, ok := file.(*NFSNode); ok {
 			path = node.path
 			// Try to get attributes from cache first
-			attrs = bp.processor.attrCache.Get(path, bp.processor)
+			attrs, _ = bp.processor.attrCache.Get(path, bp.processor)
 		}
 
 		// If not in cache or not an NFSNode, get attributes directly
@@ -536,10 +536,29 @@ func (bp *BatchProcessor) processDirReadBatch(batch *Batch) {
 	}
 }
 
-// Stop stops the batch processor
+// Stop stops the batch processor, draining pending items and notifying waiters
 func (bp *BatchProcessor) Stop() {
 	bp.cancel()
 	bp.wg.Wait()
+
+	// Drain any remaining pending batches
+	bp.mu.Lock()
+	remaining := bp.batches
+	bp.batches = make(map[BatchType]*Batch)
+	bp.mu.Unlock()
+
+	for _, batch := range remaining {
+		batch.mu.Lock()
+		for _, req := range batch.Requests {
+			req.ResultChan <- &BatchResult{
+				Error:  context.Canceled,
+				Status: NFSERR_IO,
+			}
+			close(req.ResultChan)
+		}
+		batch.Requests = nil
+		batch.mu.Unlock()
+	}
 }
 
 // BatchRead submits a read request to be batched

@@ -13,8 +13,8 @@ func (fm *FileHandleMap) Allocate(f absfs.File) uint64 {
 	var handle uint64
 
 	// First, try to reuse a freed handle (prefer smallest available)
-	if !fm.freeHandles.IsEmpty() {
-		handle = fm.freeHandles.PopMin()
+	if val, ok := fm.freeHandles.PopMin(); ok {
+		handle = val
 	} else {
 		// No freed handles available, use the next sequential handle
 		handle = fm.nextHandle

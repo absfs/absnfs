@@ -50,10 +50,14 @@ func (m *MemoryMonitor) Start(interval time.Duration) {
 		return // Monitor is already running
 	}
 
+	// Recreate stopCh so Start works after a previous Stop
+	stopCh := make(chan struct{})
+	m.stopCh = stopCh
+
 	// Update stats immediately
 	m.updateStats()
 
-	// Start background monitoring
+	// Start background monitoring (capture stopCh locally to avoid race)
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -62,7 +66,7 @@ func (m *MemoryMonitor) Start(interval time.Duration) {
 			select {
 			case <-ticker.C:
 				m.checkMemoryPressure()
-			case <-m.stopCh:
+			case <-stopCh:
 				return
 			}
 		}
@@ -202,8 +206,8 @@ func (m *MemoryMonitor) reduceCacheSizes(reductionFactor float64) {
 	// Update read-ahead buffer configuration
 	m.nfs.readBuf.Configure(newReadAheadMaxFiles, newReadAheadMaxMemory)
 
-	// Run garbage collection to reclaim memory
-	runtime.GC()
+	// Let Go's runtime manage garbage collection rather than forcing explicit GC
+	// which causes unnecessary stop-the-world pauses
 }
 
 // GetMemoryStats returns a copy of the current memory statistics

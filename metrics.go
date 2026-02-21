@@ -93,13 +93,21 @@ type MetricsCollector struct {
 	negativeCacheHits   uint64
 	negativeCacheMisses uint64
 
-	// For latency tracking
-	latencyMutex   sync.Mutex
-	readLatencies  []time.Duration
-	writeLatencies []time.Duration
-
-	// Maximum number of latency samples to keep
+	// For latency tracking (ring buffers)
+	latencyMutex      sync.Mutex
+	readLatencies     []time.Duration
+	readLatIdx        int // next write position
+	readLatLen        int // entries written
+	writeLatencies    []time.Duration
+	writeLatIdx       int // next write position
+	writeLatLen       int // entries written
 	maxLatencySamples int
+
+	// Windowed error tracking for IsHealthy
+	recentResults    []bool // true = error, false = success
+	recentResultsIdx int    // next write position (ring buffer)
+	recentResultsCap int    // capacity of the ring buffer
+	recentResultsLen int    // number of entries written so far
 
 	// Reference to server components for gathering metrics
 	server *AbsfsNFS
@@ -107,11 +115,14 @@ type MetricsCollector struct {
 
 // NewMetricsCollector creates a new metrics collector
 func NewMetricsCollector(server *AbsfsNFS) *MetricsCollector {
+	const latencyCap = 1000
 	return &MetricsCollector{
 		server:            server,
-		maxLatencySamples: 1000, // Keep the last 1000 latency samples
-		readLatencies:     make([]time.Duration, 0, 1000),
-		writeLatencies:    make([]time.Duration, 0, 1000),
+		maxLatencySamples: latencyCap,
+		readLatencies:     make([]time.Duration, latencyCap),
+		writeLatencies:    make([]time.Duration, latencyCap),
+		recentResults:     make([]bool, latencyCap),
+		recentResultsCap:  latencyCap,
 		metrics: NFSMetrics{
 			StartTime: time.Now(),
 		},
@@ -148,7 +159,7 @@ func (m *MetricsCollector) IncrementOperationCount(opType string) {
 	}
 }
 
-// RecordLatency records the latency for an operation
+// RecordLatency records the latency for an operation using ring buffers
 func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) {
 	m.latencyMutex.Lock()
 	defer m.latencyMutex.Unlock()
@@ -159,74 +170,66 @@ func (m *MetricsCollector) RecordLatency(opType string, duration time.Duration) 
 		for {
 			current := atomic.LoadInt64((*int64)(&m.metrics.MaxReadLatency))
 			if duration.Nanoseconds() <= current {
-				break // No need to update
+				break
 			}
 			if atomic.CompareAndSwapInt64((*int64)(&m.metrics.MaxReadLatency), current, duration.Nanoseconds()) {
-				break // Successfully updated
+				break
 			}
 		}
 
-		// Add to latency samples for percentile calculation
-		m.readLatencies = append(m.readLatencies, duration)
-		if len(m.readLatencies) > m.maxLatencySamples {
-			// Remove oldest entry
-			m.readLatencies = m.readLatencies[1:]
+		// Write into ring buffer
+		m.readLatencies[m.readLatIdx] = duration
+		m.readLatIdx = (m.readLatIdx + 1) % m.maxLatencySamples
+		if m.readLatLen < m.maxLatencySamples {
+			m.readLatLen++
 		}
 
-		// Update average latency
-		if len(m.readLatencies) > 0 {
-			var sum time.Duration
-			for _, d := range m.readLatencies {
-				sum += d
-			}
-			m.metrics.AvgReadLatency = sum / time.Duration(len(m.readLatencies))
-
-			// Calculate 95th percentile
-			if len(m.readLatencies) >= 20 { // Need enough samples for meaningful percentile
-				sorted := make([]time.Duration, len(m.readLatencies))
-				copy(sorted, m.readLatencies)
-				sortDurations(sorted)
-				idx := int(float64(len(sorted)) * 0.95)
-				m.metrics.P95ReadLatency = sorted[idx]
-			}
-		}
+		// Compute stats over valid entries
+		m.updateLatencyStats(m.readLatencies[:m.readLatLen], &m.metrics.AvgReadLatency, &m.metrics.P95ReadLatency)
 
 	case "WRITE":
 		// Update max latency atomically
 		for {
 			current := atomic.LoadInt64((*int64)(&m.metrics.MaxWriteLatency))
 			if duration.Nanoseconds() <= current {
-				break // No need to update
+				break
 			}
 			if atomic.CompareAndSwapInt64((*int64)(&m.metrics.MaxWriteLatency), current, duration.Nanoseconds()) {
-				break // Successfully updated
+				break
 			}
 		}
 
-		// Add to latency samples for percentile calculation
-		m.writeLatencies = append(m.writeLatencies, duration)
-		if len(m.writeLatencies) > m.maxLatencySamples {
-			// Remove oldest entry
-			m.writeLatencies = m.writeLatencies[1:]
+		// Write into ring buffer
+		m.writeLatencies[m.writeLatIdx] = duration
+		m.writeLatIdx = (m.writeLatIdx + 1) % m.maxLatencySamples
+		if m.writeLatLen < m.maxLatencySamples {
+			m.writeLatLen++
 		}
 
-		// Update average latency
-		if len(m.writeLatencies) > 0 {
-			var sum time.Duration
-			for _, d := range m.writeLatencies {
-				sum += d
-			}
-			m.metrics.AvgWriteLatency = sum / time.Duration(len(m.writeLatencies))
+		// Compute stats over valid entries
+		m.updateLatencyStats(m.writeLatencies[:m.writeLatLen], &m.metrics.AvgWriteLatency, &m.metrics.P95WriteLatency)
+	}
+}
 
-			// Calculate 95th percentile
-			if len(m.writeLatencies) >= 20 { // Need enough samples for meaningful percentile
-				sorted := make([]time.Duration, len(m.writeLatencies))
-				copy(sorted, m.writeLatencies)
-				sortDurations(sorted)
-				idx := int(float64(len(sorted)) * 0.95)
-				m.metrics.P95WriteLatency = sorted[idx]
-			}
-		}
+// updateLatencyStats computes average and p95 from the ring buffer samples
+func (m *MetricsCollector) updateLatencyStats(samples []time.Duration, avg *time.Duration, p95 *time.Duration) {
+	n := len(samples)
+	if n == 0 {
+		return
+	}
+
+	var sum time.Duration
+	for _, d := range samples {
+		sum += d
+	}
+	*avg = sum / time.Duration(n)
+
+	if n >= 20 {
+		sorted := make([]time.Duration, n)
+		copy(sorted, samples)
+		sortDurations(sorted)
+		idx := int(float64(n) * 0.95)
+		*p95 = sorted[idx]
 	}
 }
 
@@ -497,26 +500,48 @@ func sortDurations(durations []time.Duration) {
 	})
 }
 
+// RecordOperationResult records whether an operation succeeded or failed for
+// windowed health tracking.
+func (m *MetricsCollector) RecordOperationResult(isError bool) {
+	m.latencyMutex.Lock()
+	defer m.latencyMutex.Unlock()
+
+	m.recentResults[m.recentResultsIdx] = isError
+	m.recentResultsIdx = (m.recentResultsIdx + 1) % m.recentResultsCap
+	if m.recentResultsLen < m.recentResultsCap {
+		m.recentResultsLen++
+	}
+}
+
 // IsHealthy checks if the server is in a healthy state
 func (m *MetricsCollector) IsHealthy() bool {
-	// Basic health check logic
+	// Check windowed error rate using recent results ring buffer
+	m.latencyMutex.Lock()
+	n := m.recentResultsLen
+	errors := 0
+	for i := 0; i < n; i++ {
+		if m.recentResults[i] {
+			errors++
+		}
+	}
+	m.latencyMutex.Unlock()
+
+	// If we have enough samples, check error rate
+	if n > 0 {
+		errorRate := float64(errors) / float64(n)
+		if errorRate > 0.5 {
+			return false
+		}
+	}
+
+	// Check if read/write latency is too high (more than 5 seconds for 95th percentile)
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	// Consider the server unhealthy if:
-
-	// 1. Error rate is too high (more than 50% of operations in the last period)
-	errorRate := float64(m.metrics.ErrorCount) / float64(m.metrics.TotalOperations+1) // Add 1 to avoid division by zero
-	if errorRate > 0.5 {
-		return false
-	}
-
-	// 2. Read/write latency is too high (more than 5 seconds for 95th percentile)
 	maxAllowedLatency := 5 * time.Second
 	if m.metrics.P95ReadLatency > maxAllowedLatency || m.metrics.P95WriteLatency > maxAllowedLatency {
 		return false
 	}
 
-	// Otherwise consider the server healthy
 	return true
 }

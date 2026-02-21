@@ -28,9 +28,13 @@ func NewUint64MinHeap() *uint64MinHeap {
 	return h
 }
 
-// PopMin removes and returns the minimum element from the heap
-func (h *uint64MinHeap) PopMin() uint64 {
-	return heap.Pop(h).(uint64)
+// PopMin removes and returns the minimum element from the heap.
+// Returns (value, true) on success, or (0, false) if the heap is empty.
+func (h *uint64MinHeap) PopMin() (uint64, bool) {
+	if h.IsEmpty() {
+		return 0, false
+	}
+	return heap.Pop(h).(uint64), true
 }
 
 // PushValue adds a value to the heap

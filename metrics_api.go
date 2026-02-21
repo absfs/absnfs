@@ -50,6 +50,9 @@ func (n *AbsfsNFS) RecordOperationStart(opType string) func(err error) {
 
 	// Return a function that will be called when the operation completes
 	return func(err error) {
+		// Record windowed result for health tracking
+		n.metrics.RecordOperationResult(err != nil)
+
 		// Record latency
 		if opType == "READ" || opType == "WRITE" {
 			n.metrics.RecordLatency(opType, time.Since(startTime))
