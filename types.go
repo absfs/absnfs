@@ -360,6 +360,7 @@ type FileHandleMap struct {
 	handles     map[uint64]absfs.File
 	nextHandle  uint64         // Counter for allocating new handles
 	freeHandles *uint64MinHeap // Min-heap of freed handles for reuse
+	maxHandles  int            // Maximum handles before eviction (0 = DefaultMaxHandles)
 }
 
 // NFSNode represents a file or directory in the NFS tree

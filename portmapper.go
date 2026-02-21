@@ -41,6 +41,9 @@ type PortMapping struct {
 	Port     uint32
 }
 
+// DefaultMaxPortmapperConns is the default maximum concurrent connections to the portmapper.
+const DefaultMaxPortmapperConns = 100
+
 // Portmapper implements the RFC 1833 portmapper service
 type Portmapper struct {
 	mu         sync.RWMutex
@@ -51,7 +54,8 @@ type Portmapper struct {
 	wg         sync.WaitGroup
 	logger     *log.Logger
 	debug      atomic.Bool
-	listenAddr atomic.Value // stores string; actual listen address for universal address construction
+	listenAddr atomic.Value       // stores string; actual listen address for universal address construction
+	connSem    chan struct{}       // semaphore to limit concurrent connections
 }
 
 // NewPortmapper creates a new portmapper instance
@@ -62,6 +66,7 @@ func NewPortmapper() *Portmapper {
 		ctx:      ctx,
 		cancel:   cancel,
 		logger:   log.New(os.Stderr, "[portmapper] ", log.LstdFlags),
+		connSem:  make(chan struct{}, DefaultMaxPortmapperConns),
 	}
 }
 
@@ -230,9 +235,20 @@ func (pm *Portmapper) acceptLoop() {
 				}
 			}
 
+			// Acquire a connection slot
+			select {
+			case pm.connSem <- struct{}{}:
+				// Got a slot
+			default:
+				// At capacity, reject connection
+				conn.Close()
+				continue
+			}
+
 			pm.wg.Add(1)
 			go func() {
 				defer pm.wg.Done()
+				defer func() { <-pm.connSem }()
 				pm.handleConnection(conn)
 			}()
 		}

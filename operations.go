@@ -209,7 +209,7 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 	}
 
 	// Check cache first
-	if attrs, found := s.attrCache.Get(node.path); found && attrs != nil && attrs.IsValid() {
+	if attrs, found := s.attrCache.Get(node.path, s); found && attrs != nil && attrs.IsValid() {
 		return attrs, nil
 	}
 
@@ -938,7 +938,7 @@ func (s *AbsfsNFS) ReadDirPlus(dir *NFSNode) ([]*NFSNode, error) {
 
 	// Pre-cache attributes for all entries
 	for _, node := range nodes {
-		if attrs, found := s.attrCache.Get(node.path); !found || attrs == nil || !attrs.IsValid() {
+		if attrs, found := s.attrCache.Get(node.path, s); !found || attrs == nil || !attrs.IsValid() {
 			info, err := s.fs.Stat(node.path)
 			if err != nil {
 				continue

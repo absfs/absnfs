@@ -30,6 +30,16 @@ const (
 	ACCESS_DENIED = NFSERR_ACCES
 )
 
+// NFS3 ACCESS check constants (RFC 1813, Section 2.6)
+const (
+	ACCESS3_READ    = 0x0001
+	ACCESS3_LOOKUP  = 0x0002
+	ACCESS3_MODIFY  = 0x0004
+	ACCESS3_EXTEND  = 0x0008
+	ACCESS3_DELETE  = 0x0010
+	ACCESS3_EXECUTE = 0x0020
+)
+
 // FileHandle represents an NFS file handle
 type FileHandle struct {
 	Handle uint64

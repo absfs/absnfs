@@ -1309,35 +1309,56 @@ func (h *NFSProcedureHandler) handleAccess(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithPostOp(reply, mapError(err)), nil
 	}
 
-	var accessAllowed uint32 = 0
+	// Get file attributes for permission checking
+	fileMode := attrs.Mode
+	fileUid := attrs.Uid
+	fileGid := attrs.Gid
+	isDir := attrs.Mode&os.ModeDir != 0
 
-	// ACCESS3_READ
-	if access&1 != 0 {
-		accessAllowed |= 1
+	// Get effective UID/GID from auth context
+	var effectiveUID, effectiveGID uint32
+	if authCtx.AuthSys != nil {
+		effectiveUID = authCtx.AuthSys.UID
+		effectiveGID = authCtx.AuthSys.GID
+	} else {
+		// AUTH_NONE maps to nobody
+		effectiveUID = 65534
+		effectiveGID = 65534
 	}
 
-	// ACCESS3_LOOKUP (only for directories)
-	if access&2 != 0 && attrs.Mode&os.ModeDir != 0 {
-		accessAllowed |= 2
+	// Determine which permission bits apply (owner, group, other)
+	var permBits os.FileMode
+	if effectiveUID == fileUid {
+		permBits = (fileMode >> 6) & 7 // owner bits
+	} else if effectiveGID == fileGid {
+		permBits = (fileMode >> 3) & 7 // group bits
+	} else {
+		permBits = fileMode & 7 // other bits
+	}
+	// Root (UID 0) gets all permissions
+	if effectiveUID == 0 {
+		permBits = 7
 	}
 
-	// M2: ACCESS3_EXECUTE should be granted on read-only exports when file has execute bits
-	if access&32 != 0 && (attrs.Mode&0111 != 0) {
-		accessAllowed |= 32
+	var accessAllowed uint32
+	if access&ACCESS3_READ != 0 && permBits&4 != 0 {
+		accessAllowed |= ACCESS3_READ
 	}
-
+	if access&ACCESS3_LOOKUP != 0 && isDir && permBits&1 != 0 {
+		accessAllowed |= ACCESS3_LOOKUP
+	}
+	if access&ACCESS3_EXECUTE != 0 && permBits&1 != 0 {
+		accessAllowed |= ACCESS3_EXECUTE
+	}
 	if !h.server.handler.options.ReadOnly {
-		// ACCESS3_MODIFY
-		if access&4 != 0 {
-			accessAllowed |= 4
+		if access&ACCESS3_MODIFY != 0 && permBits&2 != 0 {
+			accessAllowed |= ACCESS3_MODIFY
 		}
-		// ACCESS3_EXTEND
-		if access&8 != 0 {
-			accessAllowed |= 8
+		if access&ACCESS3_EXTEND != 0 && permBits&2 != 0 {
+			accessAllowed |= ACCESS3_EXTEND
 		}
-		// ACCESS3_DELETE
-		if access&16 != 0 {
-			accessAllowed |= 16
+		if access&ACCESS3_DELETE != 0 && isDir && permBits&2 != 0 {
+			accessAllowed |= ACCESS3_DELETE
 		}
 	}
 
@@ -1667,6 +1688,12 @@ func (h *NFSProcedureHandler) handleRename(body io.Reader, reply *RPCReply, auth
 // handleLink handles NFSPROC3_LINK - create hard link (not supported)
 // R2: LINK3resfail format is status + post_op_attr + wcc_data (not just wcc_data)
 func (h *NFSProcedureHandler) handleLink(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
+	// Consume the LINK arguments to prevent stream desync
+	// LINK3args: nfs_fh3 file + diropargs3(nfs_fh3 dir + filename3 name)
+	xdrDecodeFileHandle(body) // file handle
+	xdrDecodeFileHandle(body) // dir handle
+	xdrDecodeString(body)     // name
+
 	notSupported := &NotSupportedError{
 		Operation: "LINK",
 		Reason:    "hard links are not supported by this NFS implementation",

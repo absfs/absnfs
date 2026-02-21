@@ -1,8 +1,13 @@
 package absnfs
 
 import (
+	"math"
+
 	"github.com/absfs/absfs"
 )
+
+// DefaultMaxHandles is the maximum number of file handles before eviction occurs.
+const DefaultMaxHandles = 100000
 
 // Allocate creates a new file handle for the given absfs.File
 // Optimized to O(log n) or O(1) using a free list instead of O(n) linear search
@@ -22,6 +27,34 @@ func (fm *FileHandleMap) Allocate(f absfs.File) uint64 {
 	}
 
 	fm.handles[handle] = f
+
+	// Evict oldest handles if map exceeds maxHandles
+	maxH := fm.maxHandles
+	if maxH <= 0 {
+		maxH = DefaultMaxHandles
+	}
+	if len(fm.handles) > maxH {
+		evictCount := maxH / 10
+		if evictCount < 1 {
+			evictCount = 1
+		}
+		// Find the lowest handle numbers (oldest) to evict
+		minHandle := uint64(math.MaxUint64)
+		for h := range fm.handles {
+			if h < minHandle {
+				minHandle = h
+			}
+		}
+		// Evict starting from the lowest handles
+		for h := minHandle; evictCount > 0; h++ {
+			if file, exists := fm.handles[h]; exists {
+				file.Close()
+				delete(fm.handles, h)
+				evictCount--
+			}
+		}
+	}
+
 	return handle
 }
 
