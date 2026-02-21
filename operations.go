@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
@@ -173,11 +174,14 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 	}
 
 	modTime := info.ModTime()
+	h := fnv.New64a()
+	h.Write([]byte(path))
 	attrs := &NFSAttrs{
-		Mode: info.Mode(),
-		Size: info.Size(),
-		Uid:  0,
-		Gid:  0,
+		Mode:   info.Mode(),
+		Size:   info.Size(),
+		FileId: h.Sum64(),
+		Uid:    0,
+		Gid:    0,
 	}
 	attrs.SetMtime(modTime)
 	attrs.SetAtime(modTime)
@@ -264,7 +268,7 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 	node.mu.RUnlock()
 
 	if attrs.Mode&os.ModePerm != currentMode&os.ModePerm {
-		if err := s.fs.Chmod(node.path, attrs.Mode); err != nil {
+		if err := s.fs.Chmod(node.path, attrs.Mode&os.ModePerm); err != nil {
 			return fmt.Errorf("setattr: chmod failed: %w", err)
 		}
 	}
@@ -275,7 +279,8 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 		}
 	}
 
-	if attrs.Mtime() != currentMtime || attrs.Atime() != currentAtime {
+	if (!attrs.Atime().IsZero() || !attrs.Mtime().IsZero()) &&
+		(attrs.Mtime() != currentMtime || attrs.Atime() != currentAtime) {
 		if err := s.fs.Chtimes(node.path, attrs.Atime(), attrs.Mtime()); err != nil {
 			return fmt.Errorf("setattr: chtimes failed: %w", err)
 		}
@@ -649,7 +654,7 @@ func (s *AbsfsNFS) CreateWithContext(ctx context.Context, dir *NFSNode, name str
 		return nil, fmt.Errorf("create: failed to close %s: %w", path, err)
 	}
 
-	if err := s.fs.Chmod(path, attrs.Mode); err != nil {
+	if err := s.fs.Chmod(path, attrs.Mode&os.ModePerm); err != nil {
 		s.fs.Remove(path)
 		return nil, fmt.Errorf("create: failed to chmod %s: %w", path, err)
 	}
@@ -938,18 +943,28 @@ func (s *AbsfsNFS) ReadDirPlus(dir *NFSNode) ([]*NFSNode, error) {
 			if err != nil {
 				continue
 			}
+			// Read Uid/Gid with lock protection
+			node.mu.RLock()
+			uid := node.attrs.Uid
+			gid := node.attrs.Gid
+			node.mu.RUnlock()
+
 			modTime := info.ModTime()
 			attrs := &NFSAttrs{
 				Mode: info.Mode(),
 				Size: info.Size(),
-				Uid:  node.attrs.Uid,
-				Gid:  node.attrs.Gid,
+				Uid:  uid,
+				Gid:  gid,
 			}
 			attrs.SetMtime(modTime)
 			attrs.SetAtime(modTime)
 			attrs.Refresh() // Initialize cache validity
 			s.attrCache.Put(node.path, attrs)
+
+			// Assign attrs with write lock protection
+			node.mu.Lock()
 			node.attrs = attrs
+			node.mu.Unlock()
 		}
 	}
 

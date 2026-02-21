@@ -97,10 +97,11 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) (*NFSAttrs, bool) {
 
 		// Copy attributes while holding RLock to prevent data races
 		attrs := &NFSAttrs{
-			Mode: cached.attrs.Mode,
-			Size: cached.attrs.Size,
-			Uid:  cached.attrs.Uid,
-			Gid:  cached.attrs.Gid,
+			Mode:   cached.attrs.Mode,
+			Size:   cached.attrs.Size,
+			FileId: cached.attrs.FileId,
+			Uid:    cached.attrs.Uid,
+			Gid:    cached.attrs.Gid,
 		}
 		attrs.SetMtime(cached.attrs.Mtime())
 		attrs.SetAtime(cached.attrs.Atime())
@@ -142,10 +143,12 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) (*NFSAttrs, bool) {
 	}
 
 	if ok {
-		// Expired entry, remove it
+		// Expired entry, remove it with re-check after lock upgrade
 		c.mu.Lock()
-		c.removeFromAccessLog(path)
-		delete(c.cache, path)
+		if entry, exists := c.cache[path]; exists && time.Now().After(entry.expireAt) {
+			c.removeFromAccessLog(path)
+			delete(c.cache, path)
+		}
 		c.mu.Unlock()
 	}
 	return nil, false
@@ -205,10 +208,11 @@ func (c *AttrCache) Put(path string, attrs *NFSAttrs) {
 
 	// Deep copy the attributes to prevent modification
 	attrsCopy := &NFSAttrs{
-		Mode: attrs.Mode,
-		Size: attrs.Size,
-		Uid:  attrs.Uid,
-		Gid:  attrs.Gid,
+		Mode:   attrs.Mode,
+		Size:   attrs.Size,
+		FileId: attrs.FileId,
+		Uid:    attrs.Uid,
+		Gid:    attrs.Gid,
 	}
 	attrsCopy.SetMtime(attrs.Mtime())
 	attrsCopy.SetAtime(attrs.Atime())
@@ -350,9 +354,11 @@ func (c *AttrCache) InvalidateNegativeInDir(dirPath string) {
 	}
 
 	// Delete the negative entries
+	// Remove from access log BEFORE deleting from cache, because
+	// removeFromAccessLog looks up the entry in c.cache to find the list element.
 	for _, path := range toDelete {
-		delete(c.cache, path)
 		c.removeFromAccessLog(path)
+		delete(c.cache, path)
 	}
 }
 
@@ -795,10 +801,12 @@ func (c *DirCache) Get(path string) ([]os.FileInfo, bool) {
 		c.mu.RUnlock()
 		atomic.AddUint64(&c.misses, 1)
 
-		// Remove expired entry
+		// Remove expired entry with re-check after lock upgrade
 		c.mu.Lock()
-		delete(c.entries, path)
-		c.removeFromAccessList(path)
+		if entry, exists := c.entries[path]; exists && time.Now().After(entry.validUntil) {
+			c.removeFromAccessList(path)
+			delete(c.entries, path)
+		}
 		c.mu.Unlock()
 
 		return nil, false

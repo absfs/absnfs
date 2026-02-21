@@ -97,10 +97,15 @@ func applySquashing(result *AuthResult, authSys *AuthSysCredential, squash strin
 			result.UID = 65534
 			result.GID = 65534
 		}
-		// Squash GID 0 in auxiliary GID list
-		for i, gid := range authSys.AuxGIDs {
-			if gid == 0 {
-				authSys.AuxGIDs[i] = 65534
+		// Squash GID 0 in auxiliary GID list (copy first to avoid mutating shared slice)
+		if len(authSys.AuxGIDs) > 0 {
+			auxCopy := make([]uint32, len(authSys.AuxGIDs))
+			copy(auxCopy, authSys.AuxGIDs)
+			authSys.AuxGIDs = auxCopy
+			for i, gid := range authSys.AuxGIDs {
+				if gid == 0 {
+					authSys.AuxGIDs[i] = 65534
+				}
 			}
 		}
 
