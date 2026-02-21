@@ -222,9 +222,12 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 	}
 
 	// Read Uid/Gid from node.attrs with lock protection
+	var uid, gid uint32
 	node.mu.RLock()
-	uid := node.attrs.Uid
-	gid := node.attrs.Gid
+	if node.attrs != nil {
+		uid = node.attrs.Uid
+		gid = node.attrs.Gid
+	}
 	node.mu.RUnlock()
 
 	modTime := info.ModTime()
@@ -569,8 +572,13 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 
 		// Update modification time explicitly
 		now := time.Now()
-		if err := s.fs.Chtimes(node.path, now, now); err != nil {
-			return int64(n), err
+		if chtimesErr := s.fs.Chtimes(node.path, now, now); chtimesErr != nil {
+			// Log but don't fail the write for timestamp update failure
+			if s.structuredLogger != nil {
+				s.structuredLogger.Warn("WRITE: Failed to update times",
+					LogField{Key: "path", Value: node.path},
+					LogField{Key: "error", Value: chtimesErr})
+			}
 		}
 
 		// Update node attributes to reflect new size and time
@@ -1049,6 +1057,16 @@ func (s *AbsfsNFS) Readlink(node *NFSNode) (string, error) {
 	target, err := s.fs.Readlink(node.path)
 	if err != nil {
 		return "", fmt.Errorf("readlink: failed to read symlink %s: %w", node.path, err)
+	}
+
+	// Sanitize relative targets to prevent traversal outside export.
+	// Absolute paths within the virtual filesystem are safe (contained by absfs).
+	if !strings.HasPrefix(target, "/") {
+		for _, component := range strings.Split(target, "/") {
+			if component == ".." {
+				return "", fmt.Errorf("readlink: symlink target with '..' not allowed")
+			}
+		}
 	}
 
 	return target, nil

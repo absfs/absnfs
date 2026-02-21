@@ -239,10 +239,15 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 		attrs.Mode = os.FileMode(sattr.Mode)
 	}
 	if sattr.SetUID {
-		attrs.Uid = sattr.UID
+		if authCtx.EffectiveUID == 0 {
+			attrs.Uid = sattr.UID
+		}
+		// else: silently ignore, non-root can't change UID
 	}
 	if sattr.SetGID {
-		attrs.Gid = sattr.GID
+		if authCtx.EffectiveUID == 0 {
+			attrs.Gid = sattr.GID
+		}
 	}
 
 	if sattr.SetAtime == 1 {
@@ -578,8 +583,8 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 		return nfsErrorWithWcc(reply, NFSERR_IO), nil
 	}
 	xdrEncodeUint32(&buf, uint32(n))
-	xdrEncodeUint32(&buf, 2) // FILE_SYNC: server does synchronous writes
-	buf.Write(make([]byte, 8)) // writeverf
+	xdrEncodeUint32(&buf, 2)            // FILE_SYNC: server does synchronous writes
+	buf.Write(h.server.writeVerf[:]) // writeverf unique per server boot
 
 	reply.Data = buf.Bytes()
 	return reply, nil
@@ -612,8 +617,10 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 	}
 
 	var mode uint32 = 0644
-	var uid, gid uint32
-	var setUID, setGID bool
+	// Use effective UID/GID from auth context as default for new files
+	newUID := authCtx.EffectiveUID
+	newGID := authCtx.EffectiveGID
+	var isExclusive bool
 	if createHow == 0 || createHow == 1 {
 		sattr, err := decodeSattr3(body)
 		if err != nil {
@@ -622,13 +629,12 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 		if sattr.SetMode {
 			mode = sattr.Mode
 		}
-		if sattr.SetUID {
-			uid = sattr.UID
-			setUID = true
+		// Only allow explicit UID/GID override if caller is root (not squashed)
+		if sattr.SetUID && authCtx.EffectiveUID == 0 {
+			newUID = sattr.UID
 		}
-		if sattr.SetGID {
-			gid = sattr.GID
-			setGID = true
+		if sattr.SetGID && authCtx.EffectiveUID == 0 {
+			newGID = sattr.GID
 		}
 	} else if createHow == 2 {
 		// M14: Use io.ReadFull for the 8-byte EXCLUSIVE verifier
@@ -636,6 +642,7 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 		if _, err := io.ReadFull(body, verf[:]); err != nil {
 			return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 		}
+		isExclusive = true
 	}
 
 	if status := validateMode(mode, false); status != NFS_OK {
@@ -655,16 +662,42 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 
 	attrs := &NFSAttrs{
 		Mode: os.FileMode(mode),
-	}
-	if setUID {
-		attrs.Uid = uid
-	}
-	if setGID {
-		attrs.Gid = gid
+		Uid:  newUID,
+		Gid:  newGID,
 	}
 
 	newNode, err := h.server.handler.Create(node, name, attrs)
 	if err != nil {
+		// For EXCLUSIVE creates, if file already exists, return success
+		// (simplified idempotent behavior per RFC 1813 - full verifier comparison not implemented)
+		if isExclusive && os.IsExist(err) {
+			lookupPath := path.Join(node.path, name)
+			existingNode, lookupErr := h.server.handler.Lookup(lookupPath)
+			if lookupErr == nil {
+				dirPostAttrs, _ := h.server.handler.GetAttr(node)
+				if dirPostAttrs == nil {
+					dirPostAttrs = dirPreAttrs
+				}
+				handle := h.server.handler.fileMap.Allocate(existingNode)
+				existingNode.mu.RLock()
+				existingAttrsCopy := *existingNode.attrs
+				existingNode.mu.RUnlock()
+				var buf bytes.Buffer
+				xdrEncodeUint32(&buf, NFS_OK)
+				xdrEncodeUint32(&buf, 1)
+				xdrEncodeFileHandle(&buf, handle)
+				xdrEncodeUint32(&buf, 1)
+				if err := encodeFileAttributes(&buf, &existingAttrsCopy); err != nil {
+					return nfsErrorWithWcc(reply, NFSERR_IO), nil
+				}
+				if err := encodeWccData(&buf, dirPreAttrs, dirPostAttrs); err != nil {
+					return nfsErrorWithWcc(reply, NFSERR_IO), nil
+				}
+				reply.Data = buf.Bytes()
+				return reply, nil
+			}
+		}
+
 		dirPostAttrs, _ := h.server.handler.GetAttr(node)
 		if dirPostAttrs == nil {
 			dirPostAttrs = dirPreAttrs
@@ -765,18 +798,18 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 		return reply, nil
 	}
 
-	// Apply uid/gid from sattr3 if requested.
-	// Use -1 for unchanged fields (standard POSIX convention).
-	if sattr.SetUID || sattr.SetGID {
-		newUID := -1
-		newGID := -1
-		if sattr.SetUID {
-			newUID = int(sattr.UID)
+	// Apply uid/gid: use effective UID/GID from auth context as default,
+	// only allow explicit override if caller is root (not squashed).
+	{
+		chownUID := int(authCtx.EffectiveUID)
+		chownGID := int(authCtx.EffectiveGID)
+		if sattr.SetUID && authCtx.EffectiveUID == 0 {
+			chownUID = int(sattr.UID)
 		}
-		if sattr.SetGID {
-			newGID = int(sattr.GID)
+		if sattr.SetGID && authCtx.EffectiveUID == 0 {
+			chownGID = int(sattr.GID)
 		}
-		if err := h.server.handler.fs.Chown(dirPath, newUID, newGID); err != nil {
+		if err := h.server.handler.fs.Chown(dirPath, chownUID, chownGID); err != nil {
 			if h.server.options.Debug {
 				h.server.logger.Printf("MKDIR: Chown failed for '%s': %v", dirPath, err)
 			}
@@ -866,13 +899,17 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 		mode = sattr.Mode
 	}
 
+	// Use effective UID/GID from auth context as default for new symlinks
 	attrs := &NFSAttrs{
 		Mode: os.FileMode(mode) | os.ModeSymlink,
+		Uid:  authCtx.EffectiveUID,
+		Gid:  authCtx.EffectiveGID,
 	}
-	if sattr.SetUID {
+	// Only allow explicit UID/GID override if caller is root (not squashed)
+	if sattr.SetUID && authCtx.EffectiveUID == 0 {
 		attrs.Uid = sattr.UID
 	}
-	if sattr.SetGID {
+	if sattr.SetGID && authCtx.EffectiveUID == 0 {
 		attrs.Gid = sattr.GID
 	}
 
@@ -891,17 +928,18 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 	}
 
 	// R9: Use Lchown instead of Chown for symlinks to avoid following the link
-	if sattr.SetUID || sattr.SetGID {
-		newUID := -1
-		newGID := -1
-		if sattr.SetUID {
-			newUID = int(sattr.UID)
+	// Apply effective UID/GID, with sattr3 override only allowed for root
+	{
+		lchownUID := int(authCtx.EffectiveUID)
+		lchownGID := int(authCtx.EffectiveGID)
+		if sattr.SetUID && authCtx.EffectiveUID == 0 {
+			lchownUID = int(sattr.UID)
 		}
-		if sattr.SetGID {
-			newGID = int(sattr.GID)
+		if sattr.SetGID && authCtx.EffectiveUID == 0 {
+			lchownGID = int(sattr.GID)
 		}
 		symlinkPath := path.Join(node.path, name)
-		if err := h.server.handler.fs.Lchown(symlinkPath, newUID, newGID); err != nil {
+		if err := h.server.handler.fs.Lchown(symlinkPath, lchownUID, lchownGID); err != nil {
 			if h.server.options.Debug {
 				h.server.logger.Printf("SYMLINK: Lchown failed for '%s': %v", symlinkPath, err)
 			}
@@ -1407,7 +1445,7 @@ func (h *NFSProcedureHandler) handleCommit(body io.Reader, reply *RPCReply, auth
 	if err := encodeWccData(&buf, attrs, attrs); err != nil {
 		return nfsErrorWithWcc(reply, NFSERR_IO), nil
 	}
-	buf.Write(make([]byte, 8)) // writeverf
+	buf.Write(h.server.writeVerf[:]) // writeverf unique per server boot
 
 	reply.Data = buf.Bytes()
 	return reply, nil

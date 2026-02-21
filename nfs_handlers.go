@@ -82,6 +82,9 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 		}
 		return reply, nil
 	}
+	// Apply squashed credentials to the auth context
+	authCtx.EffectiveUID = authResult.UID
+	authCtx.EffectiveGID = authResult.GID
 
 	// Handle the call with timeout
 	replyChan := make(chan *RPCReply, 1)
