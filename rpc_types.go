@@ -155,15 +155,13 @@ func xdrDecodeFileHandle(r io.Reader) (uint64, error) {
 
 	// NFS3 file handles can be up to 64 bytes, but our handles are 8 bytes
 	if length != 8 {
-		// Read and discard the handle data if wrong size
-		if length > 0 && length <= 64 {
-			buf := make([]byte, length)
-			io.ReadFull(r, buf)
-			// Pad to 4-byte boundary
-			padding := (4 - (int(length) % 4)) % 4
-			if padding > 0 {
-				io.ReadFull(r, make([]byte, padding))
-			}
+		// Read and discard the handle data to keep the stream in sync.
+		// Handles >64 bytes are invalid per NFS3 but we still must consume
+		// the bytes (padded to 4-byte boundary) to avoid stream corruption.
+		if length > 0 {
+			paddedLen := (int(length) + 3) &^ 3 // round up to 4-byte boundary
+			discard := make([]byte, paddedLen)
+			io.ReadFull(r, discard)
 		}
 		return 0, fmt.Errorf("invalid handle length: %d (expected 8)", length)
 	}

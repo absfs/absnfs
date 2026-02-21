@@ -42,14 +42,15 @@ type PortMapping struct {
 
 // Portmapper implements the RFC 1833 portmapper service
 type Portmapper struct {
-	mu       sync.RWMutex
-	mappings []PortMapping
-	listener net.Listener
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	logger   *log.Logger
-	debug    bool
+	mu         sync.RWMutex
+	mappings   []PortMapping
+	listener   net.Listener
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	logger     *log.Logger
+	debug      bool
+	listenAddr string // actual listen address for universal address construction
 }
 
 // NewPortmapper creates a new portmapper instance
@@ -66,6 +67,12 @@ func NewPortmapper() *Portmapper {
 // SetDebug enables or disables debug logging
 func (pm *Portmapper) SetDebug(debug bool) {
 	pm.debug = debug
+}
+
+// SetListenAddr sets the listen address for universal address construction.
+// This is used instead of hardcoded "127.0.0.1" or "0.0.0.0" in GETADDR and DUMP responses.
+func (pm *Portmapper) SetListenAddr(addr string) {
+	pm.listenAddr = addr
 }
 
 // RegisterService registers an RPC service with the portmapper
@@ -387,6 +394,10 @@ func (pm *Portmapper) skipAuth(r io.Reader) error {
 		return err
 	}
 
+	if length > MAX_RPC_AUTH_LENGTH {
+		return fmt.Errorf("auth body length %d exceeds MAX_RPC_AUTH_LENGTH (%d)", length, MAX_RPC_AUTH_LENGTH)
+	}
+
 	if length > 0 {
 		buf := make([]byte, length)
 		if _, err := io.ReadFull(r, buf); err != nil {
@@ -397,12 +408,45 @@ func (pm *Portmapper) skipAuth(r io.Reader) error {
 	return nil
 }
 
+// encodeBool encodes a boolean as a 4-byte XDR value
+func (pm *Portmapper) encodeBool(v bool) []byte {
+	var buf bytes.Buffer
+	if v {
+		binary.Write(&buf, binary.BigEndian, uint32(1))
+	} else {
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+	}
+	return buf.Bytes()
+}
+
+// encodePort encodes a port number as a 4-byte XDR value
+func (pm *Portmapper) encodePort(port uint32) []byte {
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.BigEndian, port)
+	return buf.Bytes()
+}
+
+// encodeEmptyString encodes an empty XDR string (length 0)
+func (pm *Portmapper) encodeEmptyString() []byte {
+	var buf bytes.Buffer
+	xdrEncodeString(&buf, "")
+	return buf.Bytes()
+}
+
 func (pm *Portmapper) handleGetPort(r io.Reader) []byte {
 	var prog, vers, prot, port uint32
-	binary.Read(r, binary.BigEndian, &prog)
-	binary.Read(r, binary.BigEndian, &vers)
-	binary.Read(r, binary.BigEndian, &prot)
-	binary.Read(r, binary.BigEndian, &port) // ignored
+	if err := binary.Read(r, binary.BigEndian, &prog); err != nil {
+		return pm.encodePort(0)
+	}
+	if err := binary.Read(r, binary.BigEndian, &vers); err != nil {
+		return pm.encodePort(0)
+	}
+	if err := binary.Read(r, binary.BigEndian, &prot); err != nil {
+		return pm.encodePort(0)
+	}
+	if err := binary.Read(r, binary.BigEndian, &port); err != nil {
+		return pm.encodePort(0)
+	}
 
 	resultPort := pm.GetPort(prog, vers, prot)
 
@@ -411,9 +455,7 @@ func (pm *Portmapper) handleGetPort(r io.Reader) []byte {
 			prog, vers, prot, resultPort)
 	}
 
-	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, resultPort)
-	return buf.Bytes()
+	return pm.encodePort(resultPort)
 }
 
 func (pm *Portmapper) handleDump() []byte {
@@ -436,32 +478,42 @@ func (pm *Portmapper) handleDump() []byte {
 
 func (pm *Portmapper) handleSet(r io.Reader) []byte {
 	var prog, vers, prot, port uint32
-	binary.Read(r, binary.BigEndian, &prog)
-	binary.Read(r, binary.BigEndian, &vers)
-	binary.Read(r, binary.BigEndian, &prot)
-	binary.Read(r, binary.BigEndian, &port)
+	if err := binary.Read(r, binary.BigEndian, &prog); err != nil {
+		return pm.encodeBool(false)
+	}
+	if err := binary.Read(r, binary.BigEndian, &vers); err != nil {
+		return pm.encodeBool(false)
+	}
+	if err := binary.Read(r, binary.BigEndian, &prot); err != nil {
+		return pm.encodeBool(false)
+	}
+	if err := binary.Read(r, binary.BigEndian, &port); err != nil {
+		return pm.encodeBool(false)
+	}
 
 	pm.RegisterService(prog, vers, prot, port)
 
-	// Return success (1 = true)
-	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, uint32(1))
-	return buf.Bytes()
+	return pm.encodeBool(true)
 }
 
 func (pm *Portmapper) handleUnset(r io.Reader) []byte {
 	var prog, vers, prot, port uint32
-	binary.Read(r, binary.BigEndian, &prog)
-	binary.Read(r, binary.BigEndian, &vers)
-	binary.Read(r, binary.BigEndian, &prot)
-	binary.Read(r, binary.BigEndian, &port) // ignored
+	if err := binary.Read(r, binary.BigEndian, &prog); err != nil {
+		return pm.encodeBool(false)
+	}
+	if err := binary.Read(r, binary.BigEndian, &vers); err != nil {
+		return pm.encodeBool(false)
+	}
+	if err := binary.Read(r, binary.BigEndian, &prot); err != nil {
+		return pm.encodeBool(false)
+	}
+	if err := binary.Read(r, binary.BigEndian, &port); err != nil {
+		return pm.encodeBool(false)
+	}
 
 	pm.UnregisterService(prog, vers, prot)
 
-	// Return success (1 = true)
-	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, uint32(1))
-	return buf.Bytes()
+	return pm.encodeBool(true)
 }
 
 // handleGetAddr handles rpcbind v3/v4 GETADDR procedure
@@ -475,11 +527,18 @@ func (pm *Portmapper) handleGetAddr(r io.Reader) []byte {
 	// r_owner: string
 
 	var prog, vers uint32
-	binary.Read(r, binary.BigEndian, &prog)
-	binary.Read(r, binary.BigEndian, &vers)
+	if err := binary.Read(r, binary.BigEndian, &prog); err != nil {
+		return pm.encodeEmptyString()
+	}
+	if err := binary.Read(r, binary.BigEndian, &vers); err != nil {
+		return pm.encodeEmptyString()
+	}
 
 	// Read netid string
-	netid, _ := xdrDecodeString(r)
+	netid, err := xdrDecodeString(r)
+	if err != nil {
+		return pm.encodeEmptyString()
+	}
 
 	// Skip r_addr and r_owner
 	xdrDecodeString(r) // r_addr
@@ -507,12 +566,16 @@ func (pm *Portmapper) handleGetAddr(r io.Reader) []byte {
 	if port > 0 {
 		portHi := port / 256
 		portLo := port % 256
+		addr := pm.listenAddr
+		if addr == "" {
+			addr = "0.0.0.0"
+		}
 		if netid == "tcp6" || netid == "udp6" {
 			// IPv6 format: ::1.port_hi.port_lo (localhost)
 			uaddr = fmt.Sprintf("::1.%d.%d", portHi, portLo)
 		} else {
-			// IPv4 format: 127.0.0.1.port_hi.port_lo (localhost)
-			uaddr = fmt.Sprintf("127.0.0.1.%d.%d", portHi, portLo)
+			// IPv4 format: addr.port_hi.port_lo
+			uaddr = fmt.Sprintf("%s.%d.%d", addr, portHi, portLo)
 		}
 	} else {
 		uaddr = "" // Empty string means not found
@@ -527,11 +590,21 @@ func (pm *Portmapper) handleGetAddr(r io.Reader) []byte {
 func (pm *Portmapper) handleRpcbSet(r io.Reader) []byte {
 	// Read rpcb structure
 	var prog, vers uint32
-	binary.Read(r, binary.BigEndian, &prog)
-	binary.Read(r, binary.BigEndian, &vers)
+	if err := binary.Read(r, binary.BigEndian, &prog); err != nil {
+		return pm.encodeBool(false)
+	}
+	if err := binary.Read(r, binary.BigEndian, &vers); err != nil {
+		return pm.encodeBool(false)
+	}
 
-	netid, _ := xdrDecodeString(r)
-	uaddr, _ := xdrDecodeString(r)
+	netid, err := xdrDecodeString(r)
+	if err != nil {
+		return pm.encodeBool(false)
+	}
+	uaddr, err := xdrDecodeString(r)
+	if err != nil {
+		return pm.encodeBool(false)
+	}
 	xdrDecodeString(r) // r_owner - ignored
 
 	// Parse universal address to get port
@@ -554,20 +627,24 @@ func (pm *Portmapper) handleRpcbSet(r io.Reader) []byte {
 		pm.RegisterService(prog, vers, prot, port)
 	}
 
-	// Return success (1 = true)
-	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, uint32(1))
-	return buf.Bytes()
+	return pm.encodeBool(true)
 }
 
 // handleRpcbUnset handles rpcbind v3/v4 UNSET procedure
 func (pm *Portmapper) handleRpcbUnset(r io.Reader) []byte {
 	// Read rpcb structure
 	var prog, vers uint32
-	binary.Read(r, binary.BigEndian, &prog)
-	binary.Read(r, binary.BigEndian, &vers)
+	if err := binary.Read(r, binary.BigEndian, &prog); err != nil {
+		return pm.encodeBool(false)
+	}
+	if err := binary.Read(r, binary.BigEndian, &vers); err != nil {
+		return pm.encodeBool(false)
+	}
 
-	netid, _ := xdrDecodeString(r)
+	netid, err := xdrDecodeString(r)
+	if err != nil {
+		return pm.encodeBool(false)
+	}
 	xdrDecodeString(r) // r_addr - ignored
 	xdrDecodeString(r) // r_owner - ignored
 
@@ -578,10 +655,7 @@ func (pm *Portmapper) handleRpcbUnset(r io.Reader) []byte {
 
 	pm.UnregisterService(prog, vers, prot)
 
-	// Return success (1 = true)
-	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, uint32(1))
-	return buf.Bytes()
+	return pm.encodeBool(true)
 }
 
 // handleRpcbDump handles rpcbind v3/v4 DUMP procedure
@@ -610,7 +684,11 @@ func (pm *Portmapper) handleRpcbDump() []byte {
 		// uaddr - universal address format
 		portHi := m.Port / 256
 		portLo := m.Port % 256
-		uaddr := fmt.Sprintf("0.0.0.0.%d.%d", portHi, portLo)
+		addr := pm.listenAddr
+		if addr == "" {
+			addr = "0.0.0.0"
+		}
+		uaddr := fmt.Sprintf("%s.%d.%d", addr, portHi, portLo)
 		xdrEncodeString(&buf, uaddr)
 
 		// owner

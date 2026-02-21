@@ -18,31 +18,42 @@ const (
 
 	// DefaultMaxFragmentSize is the default maximum fragment size for writes
 	DefaultMaxFragmentSize = 1 << 20 // 1MB
+
+	// DefaultMaxRecordSize is the maximum total size of a reassembled record (all fragments combined).
+	// This prevents unbounded memory growth from many small fragments.
+	DefaultMaxRecordSize = 1 << 20 // 1MB
 )
 
 // RecordMarkingReader wraps a reader to handle RPC record marking.
 // RPC over TCP uses "record marking" where each message is preceded
 // by a 4-byte header containing the fragment length and last-fragment flag.
 type RecordMarkingReader struct {
-	r            io.Reader
-	fragmentBuf  *bytes.Buffer
-	lastFragment bool
-	complete     bool // true when we've read a complete record
+	r             io.Reader
+	fragmentBuf   *bytes.Buffer
+	lastFragment  bool
+	complete      bool // true when we've read a complete record
+	MaxRecordSize int  // maximum total record size across all fragments (0 = DefaultMaxRecordSize)
 }
 
 // NewRecordMarkingReader creates a new record marking reader
 func NewRecordMarkingReader(r io.Reader) *RecordMarkingReader {
 	return &RecordMarkingReader{
-		r:           r,
-		fragmentBuf: new(bytes.Buffer),
+		r:             r,
+		fragmentBuf:   new(bytes.Buffer),
+		MaxRecordSize: DefaultMaxRecordSize,
 	}
 }
 
 // ReadRecord reads a complete RPC record (all fragments) from the underlying reader.
-// It returns the complete record data.
+// It returns a copy of the complete record data that is safe for the caller to retain.
 func (rm *RecordMarkingReader) ReadRecord() ([]byte, error) {
 	rm.fragmentBuf.Reset()
 	rm.complete = false
+
+	maxSize := rm.MaxRecordSize
+	if maxSize <= 0 {
+		maxSize = DefaultMaxRecordSize
+	}
 
 	for !rm.complete {
 		// Read the 4-byte fragment header
@@ -60,6 +71,11 @@ func (rm *RecordMarkingReader) ReadRecord() ([]byte, error) {
 			return nil, fmt.Errorf("fragment length %d exceeds maximum %d", fragmentLen, MaxFragmentSize)
 		}
 
+		// Check total accumulated size before reading more data
+		if rm.fragmentBuf.Len()+int(fragmentLen) > maxSize {
+			return nil, fmt.Errorf("record size %d exceeds maximum %d", rm.fragmentBuf.Len()+int(fragmentLen), maxSize)
+		}
+
 		// Read the fragment data
 		if fragmentLen > 0 {
 			fragment := make([]byte, fragmentLen)
@@ -74,7 +90,11 @@ func (rm *RecordMarkingReader) ReadRecord() ([]byte, error) {
 		}
 	}
 
-	return rm.fragmentBuf.Bytes(), nil
+	// Return a copy of the buffer to avoid exposing the internal buffer slice
+	data := rm.fragmentBuf.Bytes()
+	result := make([]byte, len(data))
+	copy(result, data)
+	return result, nil
 }
 
 // RecordMarkingWriter wraps a writer to add RPC record marking.
@@ -105,9 +125,19 @@ func NewRecordMarkingWriterWithSize(w io.Writer, maxFragment int) *RecordMarking
 
 // WriteRecord writes a complete RPC record with record marking.
 // For records larger than maxFragment, multiple fragments are sent.
+// An empty data slice emits a single last-fragment header with length 0.
 func (rm *RecordMarkingWriter) WriteRecord(data []byte) error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
+
+	// Handle empty data: emit a last-fragment header with length 0
+	if len(data) == 0 {
+		header := uint32(0) | LastFragmentFlag
+		if err := binary.Write(rm.w, binary.BigEndian, header); err != nil {
+			return fmt.Errorf("failed to write fragment header: %w", err)
+		}
+		return nil
+	}
 
 	remaining := len(data)
 	offset := 0

@@ -288,14 +288,23 @@ func TestTLSConfigReloadCertificates(t *testing.T) {
 		t.Fatalf("failed to reload certificates: %v", err)
 	}
 
-	// Verify config was updated
+	// Verify config was updated - now uses GetCertificate callback
 	tlsConfig, err := config.GetConfig()
 	if err != nil {
 		t.Fatalf("failed to get TLS config: %v", err)
 	}
 
-	if len(tlsConfig.Certificates) == 0 {
-		t.Fatal("no certificates in TLS config after reload")
+	if tlsConfig.GetCertificate == nil {
+		t.Fatal("GetCertificate callback not set after reload")
+	}
+
+	// Verify the callback returns the reloaded certificate
+	cert, err := tlsConfig.GetCertificate(nil)
+	if err != nil {
+		t.Fatalf("GetCertificate failed: %v", err)
+	}
+	if cert == nil {
+		t.Fatal("no certificate returned from GetCertificate after reload")
 	}
 }
 

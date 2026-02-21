@@ -401,6 +401,7 @@ func (s *Server) StartWithPortmapper() error {
 	// Start portmapper
 	s.portmapper = NewPortmapper()
 	s.portmapper.SetDebug(s.options.Debug)
+	s.portmapper.SetListenAddr(s.options.Hostname)
 	if err := s.portmapper.Start(); err != nil {
 		return fmt.Errorf("failed to start portmapper: %w", err)
 	}
@@ -713,7 +714,7 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 			}
 			if handleErr != nil {
 				s.logger.Printf("handle error: %v", handleErr)
-				continue
+				return
 			}
 
 			// Set write deadline

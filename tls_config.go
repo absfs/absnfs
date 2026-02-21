@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 )
 
 // TLSConfig holds the TLS configuration for the NFS server
@@ -49,8 +50,9 @@ type TLSConfig struct {
 	InsecureSkipVerify bool
 
 	// tlsConfig is the internal Go TLS configuration
-	tlsConfig *tls.Config
-	mu        sync.RWMutex
+	tlsConfig   *tls.Config
+	mu          sync.RWMutex
+	currentCert atomic.Pointer[tls.Certificate] // atomically updated for concurrent reads
 }
 
 // DefaultTLSConfig returns a TLS configuration with secure defaults
@@ -142,9 +144,14 @@ func (tc *TLSConfig) BuildConfig() (*tls.Config, error) {
 		return nil, fmt.Errorf("failed to load server certificate and key: %w", err)
 	}
 
-	// Create base TLS config
+	// Store cert atomically for concurrent-safe access
+	tc.currentCert.Store(&cert)
+
+	// Create base TLS config using GetCertificate callback for hot-reload support
 	config := &tls.Config{
-		Certificates:             []tls.Certificate{cert},
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return tc.currentCert.Load(), nil
+		},
 		MinVersion:               tc.MinVersion,
 		MaxVersion:               tc.MaxVersion,
 		PreferServerCipherSuites: tc.PreferServerCipherSuites,
@@ -194,8 +201,8 @@ func (tc *TLSConfig) GetConfig() (*tls.Config, error) {
 // ReloadCertificates reloads the server certificates without changing other settings
 // This is useful for certificate rotation without restarting the server
 func (tc *TLSConfig) ReloadCertificates() error {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
 
 	if !tc.Enabled {
 		return fmt.Errorf("TLS is not enabled")
@@ -207,10 +214,9 @@ func (tc *TLSConfig) ReloadCertificates() error {
 		return fmt.Errorf("failed to reload certificate and key: %w", err)
 	}
 
-	// Update the cached config if it exists
-	if tc.tlsConfig != nil {
-		tc.tlsConfig.Certificates = []tls.Certificate{cert}
-	}
+	// Atomically update the certificate - the GetCertificate callback
+	// will pick up the new cert on the next TLS handshake
+	tc.currentCert.Store(&cert)
 
 	return nil
 }

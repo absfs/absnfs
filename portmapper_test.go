@@ -148,7 +148,7 @@ func TestPortmapperServerConnection(t *testing.T) {
 
 		// Should contain port 2049 encoded as high.low (8.1)
 		// 2049 = 8*256 + 1
-		expected := "127.0.0.1.8.1"
+		expected := "0.0.0.0.8.1"
 		if uaddr != expected {
 			t.Errorf("Expected uaddr %s, got %s", expected, uaddr)
 		}
