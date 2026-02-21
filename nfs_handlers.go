@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"time"
 )
 
 // NFSProcedureHandler handles NFS procedure calls
@@ -54,8 +53,9 @@ var nfsHandlers = map[uint32]nfsHandler{
 
 // HandleCall processes an NFS RPC call and returns a reply
 func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx *AuthContext) (*RPCReply, error) {
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// Create context with timeout using server's configured timeout
+	timeout := h.server.handler.options.Timeouts.DefaultTimeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	reply := &RPCReply{
@@ -84,7 +84,6 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 	}
 
 	// Handle the call with timeout
-	errChan := make(chan error, 1)
 	replyChan := make(chan *RPCReply, 1)
 
 	go func() {
@@ -154,8 +153,6 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 	select {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("operation timed out")
-	case err := <-errChan:
-		return nil, err
 	case result := <-replyChan:
 		return result, nil
 	}
@@ -163,10 +160,32 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 
 // Helper functions for common operations
 
-// nfsErrorReply creates an error response with the given NFS status code
+// nfsErrorReply creates an error response with the given NFS status code.
+// Used for procedures that need only the status (e.g. GETATTR).
 func nfsErrorReply(reply *RPCReply, status uint32) *RPCReply {
 	var buf bytes.Buffer
 	xdrEncodeUint32(&buf, status)
+	reply.Data = buf.Bytes()
+	return reply
+}
+
+// nfsErrorWithPostOp creates an error response with status + post_op_attr (attributes_follow=FALSE).
+// Used for read-type procedures: LOOKUP, ACCESS, READ, READLINK, READDIR, READDIRPLUS, FSSTAT, FSINFO, PATHCONF.
+func nfsErrorWithPostOp(reply *RPCReply, status uint32) *RPCReply {
+	var buf bytes.Buffer
+	xdrEncodeUint32(&buf, status)
+	xdrEncodeUint32(&buf, 0) // post_op_attr: attributes_follow = FALSE
+	reply.Data = buf.Bytes()
+	return reply
+}
+
+// nfsErrorWithWcc creates an error response with status + empty wcc_data.
+// Used for write/mutating procedures: SETATTR, WRITE, CREATE, MKDIR, SYMLINK, REMOVE, RMDIR, RENAME, LINK, COMMIT.
+func nfsErrorWithWcc(reply *RPCReply, status uint32) *RPCReply {
+	var buf bytes.Buffer
+	xdrEncodeUint32(&buf, status)
+	xdrEncodeUint32(&buf, 0) // pre_op_attr: attributes_follow = FALSE
+	xdrEncodeUint32(&buf, 0) // post_op_attr: attributes_follow = FALSE
 	reply.Data = buf.Bytes()
 	return reply
 }
@@ -193,7 +212,7 @@ func (h *NFSProcedureHandler) decodeAndLookupHandle(body io.Reader, reply *RPCRe
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		nfsErrorReply(reply, NFSERR_NOENT)
+		nfsErrorReply(reply, NFSERR_STALE)
 		return nil, 0
 	}
 

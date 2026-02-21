@@ -128,7 +128,7 @@ func (h *NFSProcedureHandler) handleGetattr(body io.Reader, reply *RPCReply, aut
 		if h.server.options.Debug {
 			h.server.logger.Printf("GETATTR: Handle %d not found in fileMap", handleVal)
 		}
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorReply(reply, NFSERR_STALE), nil
 	}
 
 	attrs, err := h.server.handler.GetAttr(node)
@@ -154,12 +154,12 @@ func (h *NFSProcedureHandler) handleGetattr(body io.Reader, reply *RPCReply, aut
 func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	sattr, err := decodeSattr3(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	// Read sattrguard3 (RFC 1813 section 3.3.2). The guard is a
@@ -167,22 +167,26 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 	// We read and discard it to keep the body stream aligned.
 	var guardCheck uint32
 	if err := binary.Read(body, binary.BigEndian, &guardCheck); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 	if guardCheck != 0 {
 		// Read and discard ctime (nfstime3: seconds + nseconds).
 		var guardSec, guardNsec uint32
-		binary.Read(body, binary.BigEndian, &guardSec)
-		binary.Read(body, binary.BigEndian, &guardNsec)
+		if err := binary.Read(body, binary.BigEndian, &guardSec); err != nil {
+			return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
+		}
+		if err := binary.Read(body, binary.BigEndian, &guardNsec); err != nil {
+			return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
+		}
 	}
 
 	if sattr.SetMode && sattr.Mode&0x8000 != 0 {
-		return nfsErrorReply(reply, NFSERR_INVAL), nil
+		return nfsErrorWithWcc(reply, NFSERR_INVAL), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
 	}
 
 	preAttrs, err := h.server.handler.GetAttr(node)
@@ -261,21 +265,22 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	name, err := xdrDecodeString(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
+	}
+
+	// C4: Validate filename to prevent directory traversal
+	if status := validateFilename(name); status != NFS_OK {
+		return nfsErrorWithPostOp(reply, NFSERR_ACCES), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		var buf bytes.Buffer
-		xdrEncodeUint32(&buf, NFSERR_NOENT)
-		xdrEncodeUint32(&buf, 0) // dir_attributes: attributes_follow = FALSE
-		reply.Data = buf.Bytes()
-		return reply, nil
+		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
 	}
 
 	node.mu.RLock()
@@ -333,12 +338,12 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 func (h *NFSProcedureHandler) handleReadlink(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
 	}
 
 	node.mu.RLock()
@@ -346,7 +351,7 @@ func (h *NFSProcedureHandler) handleReadlink(body io.Reader, reply *RPCReply, au
 	node.mu.RUnlock()
 
 	if !isSymlink {
-		return nfsErrorReply(reply, NFSERR_INVAL), nil
+		return nfsErrorWithPostOp(reply, NFSERR_INVAL), nil
 	}
 
 	target, err := h.server.handler.Readlink(node)
@@ -376,20 +381,20 @@ func (h *NFSProcedureHandler) handleReadlink(body io.Reader, reply *RPCReply, au
 func (h *NFSProcedureHandler) handleRead(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	var offset uint64
 	var count uint32
 	if err := binary.Read(body, binary.BigEndian, &offset); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 	if err := binary.Read(body, binary.BigEndian, &count); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	if offset > math.MaxUint64-uint64(count) {
-		return nfsErrorReply(reply, NFSERR_INVAL), nil
+		return nfsErrorWithPostOp(reply, NFSERR_INVAL), nil
 	}
 
 	// Rate limiting for large reads
@@ -398,13 +403,13 @@ func (h *NFSProcedureHandler) handleRead(body io.Reader, reply *RPCReply, authCt
 			if h.server.handler.metrics != nil {
 				h.server.handler.metrics.RecordRateLimitExceeded()
 			}
-			return nfsErrorReply(reply, NFSERR_DELAY), nil
+			return nfsErrorWithPostOp(reply, NFSERR_DELAY), nil
 		}
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
 	}
 
 	data, err := h.server.handler.Read(node, int64(offset), int64(count))
@@ -445,28 +450,28 @@ func (h *NFSProcedureHandler) handleRead(body io.Reader, reply *RPCReply, authCt
 // handleWrite handles NFSPROC3_WRITE - write to file
 func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	if h.server.handler.options.ReadOnly {
-		return nfsErrorReply(reply, ACCESS_DENIED), nil
+		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	var offset uint64
 	var count, stable uint32
 	if err := binary.Read(body, binary.BigEndian, &offset); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 	if err := binary.Read(body, binary.BigEndian, &count); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 	if err := binary.Read(body, binary.BigEndian, &stable); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	if offset > math.MaxUint64-uint64(count) {
-		return nfsErrorReply(reply, NFSERR_INVAL), nil
+		return nfsErrorWithWcc(reply, NFSERR_INVAL), nil
 	}
 
 	// Rate limiting for large writes
@@ -475,26 +480,26 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 			if h.server.handler.metrics != nil {
 				h.server.handler.metrics.RecordRateLimitExceeded()
 			}
-			return nfsErrorReply(reply, NFSERR_DELAY), nil
+			return nfsErrorWithWcc(reply, NFSERR_DELAY), nil
 		}
 	}
 
 	var dataLen uint32
 	if err := binary.Read(body, binary.BigEndian, &dataLen); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 	if dataLen != count {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	data := make([]byte, count)
 	if _, err := io.ReadFull(body, data); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
 	}
 
 	if h.server.options.Debug {
@@ -540,7 +545,7 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 		return nil, err
 	}
 	xdrEncodeUint32(&buf, uint32(n))
-	xdrEncodeUint32(&buf, stable)
+	xdrEncodeUint32(&buf, 2) // FILE_SYNC: server does synchronous writes
 	buf.Write(make([]byte, 8)) // writeverf
 
 	reply.Data = buf.Bytes()
@@ -551,21 +556,21 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	name, err := xdrDecodeString(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	if status := validateFilename(name); status != NFS_OK {
-		return nfsErrorReply(reply, status), nil
+		return nfsErrorWithWcc(reply, status), nil
 	}
 
 	var createHow uint32
 	if err := binary.Read(body, binary.BigEndian, &createHow); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	var mode uint32 = 0644
@@ -574,7 +579,7 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 	if createHow == 0 || createHow == 1 {
 		sattr, err := decodeSattr3(body)
 		if err != nil {
-			return nfsErrorReply(reply, GARBAGE_ARGS), nil
+			return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 		}
 		if sattr.SetMode {
 			mode = sattr.Mode
@@ -588,17 +593,20 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 			setGID = true
 		}
 	} else if createHow == 2 {
+		// M14: Use io.ReadFull for the 8-byte EXCLUSIVE verifier
 		var verf [8]byte
-		body.Read(verf[:])
+		if _, err := io.ReadFull(body, verf[:]); err != nil {
+			return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
+		}
 	}
 
 	if status := validateMode(mode, false); status != NFS_OK {
-		return nfsErrorReply(reply, status), nil
+		return nfsErrorWithWcc(reply, status), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
 	}
 
 	dirPreAttrs, err := h.server.handler.GetAttr(node)
@@ -655,23 +663,28 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 
 // handleMkdir handles NFSPROC3_MKDIR - create a directory
 func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
+	// H2: Check read-only before processing
+	if h.server.handler.options.ReadOnly {
+		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
+	}
+
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	name, err := xdrDecodeString(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	if status := validateFilename(name); status != NFS_OK {
-		return nfsErrorReply(reply, status), nil
+		return nfsErrorWithWcc(reply, status), nil
 	}
 
 	sattr, err := decodeSattr3(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	var mode uint32 = 0755
@@ -680,12 +693,12 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 	}
 
 	if status := validateMode(mode, true); status != NFS_OK {
-		return nfsErrorReply(reply, status), nil
+		return nfsErrorWithWcc(reply, status), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
 	}
 
 	dirPreAttrs, err := h.server.handler.GetAttr(node)
@@ -708,15 +721,21 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 	}
 
 	// Apply uid/gid from sattr3 if requested.
+	// Use -1 for unchanged fields (standard POSIX convention).
 	if sattr.SetUID || sattr.SetGID {
-		var newUID, newGID int
+		newUID := -1
+		newGID := -1
 		if sattr.SetUID {
 			newUID = int(sattr.UID)
 		}
 		if sattr.SetGID {
 			newGID = int(sattr.GID)
 		}
-		h.server.handler.fs.Chown(dirPath, newUID, newGID)
+		if err := h.server.handler.fs.Chown(dirPath, newUID, newGID); err != nil {
+			if h.server.options.Debug {
+				h.server.logger.Printf("MKDIR: Chown failed for '%s': %v", dirPath, err)
+			}
+		}
 	}
 
 	newNode, err := h.server.handler.Lookup(dirPath)
@@ -750,40 +769,40 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 // handleSymlink handles NFSPROC3_SYMLINK - create a symbolic link
 func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	if h.server.handler.options.ReadOnly {
-		return nfsErrorReply(reply, ACCESS_DENIED), nil
+		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	name, err := xdrDecodeString(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	if status := validateFilename(name); status != NFS_OK {
-		return nfsErrorReply(reply, status), nil
+		return nfsErrorWithWcc(reply, status), nil
 	}
 
 	sattr, err := decodeSattr3(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	target, err := xdrDecodeString(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	if target == "" {
-		return nfsErrorReply(reply, NFSERR_INVAL), nil
+		return nfsErrorWithWcc(reply, NFSERR_INVAL), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
 	}
 
 	dirPreAttrs, err := h.server.handler.GetAttr(node)
@@ -808,7 +827,34 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 
 	newNode, err := h.server.handler.Symlink(node, name, target, attrs)
 	if err != nil {
-		return nil, err
+		// H8: Include wcc_data in error response
+		dirPostAttrs, _ := h.server.handler.GetAttr(node)
+		if dirPostAttrs == nil {
+			dirPostAttrs = dirPreAttrs
+		}
+		var buf bytes.Buffer
+		xdrEncodeUint32(&buf, mapError(err))
+		encodeWccData(&buf, dirPreAttrs, dirPostAttrs)
+		reply.Data = buf.Bytes()
+		return reply, nil
+	}
+
+	// M3: Apply uid/gid from sattr3 if requested, using -1 for unchanged fields.
+	if sattr.SetUID || sattr.SetGID {
+		newUID := -1
+		newGID := -1
+		if sattr.SetUID {
+			newUID = int(sattr.UID)
+		}
+		if sattr.SetGID {
+			newGID = int(sattr.GID)
+		}
+		symlinkPath := path.Join(node.path, name)
+		if err := h.server.handler.fs.Chown(symlinkPath, newUID, newGID); err != nil {
+			if h.server.options.Debug {
+				h.server.logger.Printf("SYMLINK: Chown failed for '%s': %v", symlinkPath, err)
+			}
+		}
 	}
 
 	dirPostAttrs, err := h.server.handler.GetAttr(node)
@@ -842,36 +888,36 @@ func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, aut
 			if h.server.handler.metrics != nil {
 				h.server.handler.metrics.RecordRateLimitExceeded()
 			}
-			return nfsErrorReply(reply, NFSERR_DELAY), nil
+			return nfsErrorWithPostOp(reply, NFSERR_DELAY), nil
 		}
 	}
 
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	var cookie uint64
 	var cookieVerf [8]byte
 	if err := binary.Read(body, binary.BigEndian, &cookie); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 	if _, err := io.ReadFull(body, cookieVerf[:]); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	var count uint32
 	if err := binary.Read(body, binary.BigEndian, &count); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	dir, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
 	}
 
 	if dir.attrs.Mode&os.ModeDir == 0 {
-		return nfsErrorReply(reply, NFSERR_NOTDIR), nil
+		return nfsErrorWithPostOp(reply, NFSERR_NOTDIR), nil
 	}
 
 	entries, err := h.server.handler.ReadDir(dir)
@@ -909,23 +955,13 @@ func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, aut
 
 		xdrEncodeUint32(&buf, 1)
 
-		entryHandle := h.server.handler.fileMap.Allocate(entry)
-		binary.Write(&buf, binary.BigEndian, entryHandle)
+		// C3: Use the node's stable fileId instead of allocating a new handle
+		binary.Write(&buf, binary.BigEndian, entry.attrs.FileId)
 
-		name := ""
+		// M1: Use path.Base() for name extraction
+		name := path.Base(entry.path)
 		if entry.path == "/" {
 			name = "/"
-		} else {
-			lastSlash := 0
-			for j := len(entry.path) - 1; j >= 0; j-- {
-				if entry.path[j] == '/' {
-					lastSlash = j
-					break
-				}
-			}
-			if lastSlash < len(entry.path)-1 {
-				name = entry.path[lastSlash+1:]
-			}
 		}
 		xdrEncodeString(&buf, name)
 
@@ -951,33 +987,33 @@ func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, aut
 func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	var cookie uint64
 	var cookieVerf [8]byte
 	if err := binary.Read(body, binary.BigEndian, &cookie); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 	if _, err := io.ReadFull(body, cookieVerf[:]); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	var dirCount, maxCount uint32
 	if err := binary.Read(body, binary.BigEndian, &dirCount); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 	if err := binary.Read(body, binary.BigEndian, &maxCount); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	dir, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
 	}
 
 	if dir.attrs.Mode&os.ModeDir == 0 {
-		return nfsErrorReply(reply, NFSERR_NOTDIR), nil
+		return nfsErrorWithPostOp(reply, NFSERR_NOTDIR), nil
 	}
 
 	entries, err := h.server.handler.ReadDirPlus(dir)
@@ -1016,23 +1052,14 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 		xdrEncodeUint32(&buf, 1)
 
 		entryCookie := uint64(i + 1)
-		entryHandle := h.server.handler.fileMap.Allocate(entry)
-		binary.Write(&buf, binary.BigEndian, entryHandle)
 
-		name := ""
+		// C3: Use stable fileId for the fileid3 field
+		binary.Write(&buf, binary.BigEndian, entry.attrs.FileId)
+
+		// M1: Use path.Base() for name extraction
+		name := path.Base(entry.path)
 		if entry.path == "/" {
 			name = "/"
-		} else {
-			lastSlash := 0
-			for j := len(entry.path) - 1; j >= 0; j-- {
-				if entry.path[j] == '/' {
-					lastSlash = j
-					break
-				}
-			}
-			if lastSlash < len(entry.path)-1 {
-				name = entry.path[lastSlash+1:]
-			}
 		}
 		xdrEncodeString(&buf, name)
 
@@ -1043,6 +1070,8 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 			return nil, err
 		}
 
+		// C3: Allocate handle only for the post_op_fh3 field in READDIRPLUS
+		entryHandle := h.server.handler.fileMap.Allocate(entry)
 		xdrEncodeUint32(&buf, 1)
 		xdrEncodeFileHandle(&buf, entryHandle)
 
@@ -1065,12 +1094,12 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 func (h *NFSProcedureHandler) handleFsstat(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
 	}
 
 	attrs, err := h.server.handler.GetAttr(node)
@@ -1101,12 +1130,12 @@ func (h *NFSProcedureHandler) handleFsstat(body io.Reader, reply *RPCReply, auth
 func (h *NFSProcedureHandler) handleFsinfo(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
 	}
 
 	attrs, err := h.server.handler.GetAttr(node)
@@ -1127,7 +1156,7 @@ func (h *NFSProcedureHandler) handleFsinfo(body io.Reader, reply *RPCReply, auth
 	binary.Write(&buf, binary.BigEndian, uint32(1048576))       // wtmax
 	binary.Write(&buf, binary.BigEndian, uint32(65536))         // wtpref
 	binary.Write(&buf, binary.BigEndian, uint32(4096))          // wtmult
-	binary.Write(&buf, binary.BigEndian, uint64(8192))          // dtpref
+	binary.Write(&buf, binary.BigEndian, uint32(8192))          // dtpref (C1: uint32 not uint64)
 	binary.Write(&buf, binary.BigEndian, uint64(1099511627776)) // maxfilesize
 	binary.Write(&buf, binary.BigEndian, uint32(0))             // time_delta.seconds
 	binary.Write(&buf, binary.BigEndian, uint32(1000000))       // time_delta.nseconds
@@ -1150,12 +1179,12 @@ func (h *NFSProcedureHandler) handleFsinfo(body io.Reader, reply *RPCReply, auth
 func (h *NFSProcedureHandler) handlePathconf(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
 	}
 
 	attrs, err := h.server.handler.GetAttr(node)
@@ -1185,17 +1214,17 @@ func (h *NFSProcedureHandler) handlePathconf(body io.Reader, reply *RPCReply, au
 func (h *NFSProcedureHandler) handleAccess(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	var access uint32
 	if err := binary.Read(body, binary.BigEndian, &access); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
 	}
 
 	attrs, err := h.server.handler.GetAttr(node)
@@ -1215,6 +1244,11 @@ func (h *NFSProcedureHandler) handleAccess(body io.Reader, reply *RPCReply, auth
 		accessAllowed |= 2
 	}
 
+	// M2: ACCESS3_EXECUTE should be granted on read-only exports when file has execute bits
+	if access&32 != 0 && (attrs.Mode&0111 != 0) {
+		accessAllowed |= 32
+	}
+
 	if !h.server.handler.options.ReadOnly {
 		// ACCESS3_MODIFY
 		if access&4 != 0 {
@@ -1227,10 +1261,6 @@ func (h *NFSProcedureHandler) handleAccess(body io.Reader, reply *RPCReply, auth
 		// ACCESS3_DELETE
 		if access&16 != 0 {
 			accessAllowed |= 16
-		}
-		// ACCESS3_EXECUTE
-		if access&32 != 0 && (attrs.Mode&0111 != 0) {
-			accessAllowed |= 32
 		}
 	}
 
@@ -1250,27 +1280,21 @@ func (h *NFSProcedureHandler) handleAccess(body io.Reader, reply *RPCReply, auth
 func (h *NFSProcedureHandler) handleCommit(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	var offset uint64
 	var count uint32
 	if err := binary.Read(body, binary.BigEndian, &offset); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 	if err := binary.Read(body, binary.BigEndian, &count); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		var buf bytes.Buffer
-		xdrEncodeUint32(&buf, NFSERR_NOENT)
-		// wcc_data with no attributes available
-		xdrEncodeUint32(&buf, 0) // pre_op_attr: attributes_follow = FALSE
-		xdrEncodeUint32(&buf, 0) // post_op_attr: attributes_follow = FALSE
-		reply.Data = buf.Bytes()
-		return reply, nil
+		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
 	}
 
 	attrs, err := h.server.handler.GetAttr(node)
@@ -1293,22 +1317,22 @@ func (h *NFSProcedureHandler) handleCommit(body io.Reader, reply *RPCReply, auth
 // handleRemove handles NFSPROC3_REMOVE - remove a file
 func (h *NFSProcedureHandler) handleRemove(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	if h.server.handler.options.ReadOnly {
-		return nfsErrorReply(reply, ACCESS_DENIED), nil
+		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	name, err := xdrDecodeString(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
 	}
 
 	node.mu.RLock()
@@ -1316,7 +1340,7 @@ func (h *NFSProcedureHandler) handleRemove(body io.Reader, reply *RPCReply, auth
 	node.mu.RUnlock()
 
 	if !isDir {
-		return nfsErrorReply(reply, NFSERR_NOTDIR), nil
+		return nfsErrorWithWcc(reply, NFSERR_NOTDIR), nil
 	}
 
 	dirPreAttrs, err := h.server.handler.GetAttr(node)
@@ -1366,22 +1390,27 @@ func (h *NFSProcedureHandler) handleRemove(body io.Reader, reply *RPCReply, auth
 // handleRmdir handles NFSPROC3_RMDIR - remove a directory
 func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	if h.server.handler.options.ReadOnly {
-		return nfsErrorReply(reply, ACCESS_DENIED), nil
+		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	name, err := xdrDecodeString(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
+	}
+
+	// C5: Validate filename to prevent directory traversal
+	if status := validateFilename(name); status != NFS_OK {
+		return nfsErrorWithWcc(reply, NFSERR_ACCES), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
 	}
 
 	node.mu.RLock()
@@ -1389,7 +1418,7 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 	node.mu.RUnlock()
 
 	if !isDir {
-		return nfsErrorReply(reply, NFSERR_NOTDIR), nil
+		return nfsErrorWithWcc(reply, NFSERR_NOTDIR), nil
 	}
 
 	dirPreAttrs, err := h.server.handler.GetAttr(node)
@@ -1455,37 +1484,37 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 // handleRename handles NFSPROC3_RENAME - rename a file or directory
 func (h *NFSProcedureHandler) handleRename(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	if h.server.handler.options.ReadOnly {
-		return nfsErrorReply(reply, ACCESS_DENIED), nil
+		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
 	srcHandleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	srcName, err := xdrDecodeString(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	dstHandleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	dstName, err := xdrDecodeString(body)
 	if err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	srcDir, ok := h.lookupNode(srcHandleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
 	}
 
 	dstDir, ok := h.lookupNode(dstHandleVal)
 	if !ok {
-		return nfsErrorReply(reply, NFSERR_NOENT), nil
+		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
 	}
 
 	srcDirPreAttrs, err := h.server.handler.GetAttr(srcDir)
@@ -1545,5 +1574,5 @@ func (h *NFSProcedureHandler) handleLink(body io.Reader, reply *RPCReply, authCt
 		Operation: "LINK",
 		Reason:    "hard links are not supported by this NFS implementation",
 	}
-	return nfsErrorReply(reply, mapError(notSupported)), nil
+	return nfsErrorWithWcc(reply, mapError(notSupported)), nil
 }
