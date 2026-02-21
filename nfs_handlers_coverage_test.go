@@ -2322,9 +2322,10 @@ func TestHandleSymlinkCoverage(t *testing.T) {
 
 		data := result.Data.([]byte)
 		status := binary.BigEndian.Uint32(data[0:4])
-		// Accept NFSERR_STALE or NFSERR_INVAL depending on validation order
-		if status != NFSERR_STALE && status != NFSERR_INVAL {
-			t.Errorf("Expected NFSERR_STALE or NFSERR_INVAL, got %d", status)
+		// Accept NFSERR_STALE, NFSERR_INVAL, or NFSERR_ACCES depending on validation order
+		// NFSERR_ACCES is returned when symlink target validation rejects absolute paths
+		if status != NFSERR_STALE && status != NFSERR_INVAL && status != NFSERR_ACCES {
+			t.Errorf("Expected NFSERR_STALE, NFSERR_INVAL, or NFSERR_ACCES, got %d", status)
 		}
 	})
 

@@ -825,8 +825,8 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set atime
 		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set mtime
 
-		// Write target path
-		target := "/testfile.txt"
+		// Write target path (relative, since absolute paths are rejected for security)
+		target := "testfile.txt"
 		binary.Write(&buf, binary.BigEndian, uint32(len(target)))
 		buf.WriteString(target)
 		// Add XDR padding

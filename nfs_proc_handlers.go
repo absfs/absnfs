@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path"
+	"strings"
 	"time"
 )
 
@@ -212,6 +213,9 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 	// This is critical for file overwrites: the NFS client sends
 	// SETATTR(size=0) before WRITE(offset=0, data) to clear old content.
 	if sattr.SetSize {
+		if sattr.Size > uint64(math.MaxInt64) {
+			return nfsErrorWithWcc(reply, NFSERR_INVAL), nil
+		}
 		if err := node.Truncate(int64(sattr.Size)); err != nil {
 			return nfsErrorWithWcc(reply, mapError(err)), nil
 		}
@@ -228,6 +232,10 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 	}
 
 	node.mu.RLock()
+	if node.attrs == nil {
+		node.mu.RUnlock()
+		return nfsErrorWithWcc(reply, NFSERR_IO), nil
+	}
 	attrs := &NFSAttrs{
 		Mode: node.attrs.Mode,
 		Uid:  node.attrs.Uid,
@@ -309,12 +317,18 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 	if !isDir {
 		// R4: Copy attrs under RLock
 		node.mu.RLock()
+		if node.attrs == nil {
+			node.mu.RUnlock()
+			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
+		}
 		nodeAttrsCopy := *node.attrs
 		node.mu.RUnlock()
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFSERR_NOTDIR)
 		xdrEncodeUint32(&buf, 1)
-		encodeFileAttributes(&buf, &nodeAttrsCopy)
+		if err := encodeFileAttributes(&buf, &nodeAttrsCopy); err != nil {
+			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
+		}
 		reply.Data = buf.Bytes()
 		return reply, nil
 	}
@@ -331,12 +345,18 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 		}
 		// R4: Copy attrs under RLock
 		node.mu.RLock()
+		if node.attrs == nil {
+			node.mu.RUnlock()
+			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
+		}
 		nodeAttrsCopy := *node.attrs
 		node.mu.RUnlock()
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFSERR_NOENT)
 		xdrEncodeUint32(&buf, 1)
-		encodeFileAttributes(&buf, &nodeAttrsCopy)
+		if err := encodeFileAttributes(&buf, &nodeAttrsCopy); err != nil {
+			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
+		}
 		reply.Data = buf.Bytes()
 		return reply, nil
 	}
@@ -527,6 +547,15 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 	}
 	if dataLen != count {
 		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
+	}
+
+	// Bound count to the server's advertised write size to prevent DoS
+	maxWriteSize := uint32(h.server.handler.options.TransferSize)
+	if maxWriteSize == 0 {
+		maxWriteSize = 1048576 // 1MB default
+	}
+	if count > maxWriteSize {
+		return nfsErrorWithWcc(reply, NFSERR_INVAL), nil
 	}
 
 	data := make([]byte, count)
@@ -883,6 +912,17 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 		return nfsErrorWithWcc(reply, NFSERR_INVAL), nil
 	}
 
+	// Validate symlink target to prevent escape from export root
+	if strings.HasPrefix(target, "/") {
+		return nfsErrorWithWcc(reply, NFSERR_ACCES), nil
+	}
+	// Check for .. components that could escape the export
+	for _, component := range strings.Split(target, "/") {
+		if component == ".." {
+			return nfsErrorWithWcc(reply, NFSERR_ACCES), nil
+		}
+	}
+
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
 		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
@@ -896,7 +936,8 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 
 	var mode uint32 = 0777
 	if sattr.SetMode {
-		mode = sattr.Mode
+		// Strip type bits - symlink type is set by the operation itself
+		mode = sattr.Mode & 07777
 	}
 
 	// Use effective UID/GID from auth context as default for new symlinks
@@ -922,7 +963,9 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 		}
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, mapError(err))
-		encodeWccData(&buf, dirPreAttrs, dirPostAttrs)
+		if wccErr := encodeWccData(&buf, dirPreAttrs, dirPostAttrs); wccErr != nil {
+			return nfsErrorWithWcc(reply, mapError(err)), nil
+		}
 		reply.Data = buf.Bytes()
 		return reply, nil
 	}
@@ -1041,6 +1084,9 @@ func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, aut
 
 	entryCount := 0
 	maxReplySize := int(count) - 100
+	if maxReplySize < 128 {
+		maxReplySize = 128
+	}
 	reachedLimit := false
 
 	for i, entry := range entries {
@@ -1053,23 +1099,35 @@ func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, aut
 			break
 		}
 
+		// Skip entries with nil attrs
+		entry.mu.RLock()
+		if entry.attrs == nil {
+			entry.mu.RUnlock()
+			continue
+		}
+		fileId := entry.attrs.FileId
+		entry.mu.RUnlock()
+
 		xdrEncodeUint32(&buf, 1)
 
 		// R4: Copy fileId under RLock
-		entry.mu.RLock()
-		fileId := entry.attrs.FileId
-		entry.mu.RUnlock()
-		binary.Write(&buf, binary.BigEndian, fileId)
+		if err := xdrEncodeUint64(&buf, fileId); err != nil {
+			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
+		}
 
 		// M1: Use path.Base() for name extraction
 		name := path.Base(entry.path)
 		if entry.path == "/" {
 			name = "/"
 		}
-		xdrEncodeString(&buf, name)
+		if err := xdrEncodeString(&buf, name); err != nil {
+			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
+		}
 
 		entryCookie := uint64(i + 1)
-		binary.Write(&buf, binary.BigEndian, entryCookie)
+		if err := xdrEncodeUint64(&buf, entryCookie); err != nil {
+			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
+		}
 
 		entryCount++
 	}
@@ -1147,6 +1205,9 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 	entryCount := 0
 	reachedLimit := false
 	maxReplySize := int(maxCount) - 200
+	if maxReplySize < 256 {
+		maxReplySize = 256
+	}
 
 	for i, entry := range entries {
 		if uint64(i) < cookie {
@@ -1158,25 +1219,35 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 			break
 		}
 
+		// Skip entries with nil attrs
+		entry.mu.RLock()
+		if entry.attrs == nil {
+			entry.mu.RUnlock()
+			continue
+		}
+		entryAttrsCopy := *entry.attrs
+		entry.mu.RUnlock()
+
 		xdrEncodeUint32(&buf, 1)
 
 		entryCookie := uint64(i + 1)
 
-		// R4: Copy attrs under RLock
-		entry.mu.RLock()
-		entryAttrsCopy := *entry.attrs
-		entry.mu.RUnlock()
-
-		binary.Write(&buf, binary.BigEndian, entryAttrsCopy.FileId)
+		if err := xdrEncodeUint64(&buf, entryAttrsCopy.FileId); err != nil {
+			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
+		}
 
 		// M1: Use path.Base() for name extraction
 		name := path.Base(entry.path)
 		if entry.path == "/" {
 			name = "/"
 		}
-		xdrEncodeString(&buf, name)
+		if err := xdrEncodeString(&buf, name); err != nil {
+			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
+		}
 
-		binary.Write(&buf, binary.BigEndian, entryCookie)
+		if err := xdrEncodeUint64(&buf, entryCookie); err != nil {
+			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
+		}
 
 		xdrEncodeUint32(&buf, 1)
 		if err := encodeFileAttributes(&buf, &entryAttrsCopy); err != nil {
@@ -1277,11 +1348,9 @@ func (h *NFSProcedureHandler) handleFsinfo(body io.Reader, reply *RPCReply, auth
 	binary.Write(&buf, binary.BigEndian, uint32(1000000))       // time_delta.nseconds
 
 	// R1: Correct FSINFO properties bitmask per RFC 1813
-	// FSF3_LINK=0x0001, FSF3_SYMLINK=0x0002, FSF3_HOMOGENEOUS=0x0008, FSF3_CANSETTIME=0x0010
+	// FSF3_SYMLINK=0x0002, FSF3_HOMOGENEOUS=0x0008, FSF3_CANSETTIME=0x0010
+	// FSF3_LINK (0x0001) is NOT set because handleLink always returns NFSERR_NOTSUPP
 	var properties uint32 = 0x0002 | 0x0008 | 0x0010 // symlink + homogeneous + cansettime
-	if h.server.handler.options.ReadOnly {
-		properties |= 0x0001 // FSF3_LINK (read-only flag maps to bit 0)
-	}
 	binary.Write(&buf, binary.BigEndian, properties)
 
 	reply.Data = buf.Bytes()
@@ -1414,6 +1483,10 @@ func (h *NFSProcedureHandler) handleAccess(body io.Reader, reply *RPCReply, auth
 
 // handleCommit handles NFSPROC3_COMMIT - commit cached data
 func (h *NFSProcedureHandler) handleCommit(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
+	if h.server.handler.options.ReadOnly {
+		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
+	}
+
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
 		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
@@ -1575,7 +1648,9 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 	if err != nil {
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFSERR_NOENT)
-		encodeWccData(&buf, dirPreAttrs, dirPreAttrs)
+		if wccErr := encodeWccData(&buf, dirPreAttrs, dirPreAttrs); wccErr != nil {
+			return nfsErrorWithWcc(reply, NFSERR_NOENT), nil
+		}
 		reply.Data = buf.Bytes()
 		return reply, nil
 	}
@@ -1583,7 +1658,9 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 	if !targetInfo.IsDir() {
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFSERR_NOTDIR)
-		encodeWccData(&buf, dirPreAttrs, dirPreAttrs)
+		if wccErr := encodeWccData(&buf, dirPreAttrs, dirPreAttrs); wccErr != nil {
+			return nfsErrorWithWcc(reply, NFSERR_NOTDIR), nil
+		}
 		reply.Data = buf.Bytes()
 		return reply, nil
 	}
@@ -1600,14 +1677,29 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 		} else if os.IsNotExist(err) {
 			errCode = NFSERR_NOENT
 		} else {
-			errCode = NFSERR_NOTEMPTY
+			errCode = mapError(err)
+			// mapError maps os.IsExist errors to NFSERR_EXIST, but for directory
+			// removal the most common cause of os.IsExist is "directory not empty"
+			if errCode == NFSERR_EXIST || errCode == NFSERR_IO {
+				errCode = NFSERR_NOTEMPTY
+			}
 		}
 
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, errCode)
-		encodeWccData(&buf, dirPreAttrs, dirPostAttrs)
+		if wccErr := encodeWccData(&buf, dirPreAttrs, dirPostAttrs); wccErr != nil {
+			return nfsErrorWithWcc(reply, errCode), nil
+		}
 		reply.Data = buf.Bytes()
 		return reply, nil
+	}
+
+	// Invalidate caches for removed directory and parent
+	h.server.handler.attrCache.Invalidate(targetPath)
+	h.server.handler.attrCache.Invalidate(node.path)
+	if h.server.handler.dirCache != nil {
+		h.server.handler.dirCache.Invalidate(node.path)
+		h.server.handler.dirCache.Invalidate(targetPath)
 	}
 
 	dirPostAttrs, err := h.server.handler.GetAttr(node)
@@ -1628,58 +1720,58 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 // handleRename handles NFSPROC3_RENAME - rename a file or directory
 func (h *NFSProcedureHandler) handleRename(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	if h.server.handler.options.ReadOnly {
-		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
+		return nfsErrorWithDoubleWcc(reply, NFSERR_ROFS), nil
 	}
 
 	srcHandleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithDoubleWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	srcName, err := xdrDecodeString(body)
 	if err != nil {
-		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithDoubleWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	// R7: Validate source filename
 	if status := validateFilename(srcName); status != NFS_OK {
-		return nfsErrorWithWcc(reply, status), nil
+		return nfsErrorWithDoubleWcc(reply, status), nil
 	}
 
 	dstHandleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
-		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithDoubleWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	dstName, err := xdrDecodeString(body)
 	if err != nil {
-		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
+		return nfsErrorWithDoubleWcc(reply, GARBAGE_ARGS), nil
 	}
 
 	// R7: Validate destination filename
 	if status := validateFilename(dstName); status != NFS_OK {
-		return nfsErrorWithWcc(reply, status), nil
+		return nfsErrorWithDoubleWcc(reply, status), nil
 	}
 
 	srcDir, ok := h.lookupNode(srcHandleVal)
 	if !ok {
-		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
+		return nfsErrorWithDoubleWcc(reply, NFSERR_STALE), nil
 	}
 
 	dstDir, ok := h.lookupNode(dstHandleVal)
 	if !ok {
-		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
+		return nfsErrorWithDoubleWcc(reply, NFSERR_STALE), nil
 	}
 
 	// R23: Return NFS error instead of nil,err
 	srcDirPreAttrs, err := h.server.handler.GetAttr(srcDir)
 	if err != nil {
-		return nfsErrorWithWcc(reply, mapError(err)), nil
+		return nfsErrorWithDoubleWcc(reply, mapError(err)), nil
 	}
 
 	dstDirPreAttrs, err := h.server.handler.GetAttr(dstDir)
 	if err != nil {
-		return nfsErrorWithWcc(reply, mapError(err)), nil
+		return nfsErrorWithDoubleWcc(reply, mapError(err)), nil
 	}
 
 	if err := h.server.handler.Rename(srcDir, srcName, dstDir, dstName); err != nil {
@@ -1692,31 +1784,36 @@ func (h *NFSProcedureHandler) handleRename(body io.Reader, reply *RPCReply, auth
 			dstDirPostAttrs = dstDirPreAttrs
 		}
 
+		errCode := mapError(err)
 		var buf bytes.Buffer
-		xdrEncodeUint32(&buf, mapError(err))
-		encodeWccData(&buf, srcDirPreAttrs, srcDirPostAttrs)
-		encodeWccData(&buf, dstDirPreAttrs, dstDirPostAttrs)
+		xdrEncodeUint32(&buf, errCode)
+		if wccErr := encodeWccData(&buf, srcDirPreAttrs, srcDirPostAttrs); wccErr != nil {
+			return nfsErrorWithDoubleWcc(reply, errCode), nil
+		}
+		if wccErr := encodeWccData(&buf, dstDirPreAttrs, dstDirPostAttrs); wccErr != nil {
+			return nfsErrorWithDoubleWcc(reply, errCode), nil
+		}
 		reply.Data = buf.Bytes()
 		return reply, nil
 	}
 
 	srcDirPostAttrs, err := h.server.handler.GetAttr(srcDir)
 	if err != nil {
-		return nfsErrorWithWcc(reply, mapError(err)), nil
+		return nfsErrorWithDoubleWcc(reply, mapError(err)), nil
 	}
 
 	dstDirPostAttrs, err := h.server.handler.GetAttr(dstDir)
 	if err != nil {
-		return nfsErrorWithWcc(reply, mapError(err)), nil
+		return nfsErrorWithDoubleWcc(reply, mapError(err)), nil
 	}
 
 	var buf bytes.Buffer
 	xdrEncodeUint32(&buf, NFS_OK)
 	if err := encodeWccData(&buf, srcDirPreAttrs, srcDirPostAttrs); err != nil {
-		return nfsErrorWithWcc(reply, NFSERR_IO), nil
+		return nfsErrorWithDoubleWcc(reply, NFSERR_IO), nil
 	}
 	if err := encodeWccData(&buf, dstDirPreAttrs, dstDirPostAttrs); err != nil {
-		return nfsErrorWithWcc(reply, NFSERR_IO), nil
+		return nfsErrorWithDoubleWcc(reply, NFSERR_IO), nil
 	}
 
 	reply.Data = buf.Bytes()

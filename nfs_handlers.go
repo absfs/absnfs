@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 )
 
 // NFSProcedureHandler handles NFS procedure calls
@@ -128,14 +127,7 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 			case *RPCError:
 				reply.AcceptStatus = err.Status
 			default:
-				if os.IsNotExist(err) {
-					// NFS errors go in the procedure-specific data, not AcceptStatus
-					reply.AcceptStatus = SUCCESS
-				} else if os.IsPermission(err) {
-					reply.AcceptStatus = SUCCESS
-				} else {
-					reply.AcceptStatus = GARBAGE_ARGS
-				}
+				reply.AcceptStatus = SYSTEM_ERR
 			}
 			// Check context before sending
 			select {
@@ -201,6 +193,19 @@ func nfsErrorWithPostOpAndWcc(reply *RPCReply, status uint32) *RPCReply {
 	xdrEncodeUint32(&buf, 0) // post_op_attr: attributes_follow = FALSE
 	xdrEncodeUint32(&buf, 0) // wcc_data pre_op_attr: attributes_follow = FALSE
 	xdrEncodeUint32(&buf, 0) // wcc_data post_op_attr: attributes_follow = FALSE
+	reply.Data = buf.Bytes()
+	return reply
+}
+
+// nfsErrorWithDoubleWcc creates an error response with status + two empty wcc_data.
+// Used for RENAME3resfail: status + wcc_data(fromdir_wcc) + wcc_data(todir_wcc).
+func nfsErrorWithDoubleWcc(reply *RPCReply, status uint32) *RPCReply {
+	var buf bytes.Buffer
+	xdrEncodeUint32(&buf, status)
+	xdrEncodeUint32(&buf, 0) // fromdir wcc pre_op_attr: FALSE
+	xdrEncodeUint32(&buf, 0) // fromdir wcc post_op_attr: FALSE
+	xdrEncodeUint32(&buf, 0) // todir wcc pre_op_attr: FALSE
+	xdrEncodeUint32(&buf, 0) // todir wcc post_op_attr: FALSE
 	reply.Data = buf.Bytes()
 	return reply
 }
