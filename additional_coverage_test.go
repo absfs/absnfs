@@ -337,9 +337,16 @@ func TestValidateModeCoverage(t *testing.T) {
 		}
 	})
 
-	t.Run("mode with invalid bits", func(t *testing.T) {
-		// 01777 includes sticky bit which is invalid
-		if status := validateMode(01777, false); status != NFSERR_INVAL {
+	t.Run("mode with setuid/setgid/sticky bits", func(t *testing.T) {
+		// R21: 07777 is now valid (setuid + setgid + sticky + all perms)
+		if status := validateMode(07777, false); status != NFS_OK {
+			t.Errorf("Expected NFS_OK for setuid/setgid/sticky bits, got %d", status)
+		}
+	})
+
+	t.Run("mode with invalid bits beyond 07777", func(t *testing.T) {
+		// 010000 has bits outside the valid 07777 range
+		if status := validateMode(010000, false); status != NFSERR_INVAL {
 			t.Errorf("Expected NFSERR_INVAL for invalid bits, got %d", status)
 		}
 	})

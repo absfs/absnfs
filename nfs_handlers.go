@@ -190,6 +190,18 @@ func nfsErrorWithWcc(reply *RPCReply, status uint32) *RPCReply {
 	return reply
 }
 
+// nfsErrorWithPostOpAndWcc creates an error response with status + post_op_attr + wcc_data.
+// Used for LINK3resfail: status + post_op_attr (source) + wcc_data (target dir).
+func nfsErrorWithPostOpAndWcc(reply *RPCReply, status uint32) *RPCReply {
+	var buf bytes.Buffer
+	xdrEncodeUint32(&buf, status)
+	xdrEncodeUint32(&buf, 0) // post_op_attr: attributes_follow = FALSE
+	xdrEncodeUint32(&buf, 0) // wcc_data pre_op_attr: attributes_follow = FALSE
+	xdrEncodeUint32(&buf, 0) // wcc_data post_op_attr: attributes_follow = FALSE
+	reply.Data = buf.Bytes()
+	return reply
+}
+
 // lookupNode retrieves a node from the file handle map
 // Returns the node and true if found, nil and false otherwise
 func (h *NFSProcedureHandler) lookupNode(handle uint64) (*NFSNode, bool) {

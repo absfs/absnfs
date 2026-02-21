@@ -62,7 +62,7 @@ func validateFilename(name string) uint32 {
 // Returns error status code if invalid, NFS_OK if valid
 func validateMode(mode uint32, isDir bool) uint32 {
 	// Valid permission bits: 0777 (rwxrwxrwx)
-	const validPermBits = 0777
+	const validPermBits = 07777
 
 	// Valid file type bits (octal 0170000)
 	const fileTypeMask = 0170000

@@ -22,6 +22,7 @@ const (
 	NFSERR_STALE       = 70
 	NFSERR_WFLUSH      = 99
 	NFSERR_BADHANDLE   = 10001 // Invalid file handle
+	NFSERR_NOT_SYNC    = 10002 // Update synchronization mismatch (sattrguard3)
 	NFSERR_NOTSUPP     = 10004 // Operation not supported
 	NFSERR_DELAY       = 10013 // Server is temporarily busy (rate limit exceeded)
 
