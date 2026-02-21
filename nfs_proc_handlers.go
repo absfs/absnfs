@@ -162,6 +162,20 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 		return nfsErrorReply(reply, GARBAGE_ARGS), nil
 	}
 
+	// Read sattrguard3 (RFC 1813 section 3.3.2). The guard is a
+	// discriminated union: 0 = no guard, 1 = check ctime before applying.
+	// We read and discard it to keep the body stream aligned.
+	var guardCheck uint32
+	if err := binary.Read(body, binary.BigEndian, &guardCheck); err != nil {
+		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+	}
+	if guardCheck != 0 {
+		// Read and discard ctime (nfstime3: seconds + nseconds).
+		var guardSec, guardNsec uint32
+		binary.Read(body, binary.BigEndian, &guardSec)
+		binary.Read(body, binary.BigEndian, &guardNsec)
+	}
+
 	if sattr.SetMode && sattr.Mode&0x8000 != 0 {
 		return nfsErrorReply(reply, NFSERR_INVAL), nil
 	}
@@ -555,6 +569,8 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 	}
 
 	var mode uint32 = 0644
+	var uid, gid uint32
+	var setUID, setGID bool
 	if createHow == 0 || createHow == 1 {
 		sattr, err := decodeSattr3(body)
 		if err != nil {
@@ -562,6 +578,14 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 		}
 		if sattr.SetMode {
 			mode = sattr.Mode
+		}
+		if sattr.SetUID {
+			uid = sattr.UID
+			setUID = true
+		}
+		if sattr.SetGID {
+			gid = sattr.GID
+			setGID = true
 		}
 	} else if createHow == 2 {
 		var verf [8]byte
@@ -584,8 +608,12 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 
 	attrs := &NFSAttrs{
 		Mode: os.FileMode(mode),
-		Uid:  0,
-		Gid:  0,
+	}
+	if setUID {
+		attrs.Uid = uid
+	}
+	if setGID {
+		attrs.Gid = gid
 	}
 
 	newNode, err := h.server.handler.Create(node, name, attrs)
@@ -665,7 +693,8 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 		return nil, err
 	}
 
-	if err := h.server.handler.fs.Mkdir(path.Join(node.path, name), os.FileMode(mode)); err != nil {
+	dirPath := path.Join(node.path, name)
+	if err := h.server.handler.fs.Mkdir(dirPath, os.FileMode(mode)); err != nil {
 		dirPostAttrs, _ := h.server.handler.GetAttr(node)
 		if dirPostAttrs == nil {
 			dirPostAttrs = dirPreAttrs
@@ -678,7 +707,19 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 		return reply, nil
 	}
 
-	newNode, err := h.server.handler.Lookup(path.Join(node.path, name))
+	// Apply uid/gid from sattr3 if requested.
+	if sattr.SetUID || sattr.SetGID {
+		var newUID, newGID int
+		if sattr.SetUID {
+			newUID = int(sattr.UID)
+		}
+		if sattr.SetGID {
+			newGID = int(sattr.GID)
+		}
+		h.server.handler.fs.Chown(dirPath, newUID, newGID)
+	}
+
+	newNode, err := h.server.handler.Lookup(dirPath)
 	if err != nil {
 		return nil, err
 	}
@@ -757,8 +798,12 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 
 	attrs := &NFSAttrs{
 		Mode: os.FileMode(mode) | os.ModeSymlink,
-		Uid:  0,
-		Gid:  0,
+	}
+	if sattr.SetUID {
+		attrs.Uid = sattr.UID
+	}
+	if sattr.SetGID {
+		attrs.Gid = sattr.GID
 	}
 
 	newNode, err := h.server.handler.Symlink(node, name, target, attrs)
@@ -1221,8 +1266,9 @@ func (h *NFSProcedureHandler) handleCommit(body io.Reader, reply *RPCReply, auth
 	if !ok {
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFSERR_NOENT)
-		xdrEncodeUint32(&buf, 0)
-		xdrEncodeUint32(&buf, 0)
+		// wcc_data with no attributes available
+		xdrEncodeUint32(&buf, 0) // pre_op_attr: attributes_follow = FALSE
+		xdrEncodeUint32(&buf, 0) // post_op_attr: attributes_follow = FALSE
 		reply.Data = buf.Bytes()
 		return reply, nil
 	}
@@ -1234,9 +1280,8 @@ func (h *NFSProcedureHandler) handleCommit(body io.Reader, reply *RPCReply, auth
 
 	var buf bytes.Buffer
 	xdrEncodeUint32(&buf, NFS_OK)
-	xdrEncodeUint32(&buf, 0) // pre_op_attr: no
-	xdrEncodeUint32(&buf, 1) // post_op_attr: yes
-	if err := encodeFileAttributes(&buf, attrs); err != nil {
+	// wcc_data (RFC 1813 section 3.3.21)
+	if err := encodeWccData(&buf, attrs, attrs); err != nil {
 		return nil, err
 	}
 	buf.Write(make([]byte, 8)) // writeverf

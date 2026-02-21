@@ -118,6 +118,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 					binary.Write(&buf, binary.BigEndian, uint32(0)) // Don't set size
 					binary.Write(&buf, binary.BigEndian, uint32(0)) // Don't set atime
 					binary.Write(&buf, binary.BigEndian, uint32(0)) // Don't set mtime
+					binary.Write(&buf, binary.BigEndian, uint32(0)) // sattrguard3: no guard
 					return &buf
 				},
 			},
@@ -278,6 +279,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 			binary.Write(&buf, binary.BigEndian, uint32(0)) // Don't set size
 			binary.Write(&buf, binary.BigEndian, uint32(0)) // Don't set atime
 			binary.Write(&buf, binary.BigEndian, uint32(0)) // Don't set mtime
+			binary.Write(&buf, binary.BigEndian, uint32(0)) // sattrguard3: no guard
 
 			reply := &RPCReply{}
 			authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}

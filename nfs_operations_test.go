@@ -409,6 +409,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set size
 		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set atime
 		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set mtime
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // sattrguard3: no guard
 
 		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
@@ -440,6 +441,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set size
 		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set atime
 		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set mtime
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // sattrguard3: no guard
 
 		authCtx = &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
