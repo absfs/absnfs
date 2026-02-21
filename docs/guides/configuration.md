@@ -229,6 +229,68 @@ Logging helps with:
 
 For more details, see the [Logging API documentation](../api/logging.md).
 
+## Runtime Configuration
+
+ABSNFS supports changing configuration while the server is running. Options are divided into two categories with different update semantics:
+
+### Tuning Updates (Immediate)
+
+Performance-related options can be changed at any time without interrupting service. Changes take effect immediately via lock-free atomic swap:
+
+```go
+// Adjust cache sizes based on observed workload
+nfsServer.UpdateTuningOptions(func(t *absnfs.TuningOptions) {
+    t.AttrCacheSize = 20000
+    t.AttrCacheTimeout = 30 * time.Second
+    t.EnableDirCache = true
+    t.DirCacheMaxEntries = 5000
+})
+```
+
+Tuning options include: cache sizes and timeouts, worker pool size, batch settings, transfer size, read-ahead configuration, memory pressure thresholds, TCP buffer sizes, logging, and operation timeouts.
+
+Side effects are applied automatically -- caches are resized, worker pools adjusted, and logging reconfigured when the relevant options change.
+
+### Policy Updates (Drain-and-Swap)
+
+Security-critical options use drain-and-swap to ensure no request observes a mix of old and new policy settings:
+
+```go
+// Switch to read-only mode safely
+policy := absnfs.PolicyOptions{
+    ReadOnly:   true,
+    Secure:     true,
+    AllowedIPs: []string{"10.0.0.0/8"},
+    Squash:     "root", // Must match current Squash mode
+}
+if err := nfsServer.UpdatePolicyOptions(policy); err != nil {
+    log.Fatalf("Failed to update policy: %v", err)
+}
+```
+
+During a policy update:
+1. New requests are temporarily rejected with NFS3ERR_JUKEBOX (clients automatically retry)
+2. In-flight requests complete under the old policy
+3. The new policy is atomically swapped in
+4. Request acceptance resumes under the new policy
+
+Policy options include: ReadOnly, Secure, AllowedIPs, MaxFileSize, TLS configuration, and rate limiting settings.
+
+**Important:** The `Squash` mode cannot be changed at runtime. Attempting to change it returns an error.
+
+### Convenience API
+
+The `UpdateExportOptions` method provides a simpler API that accepts a full `ExportOptions` struct. It automatically splits the changes into tuning and policy updates:
+
+```go
+opts := nfsServer.GetExportOptions()
+opts.ReadOnly = true           // Policy change (drain-and-swap)
+opts.AttrCacheSize = 20000     // Tuning change (immediate)
+if err := nfsServer.UpdateExportOptions(opts); err != nil {
+    log.Fatalf("Failed to update options: %v", err)
+}
+```
+
 ## Configuration Example: High-Performance
 
 Here's an example configuration optimized for high performance:

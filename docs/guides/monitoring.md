@@ -61,6 +61,10 @@ The metrics returned by `GetMetrics()` include:
 - `P95ReadLatency`: 95th percentile READ latency
 - `P95WriteLatency`: 95th percentile WRITE latency
 
+**Timeout Metrics** (tracked via latency and error subsystems):
+- Timeout events are tracked per-operation when an operation exceeds its configured timeout
+- The server returns `NFS3ERR_JUKEBOX` (10008) to the client, which triggers an automatic retry
+
 **Cache Metrics**:
 - `CacheHitRate`: Percentage of attribute lookups served from cache
 - `ReadAheadHitRate`: Percentage of READ operations served from read-ahead buffer
@@ -479,7 +483,7 @@ showmount -e localhost
 
 ## Log Monitoring
 
-ABSNFS uses Go's standard logging. Configure logging using Go's `log` package or integrate with your preferred logging framework.
+ABSNFS provides structured logging via the `LogConfig` option, supporting JSON and text output formats with configurable log levels, file rotation, and optional operation-level detail.
 
 ### Log Analysis
 

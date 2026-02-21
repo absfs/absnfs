@@ -111,12 +111,14 @@ fmt.Printf("MaxConnections: %d\n", opts.MaxConnections)
 func (nfs *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error
 ```
 
-Updates the export options for the running server. Not all options can be changed at runtime. Some options (like `Squash` mode) require a server restart and will return an error if you attempt to change them.
+Updates the export options for the running server. This is a convenience method that internally splits the provided options into tuning changes and policy changes:
 
-Returns an error if:
-- The server instance is nil
-- An attempt is made to change an immutable option
-- The new options are invalid
+- **Tuning changes** (cache sizes, worker counts, timeouts, etc.) are applied immediately via lock-free atomic swap
+- **Policy changes** (ReadOnly, Secure, AllowedIPs, etc.) are applied via drain-and-swap, which waits for in-flight requests to finish before swapping
+
+For fine-grained control, use `UpdateTuningOptions` and `UpdatePolicyOptions` directly.
+
+The `Squash` mode cannot be changed at runtime and will return an error if you attempt to change it.
 
 **Example:**
 
@@ -135,6 +137,64 @@ if err := nfsServer.UpdateExportOptions(opts); err != nil {
 }
 
 log.Println("Options updated successfully")
+```
+
+### UpdateTuningOptions
+
+```go
+func (nfs *AbsfsNFS) UpdateTuningOptions(fn func(*TuningOptions))
+```
+
+Applies a mutation function to the current tuning options (performance-related settings). The function receives a deep copy of the current tuning options; after the function returns, the modified copy is stored atomically.
+
+Tuning changes take effect immediately without draining in-flight requests, since stale tuning reads only affect performance characteristics and cannot violate security invariants.
+
+Side effects are applied automatically: caches are resized, worker pools adjusted, and logging reconfigured as needed.
+
+**Example:**
+
+```go
+// Double the attribute cache size
+nfsServer.UpdateTuningOptions(func(t *absnfs.TuningOptions) {
+    t.AttrCacheSize = 20000
+    t.AttrCacheTimeout = 30 * time.Second
+})
+```
+
+### UpdatePolicyOptions
+
+```go
+func (nfs *AbsfsNFS) UpdatePolicyOptions(newPolicy PolicyOptions) error
+```
+
+Updates security and access policy using drain-and-swap. This method:
+
+1. Stops accepting new NFS requests (new requests receive NFS3ERR_JUKEBOX, causing clients to retry)
+2. Waits for all in-flight requests to complete under the old policy
+3. Atomically swaps to the new policy
+4. Resumes accepting requests under the new policy
+
+This ensures that no request ever observes a mix of old and new policy settings. For example, a WRITE that passed a ReadOnly check under the old policy will complete before ReadOnly is set to true.
+
+The `Squash` field is immutable and cannot be changed at runtime. Attempting to change it returns an error.
+
+Returns an error if:
+- An attempt is made to change the Squash mode
+- The server instance is nil
+
+**Example:**
+
+```go
+// Switch to read-only mode safely
+policy := absnfs.PolicyOptions{
+    ReadOnly:   true,
+    Secure:     true,
+    AllowedIPs: []string{"10.0.0.0/8"},
+    Squash:     "root", // Must match the current Squash mode
+}
+if err := nfsServer.UpdatePolicyOptions(policy); err != nil {
+    log.Fatalf("Failed to update policy: %v", err)
+}
 ```
 
 ## Example Usage
@@ -216,9 +276,10 @@ The `AbsfsNFS` adapter maintains several internal components:
 - **File handle mapping**: Translates between NFS file handles and filesystem paths
 - **Attribute cache**: Improves performance of metadata operations with configurable timeout and size
 - **Read-ahead buffer**: Optimizes sequential read performance with prefetching
+- **Directory cache**: Caches directory listings for improved READDIR/READDIRPLUS performance
 - **Worker pool**: Handles concurrent operations using a configurable number of goroutines
 - **Batch processor**: Groups similar operations together for improved throughput
-- **Memory monitor**: Optionally monitors system memory and adjusts cache sizes under pressure
+- **Memory monitor**: Optionally monitors system memory and adjusts cache sizes under memory pressure
 - **Rate limiter**: Provides DoS protection with per-IP and global request limits
 - **Metrics collector**: Tracks operations, latency, cache performance, and errors
 

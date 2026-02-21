@@ -74,6 +74,62 @@ options := absnfs.ExportOptions{
 }
 ```
 
+### Secure Port Enforcement
+
+When `Secure` is enabled, the server requires clients to connect from privileged ports (below 1024). This is a standard NFS security measure that helps prevent unprivileged users from impersonating NFS clients.
+
+```go
+options := absnfs.ExportOptions{
+    Secure: true, // Requires privileged ports
+}
+```
+
+### Symlink Security
+
+ABSNFS sanitizes symbolic link targets returned by READLINK operations to prevent path traversal attacks. Symlink targets that attempt to escape the export root (e.g., using `../` sequences) are rejected with an I/O error.
+
+### Rate Limiting and DoS Protection
+
+ABSNFS provides built-in rate limiting to protect against denial-of-service attacks:
+
+```go
+options := absnfs.ExportOptions{
+    EnableRateLimiting: true,
+    RateLimitConfig: &absnfs.RateLimiterConfig{
+        // Configure limits as needed
+    },
+}
+```
+
+The rate limiter enforces:
+- **Global request limits**: Caps total requests per second across all clients
+- **Per-IP limits**: Prevents a single IP from consuming all resources
+- **Per-connection limits**: Limits requests per individual connection
+- **Operation-specific limits**: Separate limits for expensive operations like large reads/writes
+- **File handle allocation limits**: Prevents handle exhaustion attacks
+
+### TLS/SSL Encryption
+
+ABSNFS supports TLS encryption for secure network communication, addressing the NFSv3 limitation of clear-text protocol:
+
+```go
+options := absnfs.ExportOptions{
+    TLS: &absnfs.TLSConfig{
+        Enabled:    true,
+        CertFile:   "/path/to/server.crt",
+        KeyFile:    "/path/to/server.key",
+        MinVersion: "1.2",
+    },
+}
+```
+
+TLS provides:
+- Encryption of all NFS traffic
+- Server authentication via certificates
+- Optional mutual TLS (mTLS) for client authentication
+- Configurable minimum TLS version (1.2+)
+- Certificate reloading for rotation without restart
+
 ## Best Practices
 
 ### Network Security
@@ -97,12 +153,22 @@ options := absnfs.ExportOptions{
     // Limit access to specific trusted networks
     Secure: true,
     AllowedIPs: []string{"10.0.0.0/8", "192.168.1.0/24"},
-    
+
     // Only allow read operations
     ReadOnly: true,
-    
+
     // Map all users to anonymous user
     Squash: "all",
+
+    // Enable rate limiting
+    EnableRateLimiting: true,
+
+    // Enable TLS encryption
+    TLS: &absnfs.TLSConfig{
+        Enabled:  true,
+        CertFile: "/etc/nfs/server.crt",
+        KeyFile:  "/etc/nfs/server.key",
+    },
 }
 
 nfsServer, err := absnfs.New(fs, options)
@@ -129,7 +195,7 @@ Consider implementing monitoring and auditing for your NFS server:
 
 Be aware of these security limitations:
 
-1. **NFSv3 Protocol**: ABSNFS uses NFSv3, which does not include strong authentication or encryption
+1. **NFSv3 Protocol**: ABSNFS uses NFSv3, which does not include strong authentication. TLS encryption can be enabled to protect network traffic.
 2. **UDP Support**: NFS can use UDP, which is vulnerable to IP spoofing attacks
 3. **Lack of User Authentication**: NFS relies primarily on IP-based authentication
 
@@ -144,3 +210,6 @@ For highly sensitive data or environments with strict security requirements, con
 - [ ] Limit exports to specific directories
 - [ ] Monitor access and usage patterns
 - [ ] Deploy only on trusted networks when possible
+- [ ] Enable TLS encryption for sensitive data
+- [ ] Configure rate limiting to prevent DoS attacks
+- [ ] Enforce secure (privileged) port requirements

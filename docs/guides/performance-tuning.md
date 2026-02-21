@@ -189,10 +189,10 @@ options := absnfs.ExportOptions{
 ```
 
 When memory usage exceeds the high watermark, ABSNFS will:
-1. Reduce cache sizes
+1. Reduce attribute cache sizes
 2. Trim read-ahead buffers
-3. Force garbage collection
-4. Delay accepting new connections
+3. Reduce directory cache sizes
+4. Continue monitoring until usage falls below the low watermark
 
 ## CPU Optimization
 
@@ -213,6 +213,41 @@ This balances:
 - Parallelism (utilizing multiple CPU cores)
 - Overhead (avoiding excessive goroutine creation)
 - Batching (reducing per-operation overhead)
+
+### Directory Caching
+
+For workloads with frequent directory listings, enable directory caching:
+
+```go
+options := absnfs.ExportOptions{
+    EnableDirCache:     true,
+    DirCacheTimeout:    10 * time.Second,
+    DirCacheMaxEntries: 1000,
+    DirCacheMaxDirSize: 10000,
+}
+```
+
+Directory caching is beneficial for:
+- Build systems that repeatedly scan directories
+- File browsers and explorers
+- Applications that frequently enumerate directory contents
+- Workloads with many small files in the same directories
+
+### Negative Lookup Caching
+
+To avoid repeated filesystem calls for non-existent files:
+
+```go
+options := absnfs.ExportOptions{
+    CacheNegativeLookups: true,
+    NegativeCacheTimeout: 5 * time.Second,
+}
+```
+
+This is especially useful for:
+- Development environments where tools probe for optional files
+- Workloads that check for lock files or temporary files
+- Reducing load from repeated failed lookups
 
 ## Network Optimization
 

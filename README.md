@@ -14,13 +14,19 @@ This package implements an NFS server adapter for the [absfs](https://github.com
 - **TLS/SSL encryption** for secure network communication
 - **Symlink support** (SYMLINK and READLINK operations)
 - Configurable export options (read-only, security, IP restrictions)
+- **Runtime configuration** with safe drain-and-swap for security policy changes
 - File handle management with efficient mapping
 - Error mapping between absfs and NFS error codes
 - Attribute caching for improved performance
+- **Directory caching** for faster READDIR/READDIRPLUS operations
+- **Negative lookup caching** to reduce filesystem load
+- **Memory pressure adaptation** with automatic cache reduction
 - **Rate limiting** and DoS protection
 - Worker pool for concurrent request handling
 - Batch operation processing for optimization
+- **Connection management** with idle timeout and TCP tuning
 - Comprehensive metrics and monitoring
+- **Portmapper/rpcbind** integration for service discovery
 
 ## Installation
 
@@ -99,8 +105,10 @@ The package provides:
    - TLS/SSL encryption for secure connections
    - Read-only mode
    - IP-based access control
-   - User ID mapping (squash options)
+   - Secure port enforcement
+   - User ID mapping (squash options) with root and all-squash modes
    - Rate limiting to prevent DoS attacks
+   - Symlink target sanitization
 
 ## Running with Privileges
 

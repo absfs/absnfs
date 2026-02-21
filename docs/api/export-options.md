@@ -576,6 +576,37 @@ options := absnfs.ExportOptions{
 server, err := absnfs.New(fs, options)
 ```
 
+## Runtime Update Semantics
+
+`ExportOptions` fields are internally divided into two categories with different runtime update behavior:
+
+### Tuning Fields (Immediate Update)
+
+These fields affect performance characteristics only. Changes take effect immediately via lock-free atomic swap with no service interruption:
+
+- `TransferSize`, `EnableReadAhead`, `ReadAheadSize`, `ReadAheadMaxFiles`, `ReadAheadMaxMemory`
+- `AttrCacheTimeout`, `AttrCacheSize`, `CacheNegativeLookups`, `NegativeCacheTimeout`
+- `EnableDirCache`, `DirCacheTimeout`, `DirCacheMaxEntries`, `DirCacheMaxDirSize`
+- `AdaptToMemoryPressure`, `MemoryHighWatermark`, `MemoryLowWatermark`, `MemoryCheckInterval`
+- `MaxWorkers`, `BatchOperations`, `MaxBatchSize`
+- `MaxConnections`, `IdleTimeout`, `TCPKeepAlive`, `TCPNoDelay`, `SendBufferSize`, `ReceiveBufferSize`
+- `Async`, `Log`, `Timeouts`
+
+### Policy Fields (Drain-and-Swap Update)
+
+These fields affect security invariants. Changes use drain-and-swap: new requests are temporarily rejected while in-flight requests complete, then the new policy takes effect atomically:
+
+- `ReadOnly`, `Secure`, `AllowedIPs`, `MaxFileSize`
+- `EnableRateLimiting`, `RateLimitConfig`, `TLS`
+
+### Immutable Fields
+
+These fields cannot be changed at runtime and will cause `UpdateExportOptions` to return an error:
+
+- `Squash`: Changing the user identity mapping mode at runtime could create inconsistent UID/GID behavior for in-flight requests
+
+For fine-grained control over updates, use `UpdateTuningOptions` (for tuning fields) and `UpdatePolicyOptions` (for policy fields) directly instead of `UpdateExportOptions`.
+
 ## Default Options
 
 If you don't need to customize the export options, you can use the default options:

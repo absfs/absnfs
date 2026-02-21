@@ -31,7 +31,9 @@ Components:
 - `NFSNode`: Representation of files and directories
 - `FileHandleMap`: Management of file handles
 - `AttrCache`: Caching of file attributes
+- `DirCache`: Caching of directory listings
 - `ReadAheadBuffer`: Optimization for sequential reads
+- `TuningOptions` / `PolicyOptions`: Split configuration with atomic access
 
 ### 3. ABSFS Adapter
 
@@ -96,6 +98,15 @@ The `AttrCache` caches file attributes to improve performance. It:
 - Validates cached attributes against TTL settings
 - Refreshes attributes when needed
 
+### DirCache
+
+The `DirCache` caches directory listings to improve READDIR/READDIRPLUS performance. It:
+
+- Stores recently listed directory entries
+- Validates cached entries against configurable TTL
+- Supports dynamic resizing based on memory pressure
+- Limits per-directory entry count to prevent memory issues
+
 ### ReadAheadBuffer
 
 The `ReadAheadBuffer` improves read performance for sequential access patterns. It:
@@ -140,7 +151,6 @@ The `MemoryMonitor` manages memory usage. It:
 - Tracks system memory usage
 - Detects memory pressure conditions
 - Automatically reduces cache sizes when needed
-- Triggers garbage collection during high memory usage
 - Provides memory statistics
 
 ### TLSConfig
@@ -159,10 +169,38 @@ A typical NFS request flows through the system as follows:
 
 1. Client sends an NFS request to the server
 2. Server decodes the RPC request and identifies the NFS operation
-3. Server routes the request to the appropriate handler in AbsfsNFS
-4. AbsfsNFS looks up the file handle and gets the corresponding NFSNode
-5. AbsfsNFS performs the operation on the underlying ABSFS filesystem
-6. Results are processed, encoded, and sent back to the client
+3. Server checks the drain flag; if draining, returns NFS3ERR_JUKEBOX (client retries)
+4. Server increments the in-flight counter and snapshots current options
+5. Server routes the request to the appropriate handler in AbsfsNFS with the options snapshot
+6. AbsfsNFS looks up the file handle and gets the corresponding NFSNode
+7. AbsfsNFS performs the operation on the underlying ABSFS filesystem using the snapshot
+8. Results are processed, encoded, and sent back to the client
+9. In-flight counter is decremented
+
+## Options Architecture
+
+ABSNFS splits configuration into two categories with different update semantics:
+
+### TuningOptions (Lock-Free Reads)
+
+Performance-related settings (cache sizes, worker counts, timeouts, buffer sizes, etc.) are stored behind an `atomic.Pointer[TuningOptions]`. Any goroutine can read the current tuning by loading the pointer -- no lock is needed. Stale reads are harmless since they only affect performance characteristics.
+
+Updates are applied via `UpdateTuningOptions`, which copies the current options, applies the mutation, and stores the result atomically. Side effects (cache resizing, worker pool adjustment) are applied after the swap.
+
+### PolicyOptions (Drain-and-Swap)
+
+Security-critical settings (ReadOnly, Secure, AllowedIPs, MaxFileSize, TLS, rate limiting) are stored behind an `atomic.Pointer[PolicyOptions]`. Reads are still lock-free, but updates use drain-and-swap to ensure no request observes a mix of old and new policy:
+
+1. Set `draining` flag to reject new requests (clients receive NFS3ERR_JUKEBOX and retry)
+2. Wait for all in-flight requests to complete (`inflight.Wait()`)
+3. Atomically swap to the new policy
+4. Clear the `draining` flag to resume accepting requests
+
+The `Squash` mode is immutable at runtime since changing it would invalidate the UID/GID mapping for all in-flight and future requests in unpredictable ways.
+
+### Per-Request Snapshots
+
+At the entry point of every NFS request (`HandleCall`), a `RequestOptions` snapshot is created containing pointers to the current `TuningOptions` and `PolicyOptions`. This snapshot is threaded through all handler functions and operations for the duration of the request, ensuring consistent options throughout a single request's lifetime.
 
 ## Component Interactions
 
@@ -184,6 +222,7 @@ ABSNFS was designed with the following principles in mind:
 3. **Performance**: Optimize common operations through caching and buffering
 4. **Correctness**: Correctly implement the NFS protocol
 5. **Robustness**: Handle errors and edge cases gracefully
+6. **Safety**: Security-critical options use drain-and-swap to prevent stale policy reads from violating security invariants
 
 ## Limitations
 

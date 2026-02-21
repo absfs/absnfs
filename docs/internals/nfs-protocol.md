@@ -234,6 +234,7 @@ NFS operations return status codes indicating success or specific errors:
 | NFS3ERR_STALE     | 70    | Stale file handle                     |
 | NFS3ERR_BADHANDLE | 10001 | Invalid file handle                   |
 | NFS3ERR_SERVERFAULT | 10006 | Server fault (undefined error)      |
+| NFS3ERR_JUKEBOX | 10008 | Server busy, try again (used during policy drain) |
 
 ## Security Considerations
 
@@ -267,6 +268,7 @@ ABSNFS implements NFSv3 with these characteristics:
 3. **File Handle Mapping**: Maps between NFS file handles and ABSFS paths
 4. **XDR Encoding/Decoding**: Implements XDR encoding/decoding in Go
 5. **RPC Server**: Custom RPC server implementation
+6. **RFC 1813 Compliance**: Correct WCC (Weak Cache Consistency) data encoding, proper error reply formats with post-operation attributes, and XDR padding for all wire protocol structures
 
 ## References
 
