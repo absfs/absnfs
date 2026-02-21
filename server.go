@@ -703,10 +703,14 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 				})
 
 				// Extract result
-				typedResult := result.(struct {
+				typedResult, ok := result.(struct {
 					Reply *RPCReply
 					Err   error
 				})
+				if !ok {
+					s.logger.Printf("worker pool returned unexpected result type")
+					return
+				}
 				reply, handleErr = typedResult.Reply, typedResult.Err
 			} else {
 				// Process directly

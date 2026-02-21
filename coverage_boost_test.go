@@ -670,7 +670,7 @@ func TestPortmapperInternalHandlers(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(6))      // prot (TCP)
 		binary.Write(&buf, binary.BigEndian, uint32(2049))   // port
 
-		result := pm.handleSet(&buf)
+		result := pm.handleSet(&buf, nil)
 		if len(result) != 4 {
 			t.Errorf("Expected 4 bytes result, got %d", len(result))
 		}
@@ -692,7 +692,7 @@ func TestPortmapperInternalHandlers(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(6))      // prot (TCP)
 		binary.Write(&buf, binary.BigEndian, uint32(0))      // port (ignored)
 
-		result := pm.handleUnset(&buf)
+		result := pm.handleUnset(&buf, nil)
 		if len(result) != 4 {
 			t.Errorf("Expected 4 bytes result, got %d", len(result))
 		}

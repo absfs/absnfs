@@ -38,7 +38,7 @@ func mapError(err error) uint32 {
 		return NFSERR_PERM
 	case os.IsExist(err):
 		return NFSERR_EXIST
-	case err == os.ErrInvalid:
+	case errors.Is(err, os.ErrInvalid):
 		return NFSERR_INVAL
 	default:
 		return NFSERR_IO

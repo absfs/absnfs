@@ -199,8 +199,10 @@ func (c *AttrCache) Put(path string, attrs *NFSAttrs) {
 			// Get LRU element from back of list - O(1)
 			lruElement := c.accessList.Back()
 			if lruElement != nil {
-				lruPath := lruElement.Value.(string)
-				delete(c.cache, lruPath)
+				lruPath, ok := lruElement.Value.(string)
+				if ok {
+					delete(c.cache, lruPath)
+				}
 				c.accessList.Remove(lruElement) // O(1)
 			}
 		}
@@ -259,8 +261,10 @@ func (c *AttrCache) PutNegative(path string) {
 			// Get LRU element from back of list - O(1)
 			lruElement := c.accessList.Back()
 			if lruElement != nil {
-				lruPath := lruElement.Value.(string)
-				delete(c.cache, lruPath)
+				lruPath, ok := lruElement.Value.(string)
+				if ok {
+					delete(c.cache, lruPath)
+				}
 				c.accessList.Remove(lruElement) // O(1)
 			}
 		}
@@ -424,8 +428,10 @@ func (c *AttrCache) Resize(newSize int) {
 		if lruElement == nil {
 			break
 		}
-		lruPath := lruElement.Value.(string)
-		delete(c.cache, lruPath)
+		lruPath, ok := lruElement.Value.(string)
+		if ok {
+			delete(c.cache, lruPath)
+		}
 		c.accessList.Remove(lruElement)
 	}
 }
@@ -517,8 +523,12 @@ func (b *ReadAheadBuffer) enforceMemoryLimits() {
 		// Get least recently used buffer from back of list - O(1)
 		lruElement := b.accessList.Back()
 		if lruElement != nil {
-			lruPath := lruElement.Value.(string)
-			b.evictBuffer(lruPath)
+			lruPath, ok := lruElement.Value.(string)
+			if ok {
+				b.evictBuffer(lruPath)
+			} else {
+				b.accessList.Remove(lruElement)
+			}
 		}
 	}
 }
@@ -848,8 +858,10 @@ func (c *DirCache) Put(path string, entries []os.FileInfo) {
 		if c.accessList.Len() > 0 {
 			lruElement := c.accessList.Back()
 			if lruElement != nil {
-				lruPath := lruElement.Value.(string)
-				delete(c.entries, lruPath)
+				lruPath, ok := lruElement.Value.(string)
+				if ok {
+					delete(c.entries, lruPath)
+				}
 				c.accessList.Remove(lruElement)
 			}
 		}
@@ -957,8 +969,10 @@ func (c *DirCache) Resize(newMaxEntries int) {
 		if lruElement == nil {
 			break
 		}
-		lruPath := lruElement.Value.(string)
-		delete(c.entries, lruPath)
+		lruPath, ok := lruElement.Value.(string)
+		if ok {
+			delete(c.entries, lruPath)
+		}
 		c.accessList.Remove(lruElement)
 	}
 }

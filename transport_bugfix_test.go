@@ -145,7 +145,7 @@ func TestM5_PortmapperBinaryReadErrorChecking(t *testing.T) {
 		var buf bytes.Buffer
 		binary.Write(&buf, binary.BigEndian, uint32(100003)) // prog only
 
-		result := pm.handleSet(&buf)
+		result := pm.handleSet(&buf, nil)
 		var success uint32
 		binary.Read(bytes.NewReader(result), binary.BigEndian, &success)
 		if success != 0 {
@@ -157,7 +157,7 @@ func TestM5_PortmapperBinaryReadErrorChecking(t *testing.T) {
 	t.Run("unset_truncated", func(t *testing.T) {
 		var buf bytes.Buffer
 		// empty input
-		result := pm.handleUnset(&buf)
+		result := pm.handleUnset(&buf, nil)
 		var success uint32
 		binary.Read(bytes.NewReader(result), binary.BigEndian, &success)
 		if success != 0 {
@@ -858,7 +858,7 @@ func TestR28_PortmapperConditionalLogging(t *testing.T) {
 		binary.Write(&callBuf, binary.BigEndian, uint32(IPPROTO_TCP)) // prot
 		binary.Write(&callBuf, binary.BigEndian, uint32(0))           // port
 
-		_, err := pm.handleCall(callBuf.Bytes())
+		_, err := pm.handleCall(callBuf.Bytes(), nil)
 		if err != nil {
 			t.Fatalf("handleCall failed: %v", err)
 		}
@@ -885,7 +885,7 @@ func TestR28_PortmapperConditionalLogging(t *testing.T) {
 		binary.Write(&callBuf, binary.BigEndian, uint32(AUTH_NONE))
 		binary.Write(&callBuf, binary.BigEndian, uint32(0))
 
-		_, err := pm.handleCall(callBuf.Bytes())
+		_, err := pm.handleCall(callBuf.Bytes(), nil)
 		if err != nil {
 			t.Fatalf("handleCall failed: %v", err)
 		}

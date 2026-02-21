@@ -279,7 +279,7 @@ func (pm *Portmapper) handleConnection(conn net.Conn) {
 			}
 
 			// Process the RPC call
-			reply, err := pm.handleCall(data)
+			reply, err := pm.handleCall(data, conn.RemoteAddr())
 			if err != nil {
 				if pm.debug.Load() {
 					pm.logger.Printf("Handle error: %v", err)
@@ -299,7 +299,7 @@ func (pm *Portmapper) handleConnection(conn net.Conn) {
 	}
 }
 
-func (pm *Portmapper) handleCall(data []byte) ([]byte, error) {
+func (pm *Portmapper) handleCall(data []byte, remoteAddr net.Addr) ([]byte, error) {
 	r := bytes.NewReader(data)
 
 	// Read RPC header
@@ -370,9 +370,9 @@ func (pm *Portmapper) handleCall(data []byte) ([]byte, error) {
 		case PMAPPROC_NULL:
 			result = nil
 		case PMAPPROC_SET:
-			result = pm.handleSet(r)
+			result = pm.handleSet(r, remoteAddr)
 		case PMAPPROC_UNSET:
-			result = pm.handleUnset(r)
+			result = pm.handleUnset(r, remoteAddr)
 		case PMAPPROC_GETPORT:
 			result = pm.handleGetPort(r)
 		case PMAPPROC_DUMP:
@@ -420,6 +420,13 @@ func (pm *Portmapper) skipAuth(r io.Reader) error {
 		buf := make([]byte, length)
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return err
+		}
+		// Consume XDR padding to 4-byte alignment
+		if pad := (4 - length%4) % 4; pad > 0 {
+			padBuf := make([]byte, pad)
+			if _, err := io.ReadFull(r, padBuf); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -494,7 +501,16 @@ func (pm *Portmapper) handleDump() []byte {
 	return buf.Bytes()
 }
 
-func (pm *Portmapper) handleSet(r io.Reader) []byte {
+func (pm *Portmapper) handleSet(r io.Reader, remoteAddr net.Addr) []byte {
+	// Only allow SET from localhost
+	if remoteAddr != nil {
+		host, _, _ := net.SplitHostPort(remoteAddr.String())
+		ip := net.ParseIP(host)
+		if ip != nil && !ip.IsLoopback() {
+			return pm.encodeBool(false)
+		}
+	}
+
 	var prog, vers, prot, port uint32
 	if err := binary.Read(r, binary.BigEndian, &prog); err != nil {
 		return pm.encodeBool(false)
@@ -514,7 +530,16 @@ func (pm *Portmapper) handleSet(r io.Reader) []byte {
 	return pm.encodeBool(true)
 }
 
-func (pm *Portmapper) handleUnset(r io.Reader) []byte {
+func (pm *Portmapper) handleUnset(r io.Reader, remoteAddr net.Addr) []byte {
+	// Only allow UNSET from localhost
+	if remoteAddr != nil {
+		host, _, _ := net.SplitHostPort(remoteAddr.String())
+		ip := net.ParseIP(host)
+		if ip != nil && !ip.IsLoopback() {
+			return pm.encodeBool(false)
+		}
+	}
+
 	var prog, vers, prot, port uint32
 	if err := binary.Read(r, binary.BigEndian, &prog); err != nil {
 		return pm.encodeBool(false)

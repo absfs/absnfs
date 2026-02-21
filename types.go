@@ -779,6 +779,9 @@ func (n *AbsfsNFS) SetLogger(logger Logger) error {
 		return fmt.Errorf("nil server")
 	}
 
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	// Close existing logger if it's a SlogLogger before replacing it
 	if slogger, ok := n.structuredLogger.(*SlogLogger); ok {
 		if err := slogger.Close(); err != nil {

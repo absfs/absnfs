@@ -180,7 +180,9 @@ func (p *WorkerPool) Stop() {
 
 // Stats returns statistics about the worker pool
 func (p *WorkerPool) Stats() (maxWorkers int, activeWorkers int, queuedTasks int) {
+	p.resizeMu.Lock()
 	maxWorkers = p.maxWorkers
+	p.resizeMu.Unlock()
 	activeWorkers = int(atomic.LoadInt32(&p.activeWorkers))
 	queuedTasks = len(p.taskQueue)
 	return

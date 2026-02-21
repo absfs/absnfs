@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"path/filepath"
+	"strings"
 )
 
 // handleMountCall handles mount protocol operations
@@ -39,6 +41,15 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 		mountPath, err := xdrDecodeString(body)
 		if err != nil {
 			reply.AcceptStatus = GARBAGE_ARGS
+			return reply, nil
+		}
+
+		// Validate mount path - must be "/" or a clean path within the export
+		mountPath = filepath.Clean(mountPath)
+		if mountPath != "/" && !strings.HasPrefix(mountPath, "/") {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, 2) // MNT3ERR_NOENT
+			reply.Data = buf.Bytes()
 			return reply, nil
 		}
 
