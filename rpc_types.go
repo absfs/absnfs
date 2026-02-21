@@ -153,15 +153,19 @@ func xdrDecodeFileHandle(r io.Reader) (uint64, error) {
 		return 0, fmt.Errorf("failed to read handle length: %w", err)
 	}
 
-	// NFS3 file handles can be up to 64 bytes, but our handles are 8 bytes
+	// Reject lengths exceeding the NFS3 maximum to prevent DoS via huge allocations.
+	if length > 64 {
+		return 0, fmt.Errorf("file handle length %d exceeds NFS3 maximum of 64 bytes", length)
+	}
+
 	if length != 8 {
 		// Read and discard the handle data to keep the stream in sync.
-		// Handles >64 bytes are invalid per NFS3 but we still must consume
-		// the bytes (padded to 4-byte boundary) to avoid stream corruption.
 		if length > 0 {
 			paddedLen := (int(length) + 3) &^ 3 // round up to 4-byte boundary
 			discard := make([]byte, paddedLen)
-			io.ReadFull(r, discard)
+			if _, err := io.ReadFull(r, discard); err != nil {
+				return 0, fmt.Errorf("failed to discard handle data: %w", err)
+			}
 		}
 		return 0, fmt.Errorf("invalid handle length: %d (expected 8)", length)
 	}
@@ -292,6 +296,12 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 	if _, err = io.ReadFull(r, call.Credential.Body); err != nil {
 		return nil, fmt.Errorf("failed to read credential body: %w", err)
 	}
+	// XDR opaque data is padded to 4-byte boundaries
+	if pad := (4 - credLen%4) % 4; pad > 0 {
+		if _, err = io.ReadFull(r, make([]byte, pad)); err != nil {
+			return nil, fmt.Errorf("failed to read credential padding: %w", err)
+		}
+	}
 
 	// Decode verifier
 	if call.Verifier.Flavor, err = xdrDecodeUint32(r); err != nil {
@@ -308,6 +318,12 @@ func DecodeRPCCall(r io.Reader) (*RPCCall, error) {
 	call.Verifier.Body = make([]byte, verLen)
 	if _, err = io.ReadFull(r, call.Verifier.Body); err != nil {
 		return nil, fmt.Errorf("failed to read verifier body: %w", err)
+	}
+	// XDR opaque data is padded to 4-byte boundaries
+	if pad := (4 - verLen%4) % 4; pad > 0 {
+		if _, err = io.ReadFull(r, make([]byte, pad)); err != nil {
+			return nil, fmt.Errorf("failed to read verifier padding: %w", err)
+		}
 	}
 
 	return call, nil
