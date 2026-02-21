@@ -110,13 +110,14 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				func() *bytes.Buffer {
 					var buf bytes.Buffer
 					xdrEncodeFileHandle(&buf, invalidHandle) // Properly encode handle
-					// Add setmode flag
+					// sattr3: setMode=1, mode=0644, setUid=0, setGid=0, setSize=0, setAtime=0, setMtime=0
 					binary.Write(&buf, binary.BigEndian, uint32(1))
 					binary.Write(&buf, binary.BigEndian, uint32(0644))
-					// Add setuid flag
 					binary.Write(&buf, binary.BigEndian, uint32(0))
-					// Add setgid flag
 					binary.Write(&buf, binary.BigEndian, uint32(0))
+					binary.Write(&buf, binary.BigEndian, uint32(0)) // Don't set size
+					binary.Write(&buf, binary.BigEndian, uint32(0)) // Don't set atime
+					binary.Write(&buf, binary.BigEndian, uint32(0)) // Don't set mtime
 					return &buf
 				},
 			},
@@ -269,14 +270,14 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 
 			var buf bytes.Buffer
 			xdrEncodeFileHandle(&buf, fileHandle) // Properly encode handle
-			// Set mode flag
+			// sattr3: setMode=1, mode=0x8000 (invalid), setUid=0, setGid=0, setSize=0, setAtime=0, setMtime=0
 			binary.Write(&buf, binary.BigEndian, uint32(1))
-			// Set invalid mode (S_IFMT bit set)
 			binary.Write(&buf, binary.BigEndian, uint32(0x8000))
-			// Don't set uid
 			binary.Write(&buf, binary.BigEndian, uint32(0))
-			// Don't set gid
 			binary.Write(&buf, binary.BigEndian, uint32(0))
+			binary.Write(&buf, binary.BigEndian, uint32(0)) // Don't set size
+			binary.Write(&buf, binary.BigEndian, uint32(0)) // Don't set atime
+			binary.Write(&buf, binary.BigEndian, uint32(0)) // Don't set mtime
 
 			reply := &RPCReply{}
 			authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}

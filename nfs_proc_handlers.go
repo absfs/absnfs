@@ -7,7 +7,102 @@ import (
 	"math"
 	"os"
 	"path"
+	"time"
 )
+
+// sattr3 represents the parsed NFS3 sattr3 structure (RFC 1813 section 2.3.4).
+// Each field has an associated "set" flag indicating whether the client wants
+// to change that attribute.
+type sattr3 struct {
+	SetMode   bool
+	Mode      uint32
+	SetUID    bool
+	UID       uint32
+	SetGID    bool
+	GID       uint32
+	SetSize   bool
+	Size      uint64
+	SetAtime  uint32 // 0=don't set, 1=SET_TO_SERVER_TIME, 2=SET_TO_CLIENT_TIME
+	AtimeSec  uint32
+	AtimeNsec uint32
+	SetMtime  uint32 // 0=don't set, 1=SET_TO_SERVER_TIME, 2=SET_TO_CLIENT_TIME
+	MtimeSec  uint32
+	MtimeNsec uint32
+}
+
+// decodeSattr3 reads the NFS3 sattr3 structure from the wire.
+// Per RFC 1813, sattr3 is a series of discriminated unions — each attribute
+// has a boolean flag followed by the value (if set).
+func decodeSattr3(body io.Reader) (sattr3, error) {
+	var s sattr3
+
+	var flag uint32
+	if err := binary.Read(body, binary.BigEndian, &flag); err != nil {
+		return s, err
+	}
+	s.SetMode = flag != 0
+	if s.SetMode {
+		if err := binary.Read(body, binary.BigEndian, &s.Mode); err != nil {
+			return s, err
+		}
+	}
+
+	if err := binary.Read(body, binary.BigEndian, &flag); err != nil {
+		return s, err
+	}
+	s.SetUID = flag != 0
+	if s.SetUID {
+		if err := binary.Read(body, binary.BigEndian, &s.UID); err != nil {
+			return s, err
+		}
+	}
+
+	if err := binary.Read(body, binary.BigEndian, &flag); err != nil {
+		return s, err
+	}
+	s.SetGID = flag != 0
+	if s.SetGID {
+		if err := binary.Read(body, binary.BigEndian, &s.GID); err != nil {
+			return s, err
+		}
+	}
+
+	if err := binary.Read(body, binary.BigEndian, &flag); err != nil {
+		return s, err
+	}
+	s.SetSize = flag != 0
+	if s.SetSize {
+		if err := binary.Read(body, binary.BigEndian, &s.Size); err != nil {
+			return s, err
+		}
+	}
+
+	if err := binary.Read(body, binary.BigEndian, &s.SetAtime); err != nil {
+		return s, err
+	}
+	if s.SetAtime == 2 { // SET_TO_CLIENT_TIME
+		if err := binary.Read(body, binary.BigEndian, &s.AtimeSec); err != nil {
+			return s, err
+		}
+		if err := binary.Read(body, binary.BigEndian, &s.AtimeNsec); err != nil {
+			return s, err
+		}
+	}
+
+	if err := binary.Read(body, binary.BigEndian, &s.SetMtime); err != nil {
+		return s, err
+	}
+	if s.SetMtime == 2 { // SET_TO_CLIENT_TIME
+		if err := binary.Read(body, binary.BigEndian, &s.MtimeSec); err != nil {
+			return s, err
+		}
+		if err := binary.Read(body, binary.BigEndian, &s.MtimeNsec); err != nil {
+			return s, err
+		}
+	}
+
+	return s, nil
+}
 
 // handleNull handles NFSPROC3_NULL - a no-op procedure for testing connectivity
 func (h *NFSProcedureHandler) handleNull(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
@@ -51,43 +146,24 @@ func (h *NFSProcedureHandler) handleGetattr(body io.Reader, reply *RPCReply, aut
 }
 
 // handleSetattr handles NFSPROC3_SETATTR - set file attributes
+//
+// Per RFC 1813, SETATTR3args contains a file handle, sattr3, and an optional
+// guard (sattrguard3). The sattr3 includes mode, uid, gid, size, atime, and
+// mtime — each with a set flag. Setting size to 0 truncates the file, which
+// is how shell redirects (>) clear a file before writing.
 func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
 		return nfsErrorReply(reply, GARBAGE_ARGS), nil
 	}
 
-	// Read attribute flags and values
-	var setMode, setUid, setGid uint32
-	var mode, uid, gid uint32
-	if err := binary.Read(body, binary.BigEndian, &setMode); err != nil {
+	sattr, err := decodeSattr3(body)
+	if err != nil {
 		return nfsErrorReply(reply, GARBAGE_ARGS), nil
-	}
-	if setMode != 0 {
-		if err := binary.Read(body, binary.BigEndian, &mode); err != nil {
-			return nfsErrorReply(reply, GARBAGE_ARGS), nil
-		}
-		if mode&0x8000 != 0 {
-			return nfsErrorReply(reply, NFSERR_INVAL), nil
-		}
 	}
 
-	if err := binary.Read(body, binary.BigEndian, &setUid); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
-	}
-	if setUid != 0 {
-		if err := binary.Read(body, binary.BigEndian, &uid); err != nil {
-			return nfsErrorReply(reply, GARBAGE_ARGS), nil
-		}
-	}
-
-	if err := binary.Read(body, binary.BigEndian, &setGid); err != nil {
-		return nfsErrorReply(reply, GARBAGE_ARGS), nil
-	}
-	if setGid != 0 {
-		if err := binary.Read(body, binary.BigEndian, &gid); err != nil {
-			return nfsErrorReply(reply, GARBAGE_ARGS), nil
-		}
+	if sattr.SetMode && sattr.Mode&0x8000 != 0 {
+		return nfsErrorReply(reply, NFSERR_INVAL), nil
 	}
 
 	node, ok := h.lookupNode(handleVal)
@@ -100,6 +176,25 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 		return nil, err
 	}
 
+	// Apply truncation before other attribute changes.
+	// This is critical for file overwrites: the NFS client sends
+	// SETATTR(size=0) before WRITE(offset=0, data) to clear old content.
+	if sattr.SetSize {
+		if err := node.Truncate(int64(sattr.Size)); err != nil {
+			return nil, err
+		}
+		h.server.handler.attrCache.Invalidate(node.path)
+		h.server.handler.readBuf.ClearPath(node.path)
+		info, statErr := h.server.handler.fs.Stat(node.path)
+		if statErr == nil {
+			node.mu.Lock()
+			node.attrs.Size = info.Size()
+			node.attrs.SetMtime(info.ModTime())
+			node.attrs.Refresh()
+			node.mu.Unlock()
+		}
+	}
+
 	node.mu.RLock()
 	attrs := &NFSAttrs{
 		Mode: node.attrs.Mode,
@@ -108,14 +203,26 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 	}
 	node.mu.RUnlock()
 
-	if setMode != 0 {
-		attrs.Mode = os.FileMode(mode)
+	if sattr.SetMode {
+		attrs.Mode = os.FileMode(sattr.Mode)
 	}
-	if setUid != 0 {
-		attrs.Uid = uid
+	if sattr.SetUID {
+		attrs.Uid = sattr.UID
 	}
-	if setGid != 0 {
-		attrs.Gid = gid
+	if sattr.SetGID {
+		attrs.Gid = sattr.GID
+	}
+
+	if sattr.SetAtime == 1 {
+		attrs.SetAtime(time.Now())
+	} else if sattr.SetAtime == 2 {
+		attrs.SetAtime(time.Unix(int64(sattr.AtimeSec), int64(sattr.AtimeNsec)))
+	}
+
+	if sattr.SetMtime == 1 {
+		attrs.SetMtime(time.Now())
+	} else if sattr.SetMtime == 2 {
+		attrs.SetMtime(time.Unix(int64(sattr.MtimeSec), int64(sattr.MtimeNsec)))
 	}
 
 	if err := h.server.handler.SetAttr(node, attrs); err != nil {
@@ -449,63 +556,12 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 
 	var mode uint32 = 0644
 	if createHow == 0 || createHow == 1 {
-		// Parse sattr3
-		var setMode uint32
-		if err := binary.Read(body, binary.BigEndian, &setMode); err != nil {
+		sattr, err := decodeSattr3(body)
+		if err != nil {
 			return nfsErrorReply(reply, GARBAGE_ARGS), nil
 		}
-		if setMode != 0 {
-			if err := binary.Read(body, binary.BigEndian, &mode); err != nil {
-				return nfsErrorReply(reply, GARBAGE_ARGS), nil
-			}
-		}
-
-		// Skip remaining sattr3 fields
-		var setUid uint32
-		if err := binary.Read(body, binary.BigEndian, &setUid); err != nil {
-			return nfsErrorReply(reply, GARBAGE_ARGS), nil
-		}
-		if setUid != 0 {
-			var uid uint32
-			binary.Read(body, binary.BigEndian, &uid)
-		}
-
-		var setGid uint32
-		if err := binary.Read(body, binary.BigEndian, &setGid); err != nil {
-			return nfsErrorReply(reply, GARBAGE_ARGS), nil
-		}
-		if setGid != 0 {
-			var gid uint32
-			binary.Read(body, binary.BigEndian, &gid)
-		}
-
-		var setSize uint32
-		if err := binary.Read(body, binary.BigEndian, &setSize); err != nil {
-			return nfsErrorReply(reply, GARBAGE_ARGS), nil
-		}
-		if setSize != 0 {
-			var size uint64
-			binary.Read(body, binary.BigEndian, &size)
-		}
-
-		var setAtime uint32
-		if err := binary.Read(body, binary.BigEndian, &setAtime); err != nil {
-			return nfsErrorReply(reply, GARBAGE_ARGS), nil
-		}
-		if setAtime == 2 {
-			var atimeSec, atimeNsec uint32
-			binary.Read(body, binary.BigEndian, &atimeSec)
-			binary.Read(body, binary.BigEndian, &atimeNsec)
-		}
-
-		var setMtime uint32
-		if err := binary.Read(body, binary.BigEndian, &setMtime); err != nil {
-			return nfsErrorReply(reply, GARBAGE_ARGS), nil
-		}
-		if setMtime == 2 {
-			var mtimeSec, mtimeNsec uint32
-			binary.Read(body, binary.BigEndian, &mtimeSec)
-			binary.Read(body, binary.BigEndian, &mtimeNsec)
+		if sattr.SetMode {
+			mode = sattr.Mode
 		}
 	} else if createHow == 2 {
 		var verf [8]byte
@@ -585,9 +641,14 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 		return nfsErrorReply(reply, status), nil
 	}
 
-	var mode uint32
-	if err := binary.Read(body, binary.BigEndian, &mode); err != nil {
+	sattr, err := decodeSattr3(body)
+	if err != nil {
 		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+	}
+
+	var mode uint32 = 0755
+	if sattr.SetMode {
+		mode = sattr.Mode
 	}
 
 	if status := validateMode(mode, true); status != NFS_OK {
@@ -665,8 +726,8 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 		return nfsErrorReply(reply, status), nil
 	}
 
-	var mode uint32
-	if err := binary.Read(body, binary.BigEndian, &mode); err != nil {
+	sattr, err := decodeSattr3(body)
+	if err != nil {
 		return nfsErrorReply(reply, GARBAGE_ARGS), nil
 	}
 
@@ -687,6 +748,11 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 	dirPreAttrs, err := h.server.handler.GetAttr(node)
 	if err != nil {
 		return nil, err
+	}
+
+	var mode uint32 = 0777
+	if sattr.SetMode {
+		mode = sattr.Mode
 	}
 
 	attrs := &NFSAttrs{

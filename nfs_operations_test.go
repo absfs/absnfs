@@ -406,6 +406,9 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(1000)) // New uid
 		binary.Write(&buf, binary.BigEndian, uint32(1))    // Set gid
 		binary.Write(&buf, binary.BigEndian, uint32(1000)) // New gid
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set size
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set atime
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set mtime
 
 		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
@@ -432,6 +435,11 @@ func TestNFSOperationsErrors(t *testing.T) {
 		xdrEncodeFileHandle(&buf, handle)                    // Properly encode handle with length prefix
 		binary.Write(&buf, binary.BigEndian, uint32(1))      // Set mode
 		binary.Write(&buf, binary.BigEndian, uint32(0x8000)) // Invalid mode
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set uid
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set gid
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set size
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set atime
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set mtime
 
 		authCtx = &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
@@ -662,8 +670,14 @@ func TestNFSOperationsErrors(t *testing.T) {
 			buf.Write(make([]byte, padding))
 		}
 
-		// Mode
+		// sattr3: setMode=1, mode=0755, rest unset
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // Set mode
 		binary.Write(&buf, binary.BigEndian, uint32(0755)) // Directory mode
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set uid
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set gid
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set size
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set atime
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set mtime
 
 		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
@@ -716,8 +730,14 @@ func TestNFSOperationsErrors(t *testing.T) {
 			buf.Write(make([]byte, padding))
 		}
 
-		// Invalid mode
+		// sattr3: setMode=1, mode=0x8000 (invalid), rest unset
+		binary.Write(&buf, binary.BigEndian, uint32(1))      // Set mode
 		binary.Write(&buf, binary.BigEndian, uint32(0x8000)) // Invalid mode
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set uid
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set gid
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set size
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set atime
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set mtime
 
 		authCtx = &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
@@ -794,8 +814,14 @@ func TestNFSOperationsErrors(t *testing.T) {
 			buf.Write(make([]byte, padding))
 		}
 
-		// Mode (for symlinks, typically 0777)
-		binary.Write(&buf, binary.BigEndian, uint32(0777))
+		// sattr3: setMode=1, mode=0777, rest unset
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // Set mode
+		binary.Write(&buf, binary.BigEndian, uint32(0777)) // Symlink mode
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set uid
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set gid
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set size
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set atime
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set mtime
 
 		// Write target path
 		target := "/testfile.txt"
@@ -858,7 +884,14 @@ func TestNFSOperationsErrors(t *testing.T) {
 			buf.Write(make([]byte, padding))
 		}
 
-		binary.Write(&buf, binary.BigEndian, uint32(0777))
+		// sattr3: setMode=1, mode=0777, rest unset
+		binary.Write(&buf, binary.BigEndian, uint32(1))    // Set mode
+		binary.Write(&buf, binary.BigEndian, uint32(0777)) // Mode
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set uid
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set gid
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set size
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set atime
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set mtime
 
 		// Empty target
 		binary.Write(&buf, binary.BigEndian, uint32(0))
