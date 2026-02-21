@@ -595,3 +595,312 @@ func generateTestCert(t *testing.T) (string, string, func()) {
 		os.Remove(keyFile)
 	}
 }
+
+// TestR12_FileHandleUnboundedAllocationDoS verifies that xdrDecodeFileHandle
+// rejects handle lengths exceeding the NFS3 maximum of 64 bytes, preventing
+// a DoS via huge memory allocation.
+func TestR12_FileHandleUnboundedAllocationDoS(t *testing.T) {
+	// Test: handle length exceeding NFS3 max (64 bytes) is rejected immediately
+	t.Run("reject_huge_length", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(0xFFFFFFF0)) // ~4GB length
+		_, err := xdrDecodeFileHandle(&buf)
+		if err == nil {
+			t.Fatal("expected error for huge handle length, got nil")
+		}
+		if !bytes.Contains([]byte(err.Error()), []byte("exceeds NFS3 maximum")) {
+			t.Fatalf("expected NFS3 maximum error, got: %v", err)
+		}
+	})
+
+	// Test: handle length of 65 is rejected (just above max)
+	t.Run("reject_65_bytes", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(65))
+		_, err := xdrDecodeFileHandle(&buf)
+		if err == nil {
+			t.Fatal("expected error for 65-byte handle length")
+		}
+		if !bytes.Contains([]byte(err.Error()), []byte("exceeds NFS3 maximum")) {
+			t.Fatalf("expected NFS3 maximum error, got: %v", err)
+		}
+	})
+
+	// Test: handle length of 64 is accepted (at max) but returns error for non-8
+	t.Run("accept_64_bytes", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(64))
+		buf.Write(make([]byte, 64)) // provide enough data
+		_, err := xdrDecodeFileHandle(&buf)
+		if err == nil {
+			t.Fatal("expected error for 64-byte handle (not 8)")
+		}
+		// Should be "invalid handle length" not "exceeds NFS3 maximum"
+		if bytes.Contains([]byte(err.Error()), []byte("exceeds NFS3 maximum")) {
+			t.Fatalf("64 bytes should not trigger NFS3 maximum error, got: %v", err)
+		}
+	})
+
+	// Test: io.ReadFull error is propagated when discarding
+	t.Run("discard_read_error", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(32))
+		buf.Write(make([]byte, 10)) // only 10 bytes, but need 32
+		_, err := xdrDecodeFileHandle(&buf)
+		if err == nil {
+			t.Fatal("expected error when discarding truncated handle data")
+		}
+	})
+}
+
+// TestR13_PortmapperAtomicDebugListenAddr verifies that debug and listenAddr
+// fields use atomic operations and are safe for concurrent access.
+func TestR13_PortmapperAtomicDebugListenAddr(t *testing.T) {
+	pm := NewPortmapper()
+
+	// Test concurrent SetDebug and reads
+	t.Run("concurrent_debug", func(t *testing.T) {
+		var wg sync.WaitGroup
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func(val bool) {
+				defer wg.Done()
+				for j := 0; j < 100; j++ {
+					pm.SetDebug(val)
+				}
+			}(i%2 == 0)
+		}
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < 100; j++ {
+					_ = pm.debug.Load()
+				}
+			}()
+		}
+		wg.Wait()
+	})
+
+	// Test concurrent SetListenAddr and reads
+	t.Run("concurrent_listenaddr", func(t *testing.T) {
+		var wg sync.WaitGroup
+		addrs := []string{"192.168.1.1", "10.0.0.1", "127.0.0.1"}
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				for j := 0; j < 100; j++ {
+					pm.SetListenAddr(addrs[idx%len(addrs)])
+				}
+			}(i)
+		}
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < 100; j++ {
+					v, _ := pm.listenAddr.Load().(string)
+					_ = v
+				}
+			}()
+		}
+		wg.Wait()
+	})
+
+	// Verify SetDebug/SetListenAddr work correctly
+	t.Run("set_and_get", func(t *testing.T) {
+		pm.SetDebug(true)
+		if !pm.debug.Load() {
+			t.Fatal("expected debug to be true")
+		}
+		pm.SetDebug(false)
+		if pm.debug.Load() {
+			t.Fatal("expected debug to be false")
+		}
+		pm.SetListenAddr("10.0.0.5")
+		got, _ := pm.listenAddr.Load().(string)
+		if got != "10.0.0.5" {
+			t.Fatalf("expected listenAddr 10.0.0.5, got %q", got)
+		}
+	})
+}
+
+// TestR27_RPCCredentialVerifierXDRPadding verifies that DecodeRPCCall correctly
+// consumes XDR padding after credential and verifier bodies.
+func TestR27_RPCCredentialVerifierXDRPadding(t *testing.T) {
+	// Build a valid RPC call with oddly-sized credential and verifier
+	t.Run("odd_credential_padded", func(t *testing.T) {
+		var buf bytes.Buffer
+		// Header
+		binary.Write(&buf, binary.BigEndian, uint32(0x12345678)) // XID
+		binary.Write(&buf, binary.BigEndian, uint32(RPC_CALL))   // msg type
+		binary.Write(&buf, binary.BigEndian, uint32(2))           // RPC version
+		binary.Write(&buf, binary.BigEndian, uint32(100003))      // program
+		binary.Write(&buf, binary.BigEndian, uint32(3))           // version
+		binary.Write(&buf, binary.BigEndian, uint32(0))           // procedure
+
+		// Credential: 5 bytes body (needs 3 bytes padding)
+		binary.Write(&buf, binary.BigEndian, uint32(AUTH_NONE)) // flavor
+		binary.Write(&buf, binary.BigEndian, uint32(5))         // length
+		buf.Write([]byte{1, 2, 3, 4, 5})                        // body
+		buf.Write([]byte{0, 0, 0})                               // XDR padding
+
+		// Verifier: 3 bytes body (needs 1 byte padding)
+		binary.Write(&buf, binary.BigEndian, uint32(AUTH_NONE)) // flavor
+		binary.Write(&buf, binary.BigEndian, uint32(3))         // length
+		buf.Write([]byte{6, 7, 8})                               // body
+		buf.Write([]byte{0})                                     // XDR padding
+
+		call, err := DecodeRPCCall(&buf)
+		if err != nil {
+			t.Fatalf("DecodeRPCCall failed: %v", err)
+		}
+		if len(call.Credential.Body) != 5 {
+			t.Fatalf("expected credential body len 5, got %d", len(call.Credential.Body))
+		}
+		if len(call.Verifier.Body) != 3 {
+			t.Fatalf("expected verifier body len 3, got %d", len(call.Verifier.Body))
+		}
+	})
+
+	// Test: 4-byte aligned bodies need no padding
+	t.Run("aligned_no_padding", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(0xAABBCCDD))
+		binary.Write(&buf, binary.BigEndian, uint32(RPC_CALL))
+		binary.Write(&buf, binary.BigEndian, uint32(2))
+		binary.Write(&buf, binary.BigEndian, uint32(100003))
+		binary.Write(&buf, binary.BigEndian, uint32(3))
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+
+		// Credential: 8 bytes (aligned)
+		binary.Write(&buf, binary.BigEndian, uint32(AUTH_NONE))
+		binary.Write(&buf, binary.BigEndian, uint32(8))
+		buf.Write(make([]byte, 8))
+
+		// Verifier: 0 bytes (aligned)
+		binary.Write(&buf, binary.BigEndian, uint32(AUTH_NONE))
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+
+		call, err := DecodeRPCCall(&buf)
+		if err != nil {
+			t.Fatalf("DecodeRPCCall failed: %v", err)
+		}
+		if len(call.Credential.Body) != 8 {
+			t.Fatalf("expected credential body len 8, got %d", len(call.Credential.Body))
+		}
+	})
+}
+
+// TestR27_EncodeRPCReplyVerifierPadding verifies that EncodeRPCReply pads the
+// verifier body to a 4-byte boundary.
+func TestR27_EncodeRPCReplyVerifierPadding(t *testing.T) {
+	t.Run("odd_verifier_padded", func(t *testing.T) {
+		var buf bytes.Buffer
+		reply := &RPCReply{
+			Header:       RPCMsgHeader{Xid: 1},
+			Status:       MSG_ACCEPTED,
+			AcceptStatus: SUCCESS,
+			Verifier:     RPCVerifier{Flavor: AUTH_NONE, Body: []byte{0xAA, 0xBB, 0xCC}}, // 3 bytes
+		}
+		if err := EncodeRPCReply(&buf, reply); err != nil {
+			t.Fatalf("EncodeRPCReply failed: %v", err)
+		}
+		// Total should be: XID(4) + type(4) + reply_stat(4) + verf_flavor(4) + verf_len(4)
+		// + body(3) + pad(1) + accept_stat(4) = 28
+		if buf.Len() != 28 {
+			t.Fatalf("expected 28 bytes, got %d", buf.Len())
+		}
+	})
+
+	t.Run("aligned_verifier_no_extra_padding", func(t *testing.T) {
+		var buf bytes.Buffer
+		reply := &RPCReply{
+			Header:       RPCMsgHeader{Xid: 1},
+			Status:       MSG_ACCEPTED,
+			AcceptStatus: SUCCESS,
+			Verifier:     RPCVerifier{Flavor: AUTH_NONE, Body: []byte{0xAA, 0xBB, 0xCC, 0xDD}}, // 4 bytes
+		}
+		if err := EncodeRPCReply(&buf, reply); err != nil {
+			t.Fatalf("EncodeRPCReply failed: %v", err)
+		}
+		// XID(4) + type(4) + reply_stat(4) + verf_flavor(4) + verf_len(4) + body(4) + accept_stat(4) = 28
+		if buf.Len() != 28 {
+			t.Fatalf("expected 28 bytes, got %d", buf.Len())
+		}
+	})
+}
+
+// TestR28_PortmapperConditionalLogging verifies that the portmapper only logs
+// call details when debug mode is enabled.
+func TestR28_PortmapperConditionalLogging(t *testing.T) {
+	pm := NewPortmapper()
+	pm.RegisterService(100003, 3, IPPROTO_TCP, 2049)
+
+	// Capture log output
+	var logBuf bytes.Buffer
+	pm.logger.SetOutput(&logBuf)
+
+	// With debug disabled, handleCall should not log the "Call:" line
+	t.Run("no_log_when_debug_off", func(t *testing.T) {
+		logBuf.Reset()
+		pm.SetDebug(false)
+
+		// Build a minimal valid RPC call for portmapper GETPORT
+		var callBuf bytes.Buffer
+		binary.Write(&callBuf, binary.BigEndian, uint32(1))                 // XID
+		binary.Write(&callBuf, binary.BigEndian, uint32(RPC_CALL))          // msg type
+		binary.Write(&callBuf, binary.BigEndian, uint32(2))                 // RPC version
+		binary.Write(&callBuf, binary.BigEndian, uint32(PortmapperProgram)) // program
+		binary.Write(&callBuf, binary.BigEndian, uint32(2))                 // version
+		binary.Write(&callBuf, binary.BigEndian, uint32(PMAPPROC_GETPORT))  // procedure
+		// Credential: AUTH_NONE, length 0
+		binary.Write(&callBuf, binary.BigEndian, uint32(AUTH_NONE))
+		binary.Write(&callBuf, binary.BigEndian, uint32(0))
+		// Verifier: AUTH_NONE, length 0
+		binary.Write(&callBuf, binary.BigEndian, uint32(AUTH_NONE))
+		binary.Write(&callBuf, binary.BigEndian, uint32(0))
+		// GETPORT args
+		binary.Write(&callBuf, binary.BigEndian, uint32(100003))      // prog
+		binary.Write(&callBuf, binary.BigEndian, uint32(3))           // vers
+		binary.Write(&callBuf, binary.BigEndian, uint32(IPPROTO_TCP)) // prot
+		binary.Write(&callBuf, binary.BigEndian, uint32(0))           // port
+
+		_, err := pm.handleCall(callBuf.Bytes())
+		if err != nil {
+			t.Fatalf("handleCall failed: %v", err)
+		}
+
+		if bytes.Contains(logBuf.Bytes(), []byte("Call:")) {
+			t.Fatal("expected no 'Call:' log when debug is off")
+		}
+	})
+
+	// With debug enabled, handleCall should log
+	t.Run("log_when_debug_on", func(t *testing.T) {
+		logBuf.Reset()
+		pm.SetDebug(true)
+
+		var callBuf bytes.Buffer
+		binary.Write(&callBuf, binary.BigEndian, uint32(2))
+		binary.Write(&callBuf, binary.BigEndian, uint32(RPC_CALL))
+		binary.Write(&callBuf, binary.BigEndian, uint32(2))
+		binary.Write(&callBuf, binary.BigEndian, uint32(PortmapperProgram))
+		binary.Write(&callBuf, binary.BigEndian, uint32(2))
+		binary.Write(&callBuf, binary.BigEndian, uint32(PMAPPROC_NULL))
+		binary.Write(&callBuf, binary.BigEndian, uint32(AUTH_NONE))
+		binary.Write(&callBuf, binary.BigEndian, uint32(0))
+		binary.Write(&callBuf, binary.BigEndian, uint32(AUTH_NONE))
+		binary.Write(&callBuf, binary.BigEndian, uint32(0))
+
+		_, err := pm.handleCall(callBuf.Bytes())
+		if err != nil {
+			t.Fatalf("handleCall failed: %v", err)
+		}
+
+		if !bytes.Contains(logBuf.Bytes(), []byte("Call:")) {
+			t.Fatal("expected 'Call:' log when debug is on")
+		}
+	})
+}

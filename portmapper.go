@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -49,8 +50,8 @@ type Portmapper struct {
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	logger     *log.Logger
-	debug      bool
-	listenAddr string // actual listen address for universal address construction
+	debug      atomic.Bool
+	listenAddr atomic.Value // stores string; actual listen address for universal address construction
 }
 
 // NewPortmapper creates a new portmapper instance
@@ -66,13 +67,13 @@ func NewPortmapper() *Portmapper {
 
 // SetDebug enables or disables debug logging
 func (pm *Portmapper) SetDebug(debug bool) {
-	pm.debug = debug
+	pm.debug.Store(debug)
 }
 
 // SetListenAddr sets the listen address for universal address construction.
 // This is used instead of hardcoded "127.0.0.1" or "0.0.0.0" in GETADDR and DUMP responses.
 func (pm *Portmapper) SetListenAddr(addr string) {
-	pm.listenAddr = addr
+	pm.listenAddr.Store(addr)
 }
 
 // RegisterService registers an RPC service with the portmapper
@@ -85,7 +86,7 @@ func (pm *Portmapper) RegisterService(prog, vers, prot, port uint32) {
 		if m.Program == prog && m.Version == vers && m.Protocol == prot {
 			// Update existing mapping
 			pm.mappings[i].Port = port
-			if pm.debug {
+			if pm.debug.Load() {
 				pm.logger.Printf("Updated mapping: prog=%d vers=%d proto=%d port=%d",
 					prog, vers, prot, port)
 			}
@@ -101,7 +102,7 @@ func (pm *Portmapper) RegisterService(prog, vers, prot, port uint32) {
 		Port:     port,
 	})
 
-	if pm.debug {
+	if pm.debug.Load() {
 		pm.logger.Printf("Registered mapping: prog=%d vers=%d proto=%d port=%d",
 			prog, vers, prot, port)
 	}
@@ -116,7 +117,7 @@ func (pm *Portmapper) UnregisterService(prog, vers, prot uint32) {
 		if m.Program == prog && m.Version == vers && m.Protocol == prot {
 			// Remove mapping
 			pm.mappings = append(pm.mappings[:i], pm.mappings[i+1:]...)
-			if pm.debug {
+			if pm.debug.Load() {
 				pm.logger.Printf("Unregistered mapping: prog=%d vers=%d proto=%d",
 					prog, vers, prot)
 			}
@@ -254,7 +255,7 @@ func (pm *Portmapper) handleConnection(conn net.Conn) {
 			data, err := rmConn.ReadRecord()
 			if err != nil {
 				if err != io.EOF {
-					if pm.debug {
+					if pm.debug.Load() {
 						pm.logger.Printf("Read error: %v", err)
 					}
 				}
@@ -264,7 +265,7 @@ func (pm *Portmapper) handleConnection(conn net.Conn) {
 			// Process the RPC call
 			reply, err := pm.handleCall(data)
 			if err != nil {
-				if pm.debug {
+				if pm.debug.Load() {
 					pm.logger.Printf("Handle error: %v", err)
 				}
 				continue
@@ -273,7 +274,7 @@ func (pm *Portmapper) handleConnection(conn net.Conn) {
 			// Write reply
 			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			if err := rmConn.WriteRecord(reply); err != nil {
-				if pm.debug {
+				if pm.debug.Load() {
 					pm.logger.Printf("Write error: %v", err)
 				}
 				return
@@ -327,8 +328,9 @@ func (pm *Portmapper) handleCall(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("failed to skip verifier: %w", err)
 	}
 
-	// Always log calls for debugging
-	pm.logger.Printf("Call: prog=%d vers=%d proc=%d", program, version, procedure)
+	if pm.debug.Load() {
+		pm.logger.Printf("Call: prog=%d vers=%d proc=%d", program, version, procedure)
+	}
 
 	// Verify this is a portmapper call
 	if program != PortmapperProgram {
@@ -450,7 +452,7 @@ func (pm *Portmapper) handleGetPort(r io.Reader) []byte {
 
 	resultPort := pm.GetPort(prog, vers, prot)
 
-	if pm.debug {
+	if pm.debug.Load() {
 		pm.logger.Printf("GETPORT: prog=%d vers=%d proto=%d -> port=%d",
 			prog, vers, prot, resultPort)
 	}
@@ -554,9 +556,10 @@ func (pm *Portmapper) handleGetAddr(r io.Reader) []byte {
 
 	port := pm.GetPort(prog, vers, prot)
 
-	// Always log GETADDR for debugging
-	pm.logger.Printf("GETADDR: prog=%d vers=%d netid=%s -> port=%d",
-		prog, vers, netid, port)
+	if pm.debug.Load() {
+		pm.logger.Printf("GETADDR: prog=%d vers=%d netid=%s -> port=%d",
+			prog, vers, netid, port)
+	}
 
 	// Return universal address as XDR string
 	// Format depends on netid:
@@ -566,7 +569,7 @@ func (pm *Portmapper) handleGetAddr(r io.Reader) []byte {
 	if port > 0 {
 		portHi := port / 256
 		portLo := port % 256
-		addr := pm.listenAddr
+		addr, _ := pm.listenAddr.Load().(string)
 		if addr == "" {
 			addr = "0.0.0.0"
 		}
@@ -684,7 +687,7 @@ func (pm *Portmapper) handleRpcbDump() []byte {
 		// uaddr - universal address format
 		portHi := m.Port / 256
 		portLo := m.Port % 256
-		addr := pm.listenAddr
+		addr, _ := pm.listenAddr.Load().(string)
 		if addr == "" {
 			addr = "0.0.0.0"
 		}

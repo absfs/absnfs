@@ -353,6 +353,12 @@ func EncodeRPCReply(w io.Writer, reply *RPCReply) error {
 			if _, err := w.Write(reply.Verifier.Body); err != nil {
 				return fmt.Errorf("failed to write verifier body: %w", err)
 			}
+			// XDR opaque data is padded to 4-byte boundaries
+			if pad := (4 - len(reply.Verifier.Body)%4) % 4; pad > 0 {
+				if _, err := w.Write(make([]byte, pad)); err != nil {
+					return fmt.Errorf("failed to write verifier padding: %w", err)
+				}
+			}
 		}
 
 		// Encode accept_stat (SUCCESS, PROG_UNAVAIL, etc.)
