@@ -109,9 +109,10 @@ func (m *MemoryMonitor) checkMemoryPressure() {
 	// Update memory stats
 	m.updateStats()
 
-	// Get threshold values from export options
-	highWatermark := m.nfs.options.MemoryHighWatermark
-	lowWatermark := m.nfs.options.MemoryLowWatermark
+	// Get threshold values from tuning options
+	tuning := m.nfs.tuning.Load()
+	highWatermark := tuning.MemoryHighWatermark
+	lowWatermark := tuning.MemoryLowWatermark
 
 	// Check if we're under pressure (usage exceeds high watermark)
 	m.statsMu.Lock()
@@ -139,13 +140,16 @@ func (m *MemoryMonitor) handleMemoryPressure() {
 	usageFraction := m.stats.usageFraction
 	m.statsMu.RUnlock()
 
+	// Load tuning options once for this function
+	tuning := m.nfs.tuning.Load()
+
 	// Log the memory pressure event
 	m.nfs.logger.Printf("Memory pressure detected: usage at %.2f%% (threshold: %.2f%%)",
-		usageFraction*100, m.nfs.options.MemoryHighWatermark*100)
+		usageFraction*100, tuning.MemoryHighWatermark*100)
 
 	// Calculate reduction factor based on current usage and low watermark target
 	// We want to reduce to reach the low watermark
-	target := m.nfs.options.MemoryLowWatermark
+	target := tuning.MemoryLowWatermark
 	current := usageFraction
 	reductionFactor := 1.0 - (target / current)
 
@@ -163,6 +167,9 @@ func (m *MemoryMonitor) reduceCacheSizes(reductionFactor float64) {
 		reductionFactor = 0.9 // Maximum 90% reduction
 	}
 
+	// Load tuning options once for this function
+	tuning := m.nfs.tuning.Load()
+
 	// Get current cache settings
 	m.nfs.mu.RLock()
 	attrCacheSize := m.nfs.attrCache.MaxSize()
@@ -171,8 +178,8 @@ func (m *MemoryMonitor) reduceCacheSizes(reductionFactor float64) {
 
 	// Calculate new reduced sizes
 	newAttrCacheSize := int(float64(attrCacheSize) * (1.0 - reductionFactor))
-	newReadAheadMaxFiles := int(float64(m.nfs.options.ReadAheadMaxFiles) * (1.0 - reductionFactor))
-	newReadAheadMaxMemory := int64(float64(m.nfs.options.ReadAheadMaxMemory) * (1.0 - reductionFactor))
+	newReadAheadMaxFiles := int(float64(tuning.ReadAheadMaxFiles) * (1.0 - reductionFactor))
+	newReadAheadMaxMemory := int64(float64(tuning.ReadAheadMaxMemory) * (1.0 - reductionFactor))
 
 	// Ensure minimum values
 	if newAttrCacheSize < 100 {
@@ -189,12 +196,12 @@ func (m *MemoryMonitor) reduceCacheSizes(reductionFactor float64) {
 	m.nfs.logger.Printf("Reducing cache sizes due to memory pressure:")
 	m.nfs.logger.Printf(" - Attribute cache: %d → %d entries", attrCacheSize, newAttrCacheSize)
 	m.nfs.logger.Printf(" - Read-ahead files: %d → %d (currently using %d)",
-		m.nfs.options.ReadAheadMaxFiles, newReadAheadMaxFiles, fileCount)
+		tuning.ReadAheadMaxFiles, newReadAheadMaxFiles, fileCount)
 	m.nfs.logger.Printf(" - Read-ahead memory: %d → %d bytes (currently using %d)",
-		m.nfs.options.ReadAheadMaxMemory, newReadAheadMaxMemory, memoryUsage)
+		tuning.ReadAheadMaxMemory, newReadAheadMaxMemory, memoryUsage)
 
 	// Create new attribute cache with reduced size
-	newAttrCache := NewAttrCache(m.nfs.options.AttrCacheTimeout, newAttrCacheSize)
+	newAttrCache := NewAttrCache(tuning.AttrCacheTimeout, newAttrCacheSize)
 
 	// Replace the old cache with the new one
 	// This effectively clears the cache but maintains the same timeout setting

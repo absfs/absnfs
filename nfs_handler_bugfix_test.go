@@ -511,7 +511,7 @@ func TestH5_ConfigurableTimeout(t *testing.T) {
 	}
 
 	// The default timeout should be 30 seconds, not 2 seconds
-	timeout := server.handler.options.Timeouts.DefaultTimeout
+	timeout := server.handler.tuning.Load().Timeouts.DefaultTimeout
 	if timeout.Seconds() < 5 {
 		t.Errorf("Default timeout should be >= 5 seconds, got %v", timeout)
 	}

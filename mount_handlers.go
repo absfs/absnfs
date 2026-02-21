@@ -23,7 +23,7 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 
 	case 1: // MNT
 		// Apply rate limiting for mount operations
-		if h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
+		if h.server.handler.rateLimiter != nil && h.server.handler.policy.Load().EnableRateLimiting {
 			if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeMount) {
 				var buf bytes.Buffer
 				xdrEncodeUint32(&buf, NFSERR_DELAY) // Server is busy

@@ -155,7 +155,7 @@ func (h *NFSProcedureHandler) handleGetattr(body io.Reader, reply *RPCReply, aut
 // is how shell redirects (>) clear a file before writing.
 func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	// R18: Check read-only before processing
-	if h.server.handler.options.ReadOnly {
+	if h.server.handler.policy.Load().ReadOnly {
 		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
@@ -454,7 +454,7 @@ func (h *NFSProcedureHandler) handleRead(body io.Reader, reply *RPCReply, authCt
 	}
 
 	// Rate limiting for large reads
-	if count > 65536 && h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
+	if count > 65536 && h.server.handler.rateLimiter != nil && h.server.handler.policy.Load().EnableRateLimiting {
 		if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeReadLarge) {
 			if h.server.handler.metrics != nil {
 				h.server.handler.metrics.RecordRateLimitExceeded()
@@ -506,7 +506,7 @@ func (h *NFSProcedureHandler) handleRead(body io.Reader, reply *RPCReply, authCt
 
 // handleWrite handles NFSPROC3_WRITE - write to file
 func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
-	if h.server.handler.options.ReadOnly {
+	if h.server.handler.policy.Load().ReadOnly {
 		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
@@ -532,7 +532,7 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 	}
 
 	// Rate limiting for large writes
-	if count > 65536 && h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
+	if count > 65536 && h.server.handler.rateLimiter != nil && h.server.handler.policy.Load().EnableRateLimiting {
 		if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeWriteLarge) {
 			if h.server.handler.metrics != nil {
 				h.server.handler.metrics.RecordRateLimitExceeded()
@@ -550,7 +550,7 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 	}
 
 	// Bound count to the server's advertised write size to prevent DoS
-	maxWriteSize := uint32(h.server.handler.options.TransferSize)
+	maxWriteSize := uint32(h.server.handler.tuning.Load().TransferSize)
 	if maxWriteSize == 0 {
 		maxWriteSize = 1048576 // 1MB default
 	}
@@ -622,7 +622,7 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 // handleCreate handles NFSPROC3_CREATE - create a file
 func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	// R5: Check read-only before processing
-	if h.server.handler.options.ReadOnly {
+	if h.server.handler.policy.Load().ReadOnly {
 		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
@@ -770,7 +770,7 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 // handleMkdir handles NFSPROC3_MKDIR - create a directory
 func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	// H2: Check read-only before processing
-	if h.server.handler.options.ReadOnly {
+	if h.server.handler.policy.Load().ReadOnly {
 		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
@@ -880,7 +880,7 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 
 // handleSymlink handles NFSPROC3_SYMLINK - create a symbolic link
 func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
-	if h.server.handler.options.ReadOnly {
+	if h.server.handler.policy.Load().ReadOnly {
 		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
@@ -1020,7 +1020,7 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 // handleReaddir handles NFSPROC3_READDIR - read directory entries
 func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	// Rate limiting
-	if h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
+	if h.server.handler.rateLimiter != nil && h.server.handler.policy.Load().EnableRateLimiting {
 		if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeReaddir) {
 			if h.server.handler.metrics != nil {
 				h.server.handler.metrics.RecordRateLimitExceeded()
@@ -1457,7 +1457,7 @@ func (h *NFSProcedureHandler) handleAccess(body io.Reader, reply *RPCReply, auth
 	if access&ACCESS3_EXECUTE != 0 && permBits&1 != 0 {
 		accessAllowed |= ACCESS3_EXECUTE
 	}
-	if !h.server.handler.options.ReadOnly {
+	if !h.server.handler.policy.Load().ReadOnly {
 		if access&ACCESS3_MODIFY != 0 && permBits&2 != 0 {
 			accessAllowed |= ACCESS3_MODIFY
 		}
@@ -1483,7 +1483,7 @@ func (h *NFSProcedureHandler) handleAccess(body io.Reader, reply *RPCReply, auth
 
 // handleCommit handles NFSPROC3_COMMIT - commit cached data
 func (h *NFSProcedureHandler) handleCommit(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
-	if h.server.handler.options.ReadOnly {
+	if h.server.handler.policy.Load().ReadOnly {
 		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
@@ -1526,7 +1526,7 @@ func (h *NFSProcedureHandler) handleCommit(body io.Reader, reply *RPCReply, auth
 
 // handleRemove handles NFSPROC3_REMOVE - remove a file
 func (h *NFSProcedureHandler) handleRemove(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
-	if h.server.handler.options.ReadOnly {
+	if h.server.handler.policy.Load().ReadOnly {
 		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
@@ -1605,7 +1605,7 @@ func (h *NFSProcedureHandler) handleRemove(body io.Reader, reply *RPCReply, auth
 
 // handleRmdir handles NFSPROC3_RMDIR - remove a directory
 func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
-	if h.server.handler.options.ReadOnly {
+	if h.server.handler.policy.Load().ReadOnly {
 		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
 	}
 
@@ -1719,7 +1719,7 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 
 // handleRename handles NFSPROC3_RENAME - rename a file or directory
 func (h *NFSProcedureHandler) handleRename(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
-	if h.server.handler.options.ReadOnly {
+	if h.server.handler.policy.Load().ReadOnly {
 		return nfsErrorWithDoubleWcc(reply, NFSERR_ROFS), nil
 	}
 

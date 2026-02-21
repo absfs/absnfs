@@ -27,8 +27,11 @@ func TestR3_RootSquashCredentialsApplied(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Enable root squash
-	server.handler.options.Squash = "root"
+	// Enable root squash by storing a new policy snapshot directly
+	// (Squash is immutable via UpdatePolicyOptions, so we set it directly in tests)
+	p := *server.handler.policy.Load()
+	p.Squash = "root"
+	server.handler.policy.Store(&p)
 
 	// Build AUTH_SYS credential for root (UID=0, GID=0)
 	var credBody bytes.Buffer
@@ -48,7 +51,7 @@ func TestR3_RootSquashCredentialsApplied(t *testing.T) {
 	}
 
 	// Verify authentication squashes root
-	result := ValidateAuthentication(authCtx, server.handler.options)
+	result := ValidateAuthentication(authCtx, server.handler.policy.Load())
 	if !result.Allowed {
 		t.Fatalf("Expected auth to be allowed, got denied: %s", result.Reason)
 	}

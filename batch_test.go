@@ -200,21 +200,21 @@ func TestBatchOptions(t *testing.T) {
 			defer server.Close()
 
 			// Verify options were applied correctly
-			if server.options.BatchOperations != tc.expectOn {
+			if server.GetExportOptions().BatchOperations != tc.expectOn {
 				t.Errorf("BatchOperations: expected %v, got %v",
-					tc.expectOn, server.options.BatchOperations)
+					tc.expectOn, server.GetExportOptions().BatchOperations)
 			}
 
-			if server.options.MaxBatchSize != tc.expectMax {
+			if server.GetExportOptions().MaxBatchSize != tc.expectMax {
 				t.Errorf("MaxBatchSize: expected %d, got %d",
-					tc.expectMax, server.options.MaxBatchSize)
+					tc.expectMax, server.GetExportOptions().MaxBatchSize)
 			}
 
 			// Verify batch processor state
 			enabled, _ := server.batchProc.GetStats()
-			if enabled != server.options.BatchOperations {
+			if enabled != server.GetExportOptions().BatchOperations {
 				t.Errorf("Batch processor enabled state (%v) doesn't match options (%v)",
-					enabled, server.options.BatchOperations)
+					enabled, server.GetExportOptions().BatchOperations)
 			}
 		})
 	}

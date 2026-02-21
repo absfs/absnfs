@@ -104,17 +104,17 @@ func TestDirCacheConfiguration(t *testing.T) {
 			defer server.Close()
 
 			// Verify options were set correctly in the server options
-			if server.options.DirCacheTimeout != tc.expectedTimeout {
+			if server.GetExportOptions().DirCacheTimeout != tc.expectedTimeout {
 				t.Errorf("DirCacheTimeout not set correctly: got %v, want %v",
-					server.options.DirCacheTimeout, tc.expectedTimeout)
+					server.GetExportOptions().DirCacheTimeout, tc.expectedTimeout)
 			}
-			if server.options.DirCacheMaxEntries != tc.expectedMaxEntries {
+			if server.GetExportOptions().DirCacheMaxEntries != tc.expectedMaxEntries {
 				t.Errorf("DirCacheMaxEntries not set correctly: got %d, want %d",
-					server.options.DirCacheMaxEntries, tc.expectedMaxEntries)
+					server.GetExportOptions().DirCacheMaxEntries, tc.expectedMaxEntries)
 			}
-			if server.options.DirCacheMaxDirSize != tc.expectedMaxDirSize {
+			if server.GetExportOptions().DirCacheMaxDirSize != tc.expectedMaxDirSize {
 				t.Errorf("DirCacheMaxDirSize not set correctly: got %d, want %d",
-					server.options.DirCacheMaxDirSize, tc.expectedMaxDirSize)
+					server.GetExportOptions().DirCacheMaxDirSize, tc.expectedMaxDirSize)
 			}
 
 			// Verify the directory cache was created correctly

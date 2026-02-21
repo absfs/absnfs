@@ -37,6 +37,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/absfs/absfs"
@@ -59,14 +60,13 @@ type SymlinkFileSystem interface {
 
 // AbsfsNFS represents an NFS server that exports an absfs filesystem
 type AbsfsNFS struct {
-	mu               sync.RWMutex            // Protects options and related configuration
+	mu               sync.RWMutex            // Protects shared mutable state
 	fs               absfs.SymlinkFileSystem // The wrapped absfs filesystem (supports symlinks)
 	root             *NFSNode                // Root directory node
 	logger           *log.Logger             // Deprecated: use structuredLogger instead
 	structuredLogger Logger                  // Structured logger for production use
 	fileMap          *FileHandleMap          // Maps file handles to absfs files
 	mountPath        string                  // Export path
-	options          ExportOptions           // NFS export options
 	attrCache        *AttrCache              // Cache for file attributes
 	dirCache         *DirCache               // Cache for directory entries
 	readBuf          *ReadAheadBuffer        // Read-ahead buffer
@@ -75,6 +75,21 @@ type AbsfsNFS struct {
 	batchProc        *BatchProcessor         // Processor for batched operations
 	metrics          *MetricsCollector       // Metrics collection and reporting
 	rateLimiter      *RateLimiter            // Rate limiter for DoS protection
+
+	// Options are stored as immutable snapshots behind atomic pointers.
+	// Readers load the pointer -- no lock needed.
+	tuning atomic.Pointer[TuningOptions]
+	policy atomic.Pointer[PolicyOptions]
+
+	// policyMu serializes policy changes (drain-and-swap).
+	policyMu sync.Mutex
+
+	// inflight tracks the number of in-flight NFS requests using the current policy.
+	// Incremented at HandleCall entry, decremented at HandleCall exit.
+	inflight sync.WaitGroup
+
+	// draining is set to true during a policy swap to reject new requests.
+	draining atomic.Bool
 }
 
 // ExportOptions defines the configuration for an NFS export
@@ -606,8 +621,7 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	}
 
 	server := &AbsfsNFS{
-		fs:      fs,
-		options: options,
+		fs: fs,
 		fileMap: &FileHandleMap{
 			handles:     make(map[uint64]absfs.File),
 			nextHandle:  1, // Start from 1, as 0 is typically reserved
@@ -618,6 +632,9 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		attrCache:        NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
 		readBuf:          NewReadAheadBuffer(options.ReadAheadSize),
 	}
+
+	// Populate atomic option pointers from the fully-defaulted ExportOptions
+	server.initAtomicOptions(&options)
 
 	// Initialize directory cache if enabled
 	if options.EnableDirCache {
@@ -684,12 +701,13 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 
 // startMemoryMonitoring initializes and starts the memory monitor
 func (n *AbsfsNFS) startMemoryMonitoring() {
+	t := n.tuning.Load()
 	n.memoryMonitor = NewMemoryMonitor(n)
-	n.memoryMonitor.Start(n.options.MemoryCheckInterval)
+	n.memoryMonitor.Start(t.MemoryCheckInterval)
 	n.logger.Printf("Memory pressure monitoring enabled (check interval: %v, high watermark: %.1f%%, low watermark: %.1f%%)",
-		n.options.MemoryCheckInterval,
-		n.options.MemoryHighWatermark*100,
-		n.options.MemoryLowWatermark*100)
+		t.MemoryCheckInterval,
+		t.MemoryHighWatermark*100,
+		t.MemoryLowWatermark*100)
 }
 
 // stopMemoryMonitoring stops the memory monitor if it's running
@@ -803,188 +821,96 @@ func (n *AbsfsNFS) SetLogger(logger Logger) error {
 // GetExportOptions returns a copy of the current export options
 // This is thread-safe and returns a snapshot of the current configuration
 func (n *AbsfsNFS) GetExportOptions() ExportOptions {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
-	// Create a deep copy to prevent external modifications
-	opts := n.options
-
-	// Copy slice fields to prevent shared memory
-	if len(n.options.AllowedIPs) > 0 {
-		opts.AllowedIPs = make([]string, len(n.options.AllowedIPs))
-		copy(opts.AllowedIPs, n.options.AllowedIPs)
-	}
-
-	// Copy pointer fields to prevent external modifications
-	if n.options.RateLimitConfig != nil {
-		configCopy := *n.options.RateLimitConfig
-		opts.RateLimitConfig = &configCopy
-	}
-
-	if n.options.TLS != nil {
-		opts.TLS = n.options.TLS.Clone()
-	}
-
-	if n.options.Log != nil {
-		logCopy := *n.options.Log
-		opts.Log = &logCopy
-	}
-
-	if n.options.Timeouts != nil {
-		timeoutsCopy := *n.options.Timeouts
-		opts.Timeouts = &timeoutsCopy
-	}
-
-	return opts
+	return exportOptionsFromSnapshots(n.tuning.Load(), n.policy.Load())
 }
 
-// UpdateExportOptions updates the server's export options at runtime
-// Some fields require a server restart and will return an error if changed
-// Returns an error if the update contains invalid values or changes to immutable fields
+// UpdateExportOptions updates the server's export options at runtime.
+// Internally splits the incoming ExportOptions into tuning and policy changes.
+// Tuning changes apply immediately via atomic swap.
+// Policy changes use drain-and-swap to ensure in-flight requests complete first.
 func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
 	if n == nil {
 		return fmt.Errorf("nil server")
 	}
 
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	// Apply tuning changes (lock-free, immediate)
+	n.UpdateTuningOptions(func(t *TuningOptions) {
+		if newOptions.AttrCacheSize > 0 {
+			t.AttrCacheSize = newOptions.AttrCacheSize
+		}
+		if newOptions.AttrCacheTimeout > 0 {
+			t.AttrCacheTimeout = newOptions.AttrCacheTimeout
+		}
+		t.CacheNegativeLookups = newOptions.CacheNegativeLookups
+		if newOptions.NegativeCacheTimeout > 0 {
+			t.NegativeCacheTimeout = newOptions.NegativeCacheTimeout
+		}
+		t.EnableDirCache = newOptions.EnableDirCache
+		if newOptions.DirCacheMaxEntries > 0 {
+			t.DirCacheMaxEntries = newOptions.DirCacheMaxEntries
+		}
+		if newOptions.DirCacheTimeout > 0 {
+			t.DirCacheTimeout = newOptions.DirCacheTimeout
+		}
+		if newOptions.DirCacheMaxDirSize > 0 {
+			t.DirCacheMaxDirSize = newOptions.DirCacheMaxDirSize
+		}
+		if newOptions.ReadAheadMaxMemory > 0 {
+			t.ReadAheadMaxMemory = newOptions.ReadAheadMaxMemory
+		}
+		if newOptions.ReadAheadMaxFiles > 0 {
+			t.ReadAheadMaxFiles = newOptions.ReadAheadMaxFiles
+		}
+		if newOptions.MemoryHighWatermark > 0 && newOptions.MemoryHighWatermark <= 1.0 {
+			t.MemoryHighWatermark = newOptions.MemoryHighWatermark
+		}
+		if newOptions.MemoryLowWatermark > 0 && newOptions.MemoryLowWatermark < t.MemoryHighWatermark {
+			t.MemoryLowWatermark = newOptions.MemoryLowWatermark
+		}
+		if newOptions.MaxWorkers > 0 {
+			t.MaxWorkers = newOptions.MaxWorkers
+		}
+		t.BatchOperations = newOptions.BatchOperations
+		if newOptions.MaxBatchSize > 0 {
+			t.MaxBatchSize = newOptions.MaxBatchSize
+		}
+		t.Async = newOptions.Async
+		if newOptions.Timeouts != nil {
+			tCopy := *newOptions.Timeouts
+			t.Timeouts = &tCopy
+		}
+		if newOptions.Log != nil {
+			logCopy := *newOptions.Log
+			t.Log = &logCopy
+		}
+	})
 
-	// Validate immutable fields haven't changed
-	// These fields require server restart
-	if n.options.Squash != newOptions.Squash {
+	// Validate immutable fields before attempting policy update.
+	// Squash cannot be changed at runtime.
+	currentPolicy := n.policy.Load()
+	if newOptions.Squash != "" && newOptions.Squash != currentPolicy.Squash {
 		return fmt.Errorf("cannot change Squash mode at runtime (requires restart)")
 	}
 
-	// Validate and update safe-to-change fields
-
-	// Update basic boolean flags
-	n.options.ReadOnly = newOptions.ReadOnly
-	n.options.Async = newOptions.Async
-
-	// Update AllowedIPs
+	// Apply policy changes (drain-and-swap)
+	newPolicy := PolicyOptions{
+		ReadOnly:           newOptions.ReadOnly,
+		Secure:             newOptions.Secure,
+		Squash:             currentPolicy.Squash, // immutable
+		MaxFileSize:        newOptions.MaxFileSize,
+		EnableRateLimiting: newOptions.EnableRateLimiting,
+	}
 	if len(newOptions.AllowedIPs) > 0 {
-		n.options.AllowedIPs = make([]string, len(newOptions.AllowedIPs))
-		copy(n.options.AllowedIPs, newOptions.AllowedIPs)
-	} else {
-		n.options.AllowedIPs = nil
+		newPolicy.AllowedIPs = make([]string, len(newOptions.AllowedIPs))
+		copy(newPolicy.AllowedIPs, newOptions.AllowedIPs)
+	}
+	if newOptions.RateLimitConfig != nil {
+		rc := *newOptions.RateLimitConfig
+		newPolicy.RateLimitConfig = &rc
+	}
+	if newOptions.TLS != nil {
+		newPolicy.TLS = newOptions.TLS.Clone()
 	}
 
-	// Update attribute cache settings
-	if newOptions.AttrCacheSize > 0 && newOptions.AttrCacheSize != n.options.AttrCacheSize {
-		n.options.AttrCacheSize = newOptions.AttrCacheSize
-		if n.attrCache != nil {
-			n.attrCache.Resize(newOptions.AttrCacheSize)
-		}
-	}
-
-	if newOptions.AttrCacheTimeout > 0 {
-		n.options.AttrCacheTimeout = newOptions.AttrCacheTimeout
-		if n.attrCache != nil {
-			n.attrCache.UpdateTTL(newOptions.AttrCacheTimeout)
-		}
-	}
-
-	// Update negative caching settings
-	if newOptions.CacheNegativeLookups != n.options.CacheNegativeLookups {
-		n.options.CacheNegativeLookups = newOptions.CacheNegativeLookups
-		if n.attrCache != nil {
-			n.attrCache.ConfigureNegativeCaching(newOptions.CacheNegativeLookups, newOptions.NegativeCacheTimeout)
-		}
-	}
-
-	if newOptions.NegativeCacheTimeout > 0 && newOptions.NegativeCacheTimeout != n.options.NegativeCacheTimeout {
-		n.options.NegativeCacheTimeout = newOptions.NegativeCacheTimeout
-		if n.attrCache != nil {
-			n.attrCache.ConfigureNegativeCaching(n.options.CacheNegativeLookups, newOptions.NegativeCacheTimeout)
-		}
-	}
-
-	// Update directory cache settings
-	if newOptions.EnableDirCache != n.options.EnableDirCache {
-		n.options.EnableDirCache = newOptions.EnableDirCache
-	}
-
-	if newOptions.DirCacheMaxEntries > 0 && newOptions.DirCacheMaxEntries != n.options.DirCacheMaxEntries {
-		n.options.DirCacheMaxEntries = newOptions.DirCacheMaxEntries
-		if n.dirCache != nil {
-			n.dirCache.Resize(newOptions.DirCacheMaxEntries)
-		}
-	}
-
-	if newOptions.DirCacheTimeout > 0 && newOptions.DirCacheTimeout != n.options.DirCacheTimeout {
-		n.options.DirCacheTimeout = newOptions.DirCacheTimeout
-		if n.dirCache != nil {
-			n.dirCache.UpdateTTL(newOptions.DirCacheTimeout)
-		}
-	}
-
-	if newOptions.DirCacheMaxDirSize > 0 {
-		n.options.DirCacheMaxDirSize = newOptions.DirCacheMaxDirSize
-	}
-
-	// Update read-ahead settings
-	if newOptions.ReadAheadMaxMemory > 0 && newOptions.ReadAheadMaxMemory != n.options.ReadAheadMaxMemory {
-		n.options.ReadAheadMaxMemory = newOptions.ReadAheadMaxMemory
-		if n.readBuf != nil {
-			n.readBuf.Resize(newOptions.ReadAheadMaxFiles, newOptions.ReadAheadMaxMemory)
-		}
-	}
-
-	if newOptions.ReadAheadMaxFiles > 0 && newOptions.ReadAheadMaxFiles != n.options.ReadAheadMaxFiles {
-		n.options.ReadAheadMaxFiles = newOptions.ReadAheadMaxFiles
-		if n.readBuf != nil {
-			n.readBuf.Resize(newOptions.ReadAheadMaxFiles, n.options.ReadAheadMaxMemory)
-		}
-	}
-
-	// Update memory pressure settings
-	if newOptions.MemoryHighWatermark > 0 && newOptions.MemoryHighWatermark <= 1.0 {
-		n.options.MemoryHighWatermark = newOptions.MemoryHighWatermark
-	}
-
-	if newOptions.MemoryLowWatermark > 0 && newOptions.MemoryLowWatermark < n.options.MemoryHighWatermark {
-		n.options.MemoryLowWatermark = newOptions.MemoryLowWatermark
-	}
-
-	// Update worker pool settings
-	if newOptions.MaxWorkers > 0 && newOptions.MaxWorkers != n.options.MaxWorkers {
-		n.options.MaxWorkers = newOptions.MaxWorkers
-		if n.workerPool != nil {
-			n.workerPool.Resize(newOptions.MaxWorkers)
-		}
-	}
-
-	// Update batch operation settings
-	n.options.BatchOperations = newOptions.BatchOperations
-	if newOptions.MaxBatchSize > 0 {
-		n.options.MaxBatchSize = newOptions.MaxBatchSize
-	}
-
-	// Update timeout configuration if provided
-	if newOptions.Timeouts != nil {
-		timeoutsCopy := *newOptions.Timeouts
-		n.options.Timeouts = &timeoutsCopy
-	}
-
-	// Update logging configuration if provided
-	if newOptions.Log != nil {
-		// Create new logger with updated config
-		slogger, err := NewSlogLogger(newOptions.Log)
-		if err != nil {
-			return fmt.Errorf("failed to create logger with new config: %w", err)
-		}
-
-		// Close old logger if it exists
-		if oldLogger, ok := n.structuredLogger.(*SlogLogger); ok {
-			if err := oldLogger.Close(); err != nil {
-				n.logger.Printf("warning: failed to close old logger: %v", err)
-			}
-		}
-
-		n.structuredLogger = slogger
-		logCopy := *newOptions.Log
-		n.options.Log = &logCopy
-	}
-
-	return nil
+	return n.UpdatePolicyOptions(newPolicy)
 }

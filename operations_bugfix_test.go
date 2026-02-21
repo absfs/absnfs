@@ -292,7 +292,8 @@ func TestL8_AuthNoneDocumentation(t *testing.T) {
 		},
 	}
 
-	result := ValidateAuthentication(ctx, ExportOptions{})
+	defaultOpts := ExportOptions{}
+	result := ValidateAuthentication(ctx, policyFromExportOptions(&defaultOpts))
 	if !result.Allowed {
 		t.Error("AUTH_NONE should be accepted for public/shared exports")
 	}

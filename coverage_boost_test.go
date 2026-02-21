@@ -2250,7 +2250,7 @@ func TestAuthValidationScenarios(t *testing.T) {
 			ClientIP:   "127.0.0.1",
 			ClientPort: 1023, // Privileged port
 		}
-		result := ValidateAuthentication(ctx, nfs.options)
+		result := ValidateAuthentication(ctx, nfs.policy.Load())
 		if !result.Allowed {
 			t.Errorf("Expected auth to succeed for allowed IP, got reason: %s", result.Reason)
 		}
@@ -2275,7 +2275,7 @@ func TestAuthValidationScenarios(t *testing.T) {
 			ClientIP:   "192.168.1.100",
 			ClientPort: 1023,
 		}
-		result := ValidateAuthentication(ctx, nfs.options)
+		result := ValidateAuthentication(ctx, nfs.policy.Load())
 		if result.Allowed {
 			t.Error("Expected auth to fail for disallowed IP")
 		}
@@ -3986,7 +3986,7 @@ func TestIPFilteringViaAuth(t *testing.T) {
 					Flavor: AUTH_SYS,
 				},
 			}
-			_ = ValidateAuthentication(ctx, options)
+			_ = ValidateAuthentication(ctx, policyFromExportOptions(&options))
 		})
 	}
 }

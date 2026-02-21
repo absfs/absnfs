@@ -25,32 +25,32 @@ func TestTimeoutConfiguration(t *testing.T) {
 		defer nfs.Close()
 
 		// Verify default timeouts
-		if nfs.options.Timeouts.ReadTimeout != 30*time.Second {
-			t.Errorf("Default ReadTimeout should be 30s, got %v", nfs.options.Timeouts.ReadTimeout)
+		if nfs.GetExportOptions().Timeouts.ReadTimeout != 30*time.Second {
+			t.Errorf("Default ReadTimeout should be 30s, got %v", nfs.GetExportOptions().Timeouts.ReadTimeout)
 		}
-		if nfs.options.Timeouts.WriteTimeout != 60*time.Second {
-			t.Errorf("Default WriteTimeout should be 60s, got %v", nfs.options.Timeouts.WriteTimeout)
+		if nfs.GetExportOptions().Timeouts.WriteTimeout != 60*time.Second {
+			t.Errorf("Default WriteTimeout should be 60s, got %v", nfs.GetExportOptions().Timeouts.WriteTimeout)
 		}
-		if nfs.options.Timeouts.LookupTimeout != 10*time.Second {
-			t.Errorf("Default LookupTimeout should be 10s, got %v", nfs.options.Timeouts.LookupTimeout)
+		if nfs.GetExportOptions().Timeouts.LookupTimeout != 10*time.Second {
+			t.Errorf("Default LookupTimeout should be 10s, got %v", nfs.GetExportOptions().Timeouts.LookupTimeout)
 		}
-		if nfs.options.Timeouts.ReaddirTimeout != 30*time.Second {
-			t.Errorf("Default ReaddirTimeout should be 30s, got %v", nfs.options.Timeouts.ReaddirTimeout)
+		if nfs.GetExportOptions().Timeouts.ReaddirTimeout != 30*time.Second {
+			t.Errorf("Default ReaddirTimeout should be 30s, got %v", nfs.GetExportOptions().Timeouts.ReaddirTimeout)
 		}
-		if nfs.options.Timeouts.CreateTimeout != 15*time.Second {
-			t.Errorf("Default CreateTimeout should be 15s, got %v", nfs.options.Timeouts.CreateTimeout)
+		if nfs.GetExportOptions().Timeouts.CreateTimeout != 15*time.Second {
+			t.Errorf("Default CreateTimeout should be 15s, got %v", nfs.GetExportOptions().Timeouts.CreateTimeout)
 		}
-		if nfs.options.Timeouts.RemoveTimeout != 15*time.Second {
-			t.Errorf("Default RemoveTimeout should be 15s, got %v", nfs.options.Timeouts.RemoveTimeout)
+		if nfs.GetExportOptions().Timeouts.RemoveTimeout != 15*time.Second {
+			t.Errorf("Default RemoveTimeout should be 15s, got %v", nfs.GetExportOptions().Timeouts.RemoveTimeout)
 		}
-		if nfs.options.Timeouts.RenameTimeout != 20*time.Second {
-			t.Errorf("Default RenameTimeout should be 20s, got %v", nfs.options.Timeouts.RenameTimeout)
+		if nfs.GetExportOptions().Timeouts.RenameTimeout != 20*time.Second {
+			t.Errorf("Default RenameTimeout should be 20s, got %v", nfs.GetExportOptions().Timeouts.RenameTimeout)
 		}
-		if nfs.options.Timeouts.HandleTimeout != 5*time.Second {
-			t.Errorf("Default HandleTimeout should be 5s, got %v", nfs.options.Timeouts.HandleTimeout)
+		if nfs.GetExportOptions().Timeouts.HandleTimeout != 5*time.Second {
+			t.Errorf("Default HandleTimeout should be 5s, got %v", nfs.GetExportOptions().Timeouts.HandleTimeout)
 		}
-		if nfs.options.Timeouts.DefaultTimeout != 30*time.Second {
-			t.Errorf("Default DefaultTimeout should be 30s, got %v", nfs.options.Timeouts.DefaultTimeout)
+		if nfs.GetExportOptions().Timeouts.DefaultTimeout != 30*time.Second {
+			t.Errorf("Default DefaultTimeout should be 30s, got %v", nfs.GetExportOptions().Timeouts.DefaultTimeout)
 		}
 	})
 
@@ -81,14 +81,14 @@ func TestTimeoutConfiguration(t *testing.T) {
 		defer nfs.Close()
 
 		// Verify custom timeouts
-		if nfs.options.Timeouts.ReadTimeout != 5*time.Second {
-			t.Errorf("Custom ReadTimeout should be 5s, got %v", nfs.options.Timeouts.ReadTimeout)
+		if nfs.GetExportOptions().Timeouts.ReadTimeout != 5*time.Second {
+			t.Errorf("Custom ReadTimeout should be 5s, got %v", nfs.GetExportOptions().Timeouts.ReadTimeout)
 		}
-		if nfs.options.Timeouts.WriteTimeout != 10*time.Second {
-			t.Errorf("Custom WriteTimeout should be 10s, got %v", nfs.options.Timeouts.WriteTimeout)
+		if nfs.GetExportOptions().Timeouts.WriteTimeout != 10*time.Second {
+			t.Errorf("Custom WriteTimeout should be 10s, got %v", nfs.GetExportOptions().Timeouts.WriteTimeout)
 		}
-		if nfs.options.Timeouts.LookupTimeout != 2*time.Second {
-			t.Errorf("Custom LookupTimeout should be 2s, got %v", nfs.options.Timeouts.LookupTimeout)
+		if nfs.GetExportOptions().Timeouts.LookupTimeout != 2*time.Second {
+			t.Errorf("Custom LookupTimeout should be 2s, got %v", nfs.GetExportOptions().Timeouts.LookupTimeout)
 		}
 	})
 
@@ -113,15 +113,15 @@ func TestTimeoutConfiguration(t *testing.T) {
 		defer nfs.Close()
 
 		// Verify custom timeout is set
-		if nfs.options.Timeouts.ReadTimeout != 5*time.Second {
-			t.Errorf("Custom ReadTimeout should be 5s, got %v", nfs.options.Timeouts.ReadTimeout)
+		if nfs.GetExportOptions().Timeouts.ReadTimeout != 5*time.Second {
+			t.Errorf("Custom ReadTimeout should be 5s, got %v", nfs.GetExportOptions().Timeouts.ReadTimeout)
 		}
 		// Verify defaults are used for unset timeouts
-		if nfs.options.Timeouts.WriteTimeout != 60*time.Second {
-			t.Errorf("Default WriteTimeout should be 60s, got %v", nfs.options.Timeouts.WriteTimeout)
+		if nfs.GetExportOptions().Timeouts.WriteTimeout != 60*time.Second {
+			t.Errorf("Default WriteTimeout should be 60s, got %v", nfs.GetExportOptions().Timeouts.WriteTimeout)
 		}
-		if nfs.options.Timeouts.LookupTimeout != 10*time.Second {
-			t.Errorf("Default LookupTimeout should be 10s, got %v", nfs.options.Timeouts.LookupTimeout)
+		if nfs.GetExportOptions().Timeouts.LookupTimeout != 10*time.Second {
+			t.Errorf("Default LookupTimeout should be 10s, got %v", nfs.GetExportOptions().Timeouts.LookupTimeout)
 		}
 	})
 }
@@ -591,10 +591,10 @@ func TestDefaultTimeoutFallback(t *testing.T) {
 	defer nfs.Close()
 
 	// Verify that zero timeouts were filled with defaults
-	if nfs.options.Timeouts.ReadTimeout == 0 {
+	if nfs.GetExportOptions().Timeouts.ReadTimeout == 0 {
 		t.Error("ReadTimeout should have been set to default")
 	}
-	if nfs.options.Timeouts.WriteTimeout == 0 {
+	if nfs.GetExportOptions().Timeouts.WriteTimeout == 0 {
 		t.Error("WriteTimeout should have been set to default")
 	}
 }

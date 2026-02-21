@@ -54,12 +54,12 @@ func TestTransferSize(t *testing.T) {
 			}
 
 			// Verify transfer size was set correctly
-			if tc.transferSize == 0 && server.options.TransferSize != 65536 {
+			if tc.transferSize == 0 && server.GetExportOptions().TransferSize != 65536 {
 				t.Errorf("Default transfer size not set correctly: got %d, want %d",
-					server.options.TransferSize, 65536)
-			} else if tc.transferSize > 0 && server.options.TransferSize != tc.transferSize {
+					server.GetExportOptions().TransferSize, 65536)
+			} else if tc.transferSize > 0 && server.GetExportOptions().TransferSize != tc.transferSize {
 				t.Errorf("Transfer size not set correctly: got %d, want %d",
-					server.options.TransferSize, tc.transferSize)
+					server.GetExportOptions().TransferSize, tc.transferSize)
 			}
 
 			// Get the root node

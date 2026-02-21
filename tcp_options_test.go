@@ -99,20 +99,20 @@ func TestTCPOptionsDefaults(t *testing.T) {
 	}
 
 	// Verify default TCP options were set
-	if !server.options.TCPKeepAlive {
+	if !server.GetExportOptions().TCPKeepAlive {
 		t.Error("Default TCP keep-alive should be true")
 	}
 
-	if !server.options.TCPNoDelay {
+	if !server.GetExportOptions().TCPNoDelay {
 		t.Error("Default TCP no-delay should be true")
 	}
 
-	if server.options.SendBufferSize != 262144 {
-		t.Errorf("Default send buffer size should be 262144, got %d", server.options.SendBufferSize)
+	if server.GetExportOptions().SendBufferSize != 262144 {
+		t.Errorf("Default send buffer size should be 262144, got %d", server.GetExportOptions().SendBufferSize)
 	}
 
-	if server.options.ReceiveBufferSize != 262144 {
-		t.Errorf("Default receive buffer size should be 262144, got %d", server.options.ReceiveBufferSize)
+	if server.GetExportOptions().ReceiveBufferSize != 262144 {
+		t.Errorf("Default receive buffer size should be 262144, got %d", server.GetExportOptions().ReceiveBufferSize)
 	}
 }
 
@@ -138,19 +138,19 @@ func TestTCPOptionsCustomValues(t *testing.T) {
 	}
 
 	// Verify custom TCP options were set
-	if server.options.TCPKeepAlive {
+	if server.GetExportOptions().TCPKeepAlive {
 		t.Error("TCP keep-alive should be false")
 	}
 
-	if server.options.TCPNoDelay {
+	if server.GetExportOptions().TCPNoDelay {
 		t.Error("TCP no-delay should be false")
 	}
 
-	if server.options.SendBufferSize != 1048576 {
-		t.Errorf("Send buffer size should be 1048576, got %d", server.options.SendBufferSize)
+	if server.GetExportOptions().SendBufferSize != 1048576 {
+		t.Errorf("Send buffer size should be 1048576, got %d", server.GetExportOptions().SendBufferSize)
 	}
 
-	if server.options.ReceiveBufferSize != 524288 {
-		t.Errorf("Receive buffer size should be 524288, got %d", server.options.ReceiveBufferSize)
+	if server.GetExportOptions().ReceiveBufferSize != 524288 {
+		t.Errorf("Receive buffer size should be 524288, got %d", server.GetExportOptions().ReceiveBufferSize)
 	}
 }

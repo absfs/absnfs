@@ -27,8 +27,8 @@ type AuthResult struct {
 	Reason  string // Reason for denial (if not allowed)
 }
 
-// ValidateAuthentication validates a client request against export options
-func ValidateAuthentication(ctx *AuthContext, options ExportOptions) *AuthResult {
+// ValidateAuthentication validates a client request against policy options
+func ValidateAuthentication(ctx *AuthContext, policy *PolicyOptions) *AuthResult {
 	result := &AuthResult{
 		Allowed: false,
 		UID:     65534, // Default to nobody
@@ -36,15 +36,15 @@ func ValidateAuthentication(ctx *AuthContext, options ExportOptions) *AuthResult
 	}
 
 	// Step 1: Validate client IP address
-	if len(options.AllowedIPs) > 0 {
-		if !isIPAllowed(ctx.ClientIP, options.AllowedIPs) {
+	if len(policy.AllowedIPs) > 0 {
+		if !isIPAllowed(ctx.ClientIP, policy.AllowedIPs) {
 			result.Reason = fmt.Sprintf("client IP %s not in allowed list", ctx.ClientIP)
 			return result
 		}
 	}
 
 	// Step 2: Validate secure port requirement
-	if options.Secure {
+	if policy.Secure {
 		if ctx.ClientPort >= 1024 {
 			result.Reason = fmt.Sprintf("client port %d is not a privileged port (required when Secure=true)", ctx.ClientPort)
 			return result
@@ -79,7 +79,7 @@ func ValidateAuthentication(ctx *AuthContext, options ExportOptions) *AuthResult
 		result.GID = ctx.AuthSys.GID
 
 		// Step 4: Apply squashing (user mapping)
-		applySquashing(result, ctx.AuthSys, options.Squash)
+		applySquashing(result, ctx.AuthSys, policy.Squash)
 
 	default:
 		// Other authentication flavors are not supported

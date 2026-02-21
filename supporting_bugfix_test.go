@@ -51,7 +51,7 @@ func TestL1_MemoryMonitorRestart(t *testing.T) {
 func TestL2_BatchProcessorStopDrains(t *testing.T) {
 	nfs := createTestNFS(t)
 	defer nfs.Close()
-	nfs.options.BatchOperations = true
+	nfs.UpdateTuningOptions(func(t *TuningOptions) { t.BatchOperations = true })
 
 	bp := NewBatchProcessor(nfs, 100) // large max so batch doesn't auto-fire
 
@@ -439,7 +439,7 @@ func TestR30_MaxLatencySimpleComparison(t *testing.T) {
 func TestR31_BatchProcessorUnlockBeforeGoroutine(t *testing.T) {
 	nfs := createTestNFS(t)
 	defer nfs.Close()
-	nfs.options.BatchOperations = true
+	nfs.UpdateTuningOptions(func(t *TuningOptions) { t.BatchOperations = true })
 
 	// Small delay so timer fires quickly
 	bp := NewBatchProcessor(nfs, 100)

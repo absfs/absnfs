@@ -92,13 +92,13 @@ func TestReadAheadConfiguration(t *testing.T) {
 			}
 
 			// Verify options were set correctly
-			if server.options.EnableReadAhead != tc.enableReadAhead {
+			if server.GetExportOptions().EnableReadAhead != tc.enableReadAhead {
 				t.Errorf("EnableReadAhead not set correctly: got %v, want %v",
-					server.options.EnableReadAhead, tc.enableReadAhead)
+					server.GetExportOptions().EnableReadAhead, tc.enableReadAhead)
 			}
-			if server.options.ReadAheadSize != tc.readAheadSize {
+			if server.GetExportOptions().ReadAheadSize != tc.readAheadSize {
 				t.Errorf("ReadAheadSize not set correctly: got %d, want %d",
-					server.options.ReadAheadSize, tc.readAheadSize)
+					server.GetExportOptions().ReadAheadSize, tc.readAheadSize)
 			}
 
 			// Get test file node
@@ -347,13 +347,13 @@ func TestCacheSizeControlConfiguration(t *testing.T) {
 			}
 
 			// Verify options were set correctly
-			if server.options.ReadAheadMaxFiles != tc.readAheadMaxFiles {
+			if server.GetExportOptions().ReadAheadMaxFiles != tc.readAheadMaxFiles {
 				t.Errorf("ReadAheadMaxFiles not set correctly: got %d, want %d",
-					server.options.ReadAheadMaxFiles, tc.readAheadMaxFiles)
+					server.GetExportOptions().ReadAheadMaxFiles, tc.readAheadMaxFiles)
 			}
-			if server.options.ReadAheadMaxMemory != tc.readAheadMaxMemory {
+			if server.GetExportOptions().ReadAheadMaxMemory != tc.readAheadMaxMemory {
 				t.Errorf("ReadAheadMaxMemory not set correctly: got %d, want %d",
-					server.options.ReadAheadMaxMemory, tc.readAheadMaxMemory)
+					server.GetExportOptions().ReadAheadMaxMemory, tc.readAheadMaxMemory)
 			}
 
 			// Access files to fill cache

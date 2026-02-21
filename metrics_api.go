@@ -65,7 +65,7 @@ func (n *AbsfsNFS) RecordOperationStart(opType string) func(err error) {
 
 			// This is a simplified example - in a real implementation, you would
 			// examine the error to determine its type more precisely
-			if n.options.ReadOnly && opType == "WRITE" {
+			if n.policy.Load().ReadOnly && opType == "WRITE" {
 				errorType = "ACCESS"
 			} else if isStaleFileHandle(err) {
 				errorType = "STALE"

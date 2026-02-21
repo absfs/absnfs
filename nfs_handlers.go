@@ -50,12 +50,11 @@ var nfsHandlers = map[uint32]nfsHandler{
 	NFSPROC3_LINK:        (*NFSProcedureHandler).handleLink,
 }
 
-// HandleCall processes an NFS RPC call and returns a reply
+// HandleCall processes an NFS RPC call and returns a reply.
+// It snapshots options at entry, tracks in-flight requests for drain-and-swap,
+// and rejects new requests during a policy drain.
 func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx *AuthContext) (*RPCReply, error) {
-	// Create context with timeout using server's configured timeout
-	timeout := h.server.handler.options.Timeouts.DefaultTimeout
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	handler := h.server.handler
 
 	reply := &RPCReply{
 		Header:       call.Header,
@@ -67,17 +66,41 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 		},
 	}
 
-	// Validate authentication
-	authResult := ValidateAuthentication(authCtx, h.server.handler.options)
+	// Reject during drain phase (policy swap in progress)
+	if handler.draining.Load() {
+		reply.AcceptStatus = SYSTEM_ERR
+		return reply, nil
+	}
+
+	// Track in-flight request for drain-and-swap
+	handler.inflight.Add(1)
+	defer handler.inflight.Done()
+
+	// Double-check drain after Add (prevents race with drain start)
+	if handler.draining.Load() {
+		// Return NFSERR_DELAY so clients retry
+		reply.AcceptStatus = SYSTEM_ERR
+		return reply, nil
+	}
+
+	// Snapshot options for this request
+	opts := handler.snapshotOptions()
+
+	// Create context with timeout using snapshotted timeout
+	timeout := opts.Tuning.Timeouts.DefaultTimeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Validate authentication using policy snapshot
+	authResult := ValidateAuthentication(authCtx, opts.Policy)
 	if !authResult.Allowed {
 		reply.Status = MSG_DENIED
 		if h.server.options.Debug {
 			h.server.logger.Printf("Authentication denied: %s (client: %s:%d, flavor: %d)",
 				authResult.Reason, authCtx.ClientIP, authCtx.ClientPort, authCtx.Credential.Flavor)
 		}
-		// Increment auth failure metric if available
-		if h.server.handler.metrics != nil {
-			h.server.handler.metrics.RecordError("AUTH")
+		if handler.metrics != nil {
+			handler.metrics.RecordError("AUTH")
 		}
 		return reply, nil
 	}
@@ -89,14 +112,12 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 	replyChan := make(chan *RPCReply, 1)
 
 	go func() {
-		// Check if context is already cancelled before starting work
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
 
-		// Debug logging for all incoming calls
 		if h.server.options.Debug {
 			h.server.logger.Printf("HandleCall: prog=%d vers=%d proc=%d",
 				call.Header.Program, call.Header.Version, call.Header.Procedure)
@@ -112,7 +133,6 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 			result, err = h.handleNFSCall(call, body, reply, authCtx)
 		default:
 			reply.AcceptStatus = PROG_UNAVAIL
-			// Check context before sending
 			select {
 			case <-ctx.Done():
 				return
@@ -122,14 +142,12 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 		}
 
 		if err != nil {
-			// Convert error to appropriate RPC accept status
 			switch err := err.(type) {
 			case *RPCError:
 				reply.AcceptStatus = err.Status
 			default:
 				reply.AcceptStatus = SYSTEM_ERR
 			}
-			// Check context before sending
 			select {
 			case <-ctx.Done():
 				return
@@ -137,7 +155,6 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 			}
 			return
 		}
-		// Check context before sending result
 		select {
 		case <-ctx.Done():
 			return

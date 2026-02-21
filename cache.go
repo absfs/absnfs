@@ -85,7 +85,7 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) (*NFSAttrs, bool) {
 				s.RecordNegativeCacheHit()
 
 				// Log negative cache hit if debug logging is enabled
-				if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+				if s.structuredLogger != nil && s.tuning.Load().Log != nil && s.tuning.Load().Log.Level == "debug" {
 					s.structuredLogger.Debug("negative cache hit",
 						LogField{Key: "path", Value: path})
 				}
@@ -121,7 +121,7 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) (*NFSAttrs, bool) {
 			s.RecordAttrCacheHit()
 
 			// Log cache hit if debug logging is enabled
-			if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+			if s.structuredLogger != nil && s.tuning.Load().Log != nil && s.tuning.Load().Log.Level == "debug" {
 				s.structuredLogger.Debug("attribute cache hit",
 					LogField{Key: "path", Value: path})
 			}
@@ -136,7 +136,7 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) (*NFSAttrs, bool) {
 		s.RecordAttrCacheMiss()
 
 		// Log cache miss if debug logging is enabled
-		if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+		if s.structuredLogger != nil && s.tuning.Load().Log != nil && s.tuning.Load().Log.Level == "debug" {
 			s.structuredLogger.Debug("attribute cache miss",
 				LogField{Key: "path", Value: path})
 		}
@@ -626,7 +626,7 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int, server ...*
 			s.RecordReadAheadMiss()
 
 			// Log cache miss if debug logging is enabled
-			if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+			if s.structuredLogger != nil && s.tuning.Load().Log != nil && s.tuning.Load().Log.Level == "debug" {
 				s.structuredLogger.Debug("read-ahead cache miss",
 					LogField{Key: "path", Value: path},
 					LogField{Key: "offset", Value: offset},
@@ -658,7 +658,7 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int, server ...*
 			s.RecordReadAheadMiss()
 
 			// Log cache miss if debug logging is enabled
-			if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+			if s.structuredLogger != nil && s.tuning.Load().Log != nil && s.tuning.Load().Log.Level == "debug" {
 				s.structuredLogger.Debug("read-ahead cache miss: out of range",
 					LogField{Key: "path", Value: path},
 					LogField{Key: "offset", Value: offset},
@@ -706,7 +706,7 @@ func (b *ReadAheadBuffer) Read(path string, offset int64, count int, server ...*
 		s.RecordReadAheadHit()
 
 		// Log cache hit if debug logging is enabled
-		if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+		if s.structuredLogger != nil && s.tuning.Load().Log != nil && s.tuning.Load().Log.Level == "debug" {
 			s.structuredLogger.Debug("read-ahead cache hit",
 				LogField{Key: "path", Value: path},
 				LogField{Key: "offset", Value: offset},

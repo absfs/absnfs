@@ -117,13 +117,15 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 		return nil, fmt.Errorf("empty path")
 	}
 
+	tuning := s.tuning.Load()
+
 	// Create context with timeout
-	timeout := s.options.Timeouts.LookupTimeout
+	timeout := tuning.Timeouts.LookupTimeout
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Log operation if enabled
-	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogOperations {
+	if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogOperations {
 		startTime := time.Now()
 		defer func() {
 			duration := time.Since(startTime)
@@ -317,13 +319,15 @@ func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset in
 		return nil, fmt.Errorf("negative count")
 	}
 
+	tuning := s.tuning.Load()
+
 	// Create context with timeout
-	timeout := s.options.Timeouts.ReadTimeout
+	timeout := tuning.Timeouts.ReadTimeout
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Log operation if enabled
-	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogOperations {
+	if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogOperations {
 		startTime := time.Now()
 		defer func() {
 			duration := time.Since(startTime)
@@ -346,8 +350,8 @@ func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset in
 	}
 
 	// Limit the read size to TransferSize if it exceeds the configured limit
-	if count > int64(s.options.TransferSize) {
-		count = int64(s.options.TransferSize)
+	if count > int64(tuning.TransferSize) {
+		count = int64(tuning.TransferSize)
 	}
 
 	// Try read-ahead buffer first if enabled
@@ -367,7 +371,7 @@ func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset in
 	}
 	// Check if we should use batch processing while still holding the lock
 	// This prevents a race where the handle could be removed after we release the lock
-	if fileHandle != 0 && s.options.BatchOperations && s.batchProc != nil {
+	if fileHandle != 0 && tuning.BatchOperations && s.batchProc != nil {
 		// Verify handle still exists in map before using it
 		if _, exists := s.fileMap.handles[fileHandle]; exists {
 			useBatch = true
@@ -419,8 +423,8 @@ func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset in
 	}
 
 	// Only attempt read-ahead if enabled and we got all requested data and there's more to read
-	if s.options.EnableReadAhead && err != io.EOF && n == int(count) && offset+count < info.Size() {
-		readAheadSize := int64(s.options.ReadAheadSize)
+	if tuning.EnableReadAhead && err != io.EOF && n == int(count) && offset+count < info.Size() {
+		readAheadSize := int64(tuning.ReadAheadSize)
 		readAheadRemaining := info.Size() - (offset + count)
 		if readAheadSize > readAheadRemaining {
 			readAheadSize = readAheadRemaining
@@ -461,8 +465,11 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 		return 0, fmt.Errorf("nil data")
 	}
 
-	if s.options.ReadOnly {
-		if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogOperations {
+	tuning := s.tuning.Load()
+	policy := s.policy.Load()
+
+	if policy.ReadOnly {
+		if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogOperations {
 			s.structuredLogger.Warn("WRITE operation denied: read-only mode",
 				LogField{Key: "path", Value: node.path})
 		}
@@ -470,12 +477,12 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 	}
 
 	// Create context with timeout
-	timeout := s.options.Timeouts.WriteTimeout
+	timeout := tuning.Timeouts.WriteTimeout
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Log operation if enabled
-	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogOperations {
+	if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogOperations {
 		startTime := time.Now()
 		defer func() {
 			duration := time.Since(startTime)
@@ -499,8 +506,8 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 
 	// Limit the write size to TransferSize if it exceeds the configured limit
 	dataLength := len(data)
-	if dataLength > s.options.TransferSize {
-		data = data[:s.options.TransferSize]
+	if dataLength > tuning.TransferSize {
+		data = data[:tuning.TransferSize]
 	}
 
 	// Get the file handle for this node and use batch processing if enabled
@@ -515,7 +522,7 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 	}
 	// Check if we should use batch processing while still holding the lock
 	// This prevents a race where the handle could be removed after we release the lock
-	if fileHandle != 0 && s.options.BatchOperations && s.batchProc != nil {
+	if fileHandle != 0 && tuning.BatchOperations && s.batchProc != nil {
 		// Verify handle still exists in map before using it
 		if _, exists := s.fileMap.handles[fileHandle]; exists {
 			useBatch = true
@@ -611,8 +618,11 @@ func (s *AbsfsNFS) CreateWithContext(ctx context.Context, dir *NFSNode, name str
 		return nil, fmt.Errorf("nil attrs")
 	}
 
-	if s.options.ReadOnly {
-		if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogFileAccess {
+	tuning := s.tuning.Load()
+	policy := s.policy.Load()
+
+	if policy.ReadOnly {
+		if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogFileAccess {
 			s.structuredLogger.Warn("CREATE operation denied: read-only mode",
 				LogField{Key: "dir", Value: dir.path},
 				LogField{Key: "name", Value: name})
@@ -621,12 +631,12 @@ func (s *AbsfsNFS) CreateWithContext(ctx context.Context, dir *NFSNode, name str
 	}
 
 	// Create context with timeout
-	timeout := s.options.Timeouts.CreateTimeout
+	timeout := tuning.Timeouts.CreateTimeout
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Log operation if enabled
-	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogFileAccess {
+	if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogFileAccess {
 		startTime := time.Now()
 		defer func() {
 			duration := time.Since(startTime)
@@ -691,8 +701,11 @@ func (s *AbsfsNFS) RemoveWithContext(ctx context.Context, dir *NFSNode, name str
 		return fmt.Errorf("empty name")
 	}
 
-	if s.options.ReadOnly {
-		if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogFileAccess {
+	tuning := s.tuning.Load()
+	policy := s.policy.Load()
+
+	if policy.ReadOnly {
+		if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogFileAccess {
 			s.structuredLogger.Warn("REMOVE operation denied: read-only mode",
 				LogField{Key: "dir", Value: dir.path},
 				LogField{Key: "name", Value: name})
@@ -701,12 +714,12 @@ func (s *AbsfsNFS) RemoveWithContext(ctx context.Context, dir *NFSNode, name str
 	}
 
 	// Create context with timeout
-	timeout := s.options.Timeouts.RemoveTimeout
+	timeout := tuning.Timeouts.RemoveTimeout
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Log operation if enabled
-	if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.LogFileAccess {
+	if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogFileAccess {
 		startTime := time.Now()
 		defer func() {
 			duration := time.Since(startTime)
@@ -760,12 +773,15 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 		return fmt.Errorf("empty name")
 	}
 
-	if s.options.ReadOnly {
+	tuning := s.tuning.Load()
+	policy := s.policy.Load()
+
+	if policy.ReadOnly {
 		return os.ErrPermission
 	}
 
 	// Create context with timeout
-	timeout := s.options.Timeouts.RenameTimeout
+	timeout := tuning.Timeouts.RenameTimeout
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -820,8 +836,10 @@ func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFS
 		return nil, fmt.Errorf("nil directory node")
 	}
 
+	tuning := s.tuning.Load()
+
 	// Create context with timeout
-	timeout := s.options.Timeouts.ReaddirTimeout
+	timeout := tuning.Timeouts.ReaddirTimeout
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -847,7 +865,7 @@ func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFS
 			}
 
 			// Log cache hit if debug logging is enabled
-			if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+			if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.Level == "debug" {
 				s.structuredLogger.Debug("directory cache hit",
 					LogField{Key: "path", Value: dir.path})
 			}
@@ -881,7 +899,7 @@ func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFS
 		}
 
 		// Log cache miss if debug logging is enabled
-		if s.structuredLogger != nil && s.options.Log != nil && s.options.Log.Level == "debug" {
+		if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.Level == "debug" {
 			s.structuredLogger.Debug("directory cache miss",
 				LogField{Key: "path", Value: dir.path})
 		}
@@ -994,7 +1012,7 @@ func (s *AbsfsNFS) Export(mountPath string, port int) error {
 		Name:     "absfs",
 		UID:      0,
 		GID:      0,
-		ReadOnly: s.options.ReadOnly,
+		ReadOnly: s.policy.Load().ReadOnly,
 		Port:     port,
 		Hostname: "localhost",
 	})
@@ -1021,7 +1039,7 @@ func (s *AbsfsNFS) Symlink(dir *NFSNode, name string, target string, attrs *NFSA
 		return nil, fmt.Errorf("nil attrs")
 	}
 
-	if s.options.ReadOnly {
+	if s.policy.Load().ReadOnly {
 		return nil, os.ErrPermission
 	}
 

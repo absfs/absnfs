@@ -65,13 +65,13 @@ func TestAttrCacheConfiguration(t *testing.T) {
 			}
 
 			// Verify options were set correctly in the server options
-			if server.options.AttrCacheTimeout != tc.expectedTimeout {
+			if server.GetExportOptions().AttrCacheTimeout != tc.expectedTimeout {
 				t.Errorf("AttrCacheTimeout not set correctly: got %v, want %v",
-					server.options.AttrCacheTimeout, tc.expectedTimeout)
+					server.GetExportOptions().AttrCacheTimeout, tc.expectedTimeout)
 			}
-			if server.options.AttrCacheSize != tc.expectedSize {
+			if server.GetExportOptions().AttrCacheSize != tc.expectedSize {
 				t.Errorf("AttrCacheSize not set correctly: got %d, want %d",
-					server.options.AttrCacheSize, tc.expectedSize)
+					server.GetExportOptions().AttrCacheSize, tc.expectedSize)
 			}
 
 			// Verify the attribute cache was created with the correct values

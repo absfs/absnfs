@@ -89,7 +89,11 @@ func (s *Server) SetHandler(handler *AbsfsNFS) {
 // It supports both individual IPs (e.g., "192.168.1.100") and CIDR notation (e.g., "192.168.1.0/24")
 func (s *Server) isIPAllowed(clientIP string) bool {
 	// If no handler or AllowedIPs is empty/nil, allow all IPs
-	if s.handler == nil || len(s.handler.options.AllowedIPs) == 0 {
+	if s.handler == nil {
+		return true
+	}
+	policy := s.handler.policy.Load()
+	if len(policy.AllowedIPs) == 0 {
 		return true
 	}
 
@@ -101,7 +105,7 @@ func (s *Server) isIPAllowed(clientIP string) bool {
 	}
 
 	// Check against each allowed IP/subnet
-	for _, allowedIP := range s.handler.options.AllowedIPs {
+	for _, allowedIP := range policy.AllowedIPs {
 		// Check if it's a CIDR notation
 		if strings.Contains(allowedIP, "/") {
 			_, ipNet, err := net.ParseCIDR(allowedIP)
@@ -135,29 +139,31 @@ func (s *Server) registerConnection(conn net.Conn) bool {
 		return true // If no handler, always allow connections
 	}
 
+	tuning := s.handler.tuning.Load()
+
 	s.connMutex.Lock()
 	defer s.connMutex.Unlock()
 
 	// Check if we're at the connection limit
-	if s.handler.options.MaxConnections > 0 && s.connCount >= s.handler.options.MaxConnections {
+	if tuning.MaxConnections > 0 && s.connCount >= tuning.MaxConnections {
 		// We're at the limit, reject this connection
 		if s.options.Debug {
-			s.logger.Printf("Connection limit reached (%d), rejecting new connection", s.handler.options.MaxConnections)
+			s.logger.Printf("Connection limit reached (%d), rejecting new connection", tuning.MaxConnections)
 		}
 
 		// Log structured message
 		if s.handler.structuredLogger != nil {
-			if s.handler.options.Log != nil && s.handler.options.Log.LogClientIPs {
+			if tuning.Log != nil && tuning.Log.LogClientIPs {
 				clientAddr := ""
 				if conn != nil && conn.RemoteAddr() != nil {
 					clientAddr = conn.RemoteAddr().String()
 				}
 				s.handler.structuredLogger.Warn("connection limit reached",
-					LogField{Key: "limit", Value: s.handler.options.MaxConnections},
+					LogField{Key: "limit", Value: tuning.MaxConnections},
 					LogField{Key: "client_addr", Value: clientAddr})
 			} else {
 				s.handler.structuredLogger.Warn("connection limit reached",
-					LogField{Key: "limit", Value: s.handler.options.MaxConnections})
+					LogField{Key: "limit", Value: tuning.MaxConnections})
 			}
 		}
 
@@ -176,7 +182,7 @@ func (s *Server) registerConnection(conn net.Conn) bool {
 
 	// Log structured message
 	if s.handler.structuredLogger != nil {
-		if s.handler.options.Log != nil && s.handler.options.Log.LogClientIPs {
+		if tuning.Log != nil && tuning.Log.LogClientIPs {
 			clientAddr := ""
 			if conn != nil && conn.RemoteAddr() != nil {
 				clientAddr = conn.RemoteAddr().String()
@@ -220,7 +226,8 @@ func (s *Server) unregisterConnection(conn net.Conn) {
 
 			// Log structured message
 			if s.handler != nil && s.handler.structuredLogger != nil {
-				if s.handler.options.Log != nil && s.handler.options.Log.LogClientIPs {
+				tuning := s.handler.tuning.Load()
+				if tuning.Log != nil && tuning.Log.LogClientIPs {
 					clientAddr := ""
 					if conn != nil && conn.RemoteAddr() != nil {
 						clientAddr = conn.RemoteAddr().String()
@@ -250,13 +257,17 @@ func (s *Server) updateConnectionActivity(conn net.Conn) {
 
 // cleanupIdleConnections closes connections that have been idle for too long
 func (s *Server) cleanupIdleConnections() {
-	if s.handler == nil || s.handler.options.IdleTimeout <= 0 {
-		return // No handler or idle timeout not set
+	if s.handler == nil {
+		return // No handler
+	}
+	tuning := s.handler.tuning.Load()
+	if tuning.IdleTimeout <= 0 {
+		return // Idle timeout not set
 	}
 
 	s.connMutex.Lock()
 	now := time.Now()
-	idleTimeout := s.handler.options.IdleTimeout
+	idleTimeout := tuning.IdleTimeout
 
 	// Collect idle connections while holding the lock
 	var idleConns []net.Conn
@@ -284,11 +295,14 @@ func (s *Server) idleConnectionCleanupLoop() {
 	// Default check interval is 1 minute or IdleTimeout/2, whichever is shorter
 	checkInterval := 1 * time.Minute
 
-	if s.handler != nil && s.handler.options.IdleTimeout > 0 {
-		// Use half the idle timeout as a reasonable check interval
-		halfTimeout := s.handler.options.IdleTimeout / 2
-		if halfTimeout < checkInterval {
-			checkInterval = halfTimeout
+	if s.handler != nil {
+		tuning := s.handler.tuning.Load()
+		if tuning.IdleTimeout > 0 {
+			// Use half the idle timeout as a reasonable check interval
+			halfTimeout := tuning.IdleTimeout / 2
+			if halfTimeout < checkInterval {
+				checkInterval = halfTimeout
+			}
 		}
 	}
 
@@ -310,8 +324,11 @@ func (s *Server) Listen() error {
 		return fmt.Errorf("no handler set")
 	}
 
+	tuning := s.handler.tuning.Load()
+	policy := s.handler.policy.Load()
+
 	// Start periodic idle connection cleanup if needed
-	if s.handler.options.IdleTimeout > 0 {
+	if tuning.IdleTimeout > 0 {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
@@ -320,7 +337,7 @@ func (s *Server) Listen() error {
 
 		if s.options.Debug {
 			s.logger.Printf("Connection management enabled (max connections: %d, idle timeout: %v)",
-				s.handler.options.MaxConnections, s.handler.options.IdleTimeout)
+				tuning.MaxConnections, tuning.IdleTimeout)
 		}
 	}
 
@@ -331,9 +348,9 @@ func (s *Server) Listen() error {
 	var listener net.Listener
 	var err error
 
-	if s.handler.options.TLS != nil && s.handler.options.TLS.Enabled {
+	if policy.TLS != nil && policy.TLS.Enabled {
 		// Build TLS configuration
-		tlsConfig, err := s.handler.options.TLS.BuildConfig()
+		tlsConfig, err := policy.TLS.BuildConfig()
 		if err != nil {
 			return fmt.Errorf("failed to build TLS config: %w", err)
 		}
@@ -353,11 +370,11 @@ func (s *Server) Listen() error {
 
 		s.logger.Printf("TLS enabled on %s (MinVersion: %s, MaxVersion: %s, ClientAuth: %s)",
 			addr,
-			TLSVersionString(s.handler.options.TLS.MinVersion),
-			TLSVersionString(s.handler.options.TLS.MaxVersion),
-			s.handler.options.TLS.GetClientAuthString())
+			TLSVersionString(policy.TLS.MinVersion),
+			TLSVersionString(policy.TLS.MaxVersion),
+			policy.TLS.GetClientAuthString())
 
-		if s.handler.options.TLS.InsecureSkipVerify {
+		if policy.TLS.InsecureSkipVerify {
 			s.logger.Printf("WARNING: TLS verification disabled (InsecureSkipVerify=true)")
 		}
 	} else {
@@ -516,7 +533,8 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 
 				// Log structured message
 				if s.handler != nil && s.handler.structuredLogger != nil {
-					if s.handler.options.Log != nil && s.handler.options.Log.LogClientIPs {
+					tuning := s.handler.tuning.Load()
+					if tuning.Log != nil && tuning.Log.LogClientIPs {
 						s.handler.structuredLogger.Warn("connection rejected: IP not allowed",
 							LogField{Key: "client_ip", Value: clientIP})
 					} else {
@@ -537,8 +555,10 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 
 			// Configure TCP connection options if this is a TCP connection
 			if tcpConn, ok := conn.(*net.TCPConn); ok && s.handler != nil {
+				tuning := s.handler.tuning.Load()
+
 				// Apply TCP keepalive setting
-				if s.handler.options.TCPKeepAlive {
+				if tuning.TCPKeepAlive {
 					if err := tcpConn.SetKeepAlive(true); err != nil {
 						s.logger.Printf("Warning: failed to set TCP keepalive: %v", err)
 					}
@@ -548,31 +568,31 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 				}
 
 				// Apply TCP no delay setting (disable Nagle's algorithm)
-				if s.handler.options.TCPNoDelay {
+				if tuning.TCPNoDelay {
 					if err := tcpConn.SetNoDelay(true); err != nil {
 						s.logger.Printf("Warning: failed to set TCP no delay: %v", err)
 					}
 				}
 
 				// Apply buffer sizes
-				if s.handler.options.SendBufferSize > 0 {
-					if err := tcpConn.SetWriteBuffer(s.handler.options.SendBufferSize); err != nil {
+				if tuning.SendBufferSize > 0 {
+					if err := tcpConn.SetWriteBuffer(tuning.SendBufferSize); err != nil {
 						s.logger.Printf("Warning: failed to set send buffer size: %v", err)
 					}
 				}
 
-				if s.handler.options.ReceiveBufferSize > 0 {
-					if err := tcpConn.SetReadBuffer(s.handler.options.ReceiveBufferSize); err != nil {
+				if tuning.ReceiveBufferSize > 0 {
+					if err := tcpConn.SetReadBuffer(tuning.ReceiveBufferSize); err != nil {
 						s.logger.Printf("Warning: failed to set receive buffer size: %v", err)
 					}
 				}
 
 				if s.options.Debug {
 					s.logger.Printf("Configured TCP connection (keepalive: %v, nodelay: %v, sendbuf: %d, recvbuf: %d)",
-						s.handler.options.TCPKeepAlive,
-						s.handler.options.TCPNoDelay,
-						s.handler.options.SendBufferSize,
-						s.handler.options.ReceiveBufferSize)
+						tuning.TCPKeepAlive,
+						tuning.TCPNoDelay,
+						tuning.SendBufferSize,
+						tuning.ReceiveBufferSize)
 				}
 			}
 
@@ -654,7 +674,8 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 			}
 
 			// Check rate limit before processing request
-			if s.handler != nil && s.handler.rateLimiter != nil && s.handler.options.EnableRateLimiting {
+			policy := s.handler.policy.Load()
+			if s.handler != nil && s.handler.rateLimiter != nil && policy.EnableRateLimiting {
 				if !s.handler.rateLimiter.AllowRequest(authCtx.ClientIP, connID) {
 					// Rate limit exceeded - send error reply
 					reply := &RPCReply{
@@ -672,7 +693,8 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 
 					// Log structured message
 					if s.handler.structuredLogger != nil {
-						if s.handler.options.Log != nil && s.handler.options.Log.LogClientIPs {
+						tuning := s.handler.tuning.Load()
+						if tuning.Log != nil && tuning.Log.LogClientIPs {
 							s.handler.structuredLogger.Warn("rate limit exceeded",
 								LogField{Key: "client_ip", Value: authCtx.ClientIP})
 						} else {
@@ -861,7 +883,8 @@ func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *N
 			}
 
 			// Check rate limit
-			if s.handler != nil && s.handler.rateLimiter != nil && s.handler.options.EnableRateLimiting {
+			policy := s.handler.policy.Load()
+			if s.handler != nil && s.handler.rateLimiter != nil && policy.EnableRateLimiting {
 				if !s.handler.rateLimiter.AllowRequest(authCtx.ClientIP, connID) {
 					reply := &RPCReply{
 						Header: call.Header,

@@ -36,12 +36,12 @@ func TestConnectionManagementDefaults(t *testing.T) {
 	defer nfs.Close()
 
 	// Verify that connection management options are set to their default values
-	if nfs.options.MaxConnections != 100 {
-		t.Errorf("Expected MaxConnections to default to 100, got %d", nfs.options.MaxConnections)
+	if nfs.GetExportOptions().MaxConnections != 100 {
+		t.Errorf("Expected MaxConnections to default to 100, got %d", nfs.GetExportOptions().MaxConnections)
 	}
 
-	if nfs.options.IdleTimeout != 5*time.Minute {
-		t.Errorf("Expected IdleTimeout to default to 5 minutes, got %v", nfs.options.IdleTimeout)
+	if nfs.GetExportOptions().IdleTimeout != 5*time.Minute {
+		t.Errorf("Expected IdleTimeout to default to 5 minutes, got %v", nfs.GetExportOptions().IdleTimeout)
 	}
 }
 
@@ -65,12 +65,12 @@ func TestConnectionManagementCustomValues(t *testing.T) {
 	defer nfs.Close()
 
 	// Verify that connection management options are preserved with custom values
-	if nfs.options.MaxConnections != 50 {
-		t.Errorf("Expected MaxConnections to be 50, got %d", nfs.options.MaxConnections)
+	if nfs.GetExportOptions().MaxConnections != 50 {
+		t.Errorf("Expected MaxConnections to be 50, got %d", nfs.GetExportOptions().MaxConnections)
 	}
 
-	if nfs.options.IdleTimeout != 2*time.Minute {
-		t.Errorf("Expected IdleTimeout to be 2 minutes, got %v", nfs.options.IdleTimeout)
+	if nfs.GetExportOptions().IdleTimeout != 2*time.Minute {
+		t.Errorf("Expected IdleTimeout to be 2 minutes, got %v", nfs.GetExportOptions().IdleTimeout)
 	}
 }
 

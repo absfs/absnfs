@@ -135,13 +135,15 @@ func TestCacheReductionCalculation(t *testing.T) {
 
 	// Mock memory pressure state
 	monitor.stats.usageFraction = 0.9 // 90% used
-	server.options.MemoryHighWatermark = 0.8
-	server.options.MemoryLowWatermark = 0.6
+	server.UpdateTuningOptions(func(t *TuningOptions) {
+		t.MemoryHighWatermark = 0.8
+		t.MemoryLowWatermark = 0.6
+	})
 
 	// Store initial cache sizes
 	initialAttrCacheSize := server.GetAttrCacheSize()
-	initialReadAheadMaxFiles := server.options.ReadAheadMaxFiles
-	initialReadAheadMaxMemory := server.options.ReadAheadMaxMemory
+	initialReadAheadMaxFiles := server.GetExportOptions().ReadAheadMaxFiles
+	initialReadAheadMaxMemory := server.GetExportOptions().ReadAheadMaxMemory
 
 	// Simulate memory pressure reduction
 	// This should reduce cache sizes

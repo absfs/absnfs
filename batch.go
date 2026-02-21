@@ -66,7 +66,7 @@ func NewBatchProcessor(nfs *AbsfsNFS, maxSize int) *BatchProcessor {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	bp := &BatchProcessor{
-		enabled:   nfs.options.BatchOperations,
+		enabled:   nfs.tuning.Load().BatchOperations,
 		maxSize:   maxSize,
 		delay:     10 * time.Millisecond, // 10ms max delay for batching
 		batches:   make(map[BatchType]*Batch),
@@ -291,7 +291,7 @@ func (bp *BatchProcessor) processWriteBatch(batch *Batch) {
 		}
 
 		// Check if the server is in read-only mode
-		if bp.processor.options.ReadOnly {
+		if bp.processor.policy.Load().ReadOnly {
 			for _, req := range requests {
 				req.ResultChan <- &BatchResult{
 					Error:  os.ErrPermission,

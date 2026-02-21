@@ -281,7 +281,7 @@ func TestAuthenticationEnforcement(t *testing.T) {
 		}
 
 		// Validate authentication
-		authResult := ValidateAuthentication(authCtx, fs.options)
+		authResult := ValidateAuthentication(authCtx, fs.policy.Load())
 
 		if !authResult.Allowed {
 			t.Errorf("Expected authentication to be allowed")
@@ -328,7 +328,7 @@ func TestAuthenticationEnforcement(t *testing.T) {
 		}
 
 		// Validate authentication
-		authResult := ValidateAuthentication(authCtx, fs.options)
+		authResult := ValidateAuthentication(authCtx, fs.policy.Load())
 
 		if !authResult.Allowed {
 			t.Errorf("Expected authentication to be allowed")
