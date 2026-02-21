@@ -62,8 +62,12 @@ func encodeFileAttributes(w io.Writer, attrs *NFSAttrs) error {
 	if err := xdrEncodeUint32(w, uint32(mode.Perm())); err != nil {
 		return err
 	}
-	// nlink - number of hard links (always 1 for now)
-	if err := xdrEncodeUint32(w, 1); err != nil {
+	// nlink - number of hard links (at least 2 for directories per POSIX: "." and "..")
+	nlink := uint32(1)
+	if ftype == NF3DIR {
+		nlink = 2
+	}
+	if err := xdrEncodeUint32(w, nlink); err != nil {
 		return err
 	}
 	// uid - owner user id

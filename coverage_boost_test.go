@@ -568,7 +568,7 @@ func TestIsChildOf(t *testing.T) {
 		expected bool
 	}{
 		{"/foo/bar", "/foo", true},
-		{"/foo/bar/baz", "/foo", true},
+		{"/foo/bar/baz", "/foo", false}, // grandchild, not direct child
 		{"/foo", "/foo", false},
 		{"/foobar", "/foo", false},
 		{"/bar/foo", "/foo", false},
@@ -3830,12 +3830,12 @@ func TestCacheUpdateAccessLog(t *testing.T) {
 
 	// Access some entries to update access log
 	for i := 0; i < 5; i++ {
-		cache.Get("/access"+string(rune('a'+i))+".txt", nil)
+		_, _ = cache.Get("/access"+string(rune('a'+i))+".txt", nil)
 	}
 
 	// Access same entries again
 	for i := 0; i < 5; i++ {
-		cache.Get("/access"+string(rune('a'+i))+".txt", nil)
+		_, _ = cache.Get("/access"+string(rune('a'+i))+".txt", nil)
 	}
 }
 
@@ -4146,7 +4146,7 @@ func TestCacheAccessPatternsCoverage(t *testing.T) {
 
 	// Access middle entries
 	for i := 2; i < 4; i++ {
-		cache.Get("/cap"+string(rune('a'+i))+".txt", nil)
+		_, _ = cache.Get("/cap"+string(rune('a'+i))+".txt", nil)
 	}
 
 	// Add more entries to trigger eviction

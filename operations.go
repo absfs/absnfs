@@ -143,7 +143,11 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 	}
 
 	// Check cache first (including negative cache)
-	if attrs := s.attrCache.Get(path, s); attrs != nil {
+	if attrs, found := s.attrCache.Get(path, s); found {
+		if attrs == nil {
+			// Negative cache hit: path confirmed non-existent
+			return nil, fmt.Errorf("lookup: failed to stat %s: %w", path, os.ErrNotExist)
+		}
 		node := &NFSNode{
 			SymlinkFileSystem: s.fs,
 			path:              path,
@@ -201,7 +205,7 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 	}
 
 	// Check cache first
-	if attrs := s.attrCache.Get(node.path); attrs != nil && attrs.IsValid() {
+	if attrs, found := s.attrCache.Get(node.path); found && attrs != nil && attrs.IsValid() {
 		return attrs, nil
 	}
 
@@ -259,7 +263,7 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 	currentAtime := node.attrs.Atime()
 	node.mu.RUnlock()
 
-	if attrs.Mode != currentMode {
+	if attrs.Mode&os.ModePerm != currentMode&os.ModePerm {
 		if err := s.fs.Chmod(node.path, attrs.Mode); err != nil {
 			return fmt.Errorf("setattr: chmod failed: %w", err)
 		}
@@ -929,7 +933,7 @@ func (s *AbsfsNFS) ReadDirPlus(dir *NFSNode) ([]*NFSNode, error) {
 
 	// Pre-cache attributes for all entries
 	for _, node := range nodes {
-		if attrs := s.attrCache.Get(node.path); attrs == nil || !attrs.IsValid() {
+		if attrs, found := s.attrCache.Get(node.path); !found || attrs == nil || !attrs.IsValid() {
 			info, err := s.fs.Stat(node.path)
 			if err != nil {
 				continue

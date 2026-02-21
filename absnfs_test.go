@@ -570,7 +570,7 @@ func TestAbsfsNFSClose(t *testing.T) {
 		// Verify caches were cleared by checking if we can add new items
 		// (This indirectly verifies Clear() was called)
 		nfs.attrCache.Put("/new", &NFSAttrs{Mode: 0644})
-		if attrs := nfs.attrCache.Get("/new"); attrs == nil {
+		if attrs, _ := nfs.attrCache.Get("/new"); attrs == nil {
 			t.Error("Attribute cache should be functional after Close()")
 		}
 
@@ -713,7 +713,7 @@ func TestAbsfsNFSClose(t *testing.T) {
 		// We verify by checking that old entries are gone
 		for i := 0; i < 100; i++ {
 			path := fmt.Sprintf("/path%d", i)
-			if attrs := nfs.attrCache.Get(path); attrs != nil && attrs.IsValid() {
+			if attrs, _ := nfs.attrCache.Get(path); attrs != nil && attrs.IsValid() {
 				t.Errorf("Attribute cache entry %s still exists after Close()", path)
 			}
 		}

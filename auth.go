@@ -52,7 +52,10 @@ func ValidateAuthentication(ctx *AuthContext, options ExportOptions) *AuthResult
 	// Step 3: Validate credential flavor
 	switch ctx.Credential.Flavor {
 	case AUTH_NONE:
-		// AUTH_NONE is always accepted but uses nobody/nobody
+		// AUTH_NONE is intentionally accepted per standard NFS server behavior.
+		// NFS servers commonly accept AUTH_NONE for public/shared exports where
+		// authentication is not required. The client is mapped to nobody/nobody
+		// (UID/GID 65534) to restrict access to unprivileged operations only.
 		result.Allowed = true
 		result.UID = 65534
 		result.GID = 65534
@@ -89,12 +92,16 @@ func ValidateAuthentication(ctx *AuthContext, options ExportOptions) *AuthResult
 func applySquashing(result *AuthResult, authSys *AuthSysCredential, squash string) {
 	switch strings.ToLower(squash) {
 	case "root":
-		// Map root (UID 0) to nobody
+		// Map root (UID 0) to nobody - squash both UID and GID when UID is root
 		if authSys.UID == 0 {
 			result.UID = 65534
-		}
-		if authSys.GID == 0 {
 			result.GID = 65534
+		}
+		// Squash GID 0 in auxiliary GID list
+		for i, gid := range authSys.AuxGIDs {
+			if gid == 0 {
+				authSys.AuxGIDs[i] = 65534
+			}
 		}
 
 	case "all":

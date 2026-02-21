@@ -472,7 +472,7 @@ func TestNegativeCacheIsChildOf(t *testing.T) {
 	}{
 		{"root child", "/test.txt", "/", true},
 		{"direct child", "/dir/test.txt", "/dir", true},
-		{"nested child", "/dir/subdir/test.txt", "/dir", true},
+		{"nested child", "/dir/subdir/test.txt", "/dir", false}, // not a direct child
 		{"not child", "/other/test.txt", "/dir", false},
 		{"same path", "/dir", "/dir", false},
 		{"parent path", "/", "/dir", false},

@@ -55,10 +55,12 @@ func (c *AttrCache) ConfigureNegativeCaching(enable bool, ttl time.Duration) {
 	}
 }
 
-// Get retrieves cached attributes if they exist and are not expired
-// Returns nil if the entry is not found or expired
-// For negative cache entries (file not found), it returns a special marker
-func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
+// Get retrieves cached attributes if they exist and are not expired.
+// Returns:
+//   - (attrs, true) = positive cache hit (attrs found)
+//   - (nil, true)   = negative cache hit (path confirmed non-existent)
+//   - (nil, false)  = cache miss (not in cache at all)
+func (c *AttrCache) Get(path string, server ...*AbsfsNFS) (*NFSAttrs, bool) {
 	var s *AbsfsNFS
 	if len(server) > 0 {
 		s = server[0]
@@ -89,8 +91,8 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
 				}
 			}
 
-			// Return nil to indicate "not found" but with a negative cache hit
-			return nil
+			// Return (nil, true) to indicate negative cache hit
+			return nil, true
 		}
 
 		// Copy attributes while holding RLock to prevent data races
@@ -124,7 +126,7 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
 			}
 		}
 
-		return attrs
+		return attrs, true
 	}
 	c.mu.RUnlock()
 
@@ -142,11 +144,11 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs {
 	if ok {
 		// Expired entry, remove it
 		c.mu.Lock()
-		delete(c.cache, path)
 		c.removeFromAccessLog(path)
+		delete(c.cache, path)
 		c.mu.Unlock()
 	}
-	return nil
+	return nil, false
 }
 
 // updateAccessLog moves the path to the front of the access list (most recently used)
@@ -282,8 +284,8 @@ func (c *AttrCache) Invalidate(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	delete(c.cache, path)
 	c.removeFromAccessLog(path)
+	delete(c.cache, path)
 }
 
 // Clear removes all entries from the cache
@@ -354,30 +356,43 @@ func (c *AttrCache) InvalidateNegativeInDir(dirPath string) {
 	}
 }
 
-// isChildOf checks if path is a direct child of dirPath
+// isChildOf checks if path is a direct child of dirPath (one level deep only)
 func isChildOf(path, dirPath string) bool {
 	// Normalize paths
+	var remainder string
 	if dirPath == "/" {
-		// Everything except "/" itself is a child of root
-		return path != "/"
+		// For root, the remainder is everything after "/"
+		if path == "/" || len(path) < 2 {
+			return false
+		}
+		remainder = path[1:]
+	} else {
+		// Check if path starts with dirPath followed by a separator
+		if len(path) <= len(dirPath)+1 {
+			return false
+		}
+
+		// Path must start with dirPath
+		if path[:len(dirPath)] != dirPath {
+			return false
+		}
+
+		// Must be followed by a separator
+		if path[len(dirPath)] != '/' {
+			return false
+		}
+
+		remainder = path[len(dirPath)+1:]
 	}
 
-	// Check if path starts with dirPath followed by a separator
-	if len(path) <= len(dirPath) {
-		return false
+	// Direct child: remainder must not contain any more separators
+	for i := 0; i < len(remainder); i++ {
+		if remainder[i] == '/' {
+			return false
+		}
 	}
 
-	// Path must start with dirPath
-	if path[:len(dirPath)] != dirPath {
-		return false
-	}
-
-	// Must be followed by a separator
-	if len(path) > len(dirPath) && path[len(dirPath)] != '/' {
-		return false
-	}
-
-	return true
+	return len(remainder) > 0
 }
 
 // Resize changes the maximum size of the attribute cache
@@ -882,8 +897,8 @@ func (c *DirCache) Invalidate(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	delete(c.entries, path)
 	c.removeFromAccessList(path)
+	delete(c.entries, path)
 }
 
 // Clear removes all entries from the cache

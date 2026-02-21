@@ -12,7 +12,7 @@ func TestAttrCache(t *testing.T) {
 		cache := NewAttrCache(2*time.Second, 1000)
 
 		// Test initial state
-		if attrs := cache.Get("/test.txt", nil); attrs != nil {
+		if attrs, _ := cache.Get("/test.txt", nil); attrs != nil {
 			t.Error("Expected nil for non-existent entry")
 		}
 
@@ -28,7 +28,7 @@ func TestAttrCache(t *testing.T) {
 		cache.Put("/test.txt", initialAttrs)
 
 		// Get should return a copy, not the original
-		cachedAttrs := cache.Get("/test.txt", nil)
+		cachedAttrs, _ := cache.Get("/test.txt", nil)
 		if cachedAttrs == nil {
 			t.Fatal("Expected non-nil cached attributes")
 		}
@@ -44,7 +44,7 @@ func TestAttrCache(t *testing.T) {
 
 		// Test expiration
 		time.Sleep(3 * time.Second)
-		if attrs := cache.Get("/test.txt", nil); attrs != nil {
+		if attrs, _ := cache.Get("/test.txt", nil); attrs != nil {
 			t.Error("Expected nil for expired entry")
 		}
 	})
@@ -72,10 +72,10 @@ func TestAttrCache(t *testing.T) {
 		}
 
 		// Verify the first entries were evicted (least recently used)
-		if attrs := cache.Get("/file0.txt", nil); attrs != nil {
+		if attrs, _ := cache.Get("/file0.txt", nil); attrs != nil {
 			t.Error("Expected early entry to be evicted")
 		}
-		if attrs := cache.Get("/file9.txt", nil); attrs == nil {
+		if attrs, _ := cache.Get("/file9.txt", nil); attrs == nil {
 			t.Error("Expected recent entry to be present")
 		}
 	})
@@ -105,7 +105,7 @@ func TestAttrCache(t *testing.T) {
 					cache.Put(path, attrs)
 
 					// Get
-					_ = cache.Get(path, nil)
+					_, _ = cache.Get(path, nil)
 
 					// Invalidate (occasionally)
 					if j%10 == 0 {

@@ -368,7 +368,7 @@ func TestAttrCache_UpdateTTL(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	// Should be expired
-	result := cache.Get("/test/file")
+	result, _ := cache.Get("/test/file")
 	if result != nil {
 		t.Error("Entry should have expired but was still cached")
 	}
@@ -383,7 +383,7 @@ func TestAttrCache_UpdateTTL(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	// Should still be cached with new TTL
-	result = cache.Get("/test/file2")
+	result, _ = cache.Get("/test/file2")
 	if result == nil {
 		t.Error("Entry expired too early with new TTL")
 	}
