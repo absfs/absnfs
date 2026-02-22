@@ -347,45 +347,6 @@ func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset in
 		count = int64(tuning.TransferSize)
 	}
 
-	// Try read-ahead buffer first if enabled
-	if data, ok := s.readBuf.Read(node.path, offset, int(count), s); ok {
-		return data, nil
-	}
-
-	// Get the file handle for this node and use batch processing if enabled
-	var fileHandle uint64
-	var useBatch bool
-	s.fileMap.RLock()
-	for handle, file := range s.fileMap.handles {
-		if nodeFile, ok := file.(*NFSNode); ok && nodeFile.path == node.path {
-			fileHandle = handle
-			break
-		}
-	}
-	// Check if we should use batch processing while still holding the lock
-	// This prevents a race where the handle could be removed after we release the lock
-	if fileHandle != 0 && tuning.BatchOperations && s.batchProc != nil {
-		// Verify handle still exists in map before using it
-		if _, exists := s.fileMap.handles[fileHandle]; exists {
-			useBatch = true
-		}
-	}
-	s.fileMap.RUnlock()
-
-	// Use batch processing if we determined it's safe to do so
-	if useBatch {
-		data, status, err := s.batchProc.BatchRead(ctx, fileHandle, offset, int(count))
-		if err == nil && status == NFS_OK {
-			return data, nil
-		}
-		// If batch processing failed but not because of a file error, fall back to normal read
-		if status != NFSERR_NOENT && status != NFSERR_IO {
-			// Fall through to standard read
-		} else {
-			return nil, err
-		}
-	}
-
 	// Standard read path
 	f, err := s.fs.OpenFile(node.path, os.O_RDONLY, 0)
 	if err != nil {
@@ -413,22 +374,6 @@ func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset in
 	n, err := f.ReadAt(buf, offset)
 	if err != nil && err != io.EOF {
 		return nil, fmt.Errorf("read: failed to read from %s at offset %d: %w", node.path, offset, err)
-	}
-
-	// Only attempt read-ahead if enabled and we got all requested data and there's more to read
-	if tuning.EnableReadAhead && err != io.EOF && n == int(count) && offset+count < info.Size() {
-		readAheadSize := int64(tuning.ReadAheadSize)
-		readAheadRemaining := info.Size() - (offset + count)
-		if readAheadSize > readAheadRemaining {
-			readAheadSize = readAheadRemaining
-		}
-		if readAheadSize > 0 {
-			readAheadBuf := make([]byte, readAheadSize)
-			rn, rerr := f.ReadAt(readAheadBuf, offset+count)
-			if rerr == nil || rerr == io.EOF {
-				s.readBuf.Fill(node.path, readAheadBuf[:rn], offset+count)
-			}
-		}
 	}
 
 	return buf[:n], nil
@@ -503,55 +448,6 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 		data = data[:tuning.TransferSize]
 	}
 
-	// Get the file handle for this node and use batch processing if enabled
-	var fileHandle uint64
-	var useBatch bool
-	s.fileMap.RLock()
-	for handle, file := range s.fileMap.handles {
-		if nodeFile, ok := file.(*NFSNode); ok && nodeFile.path == node.path {
-			fileHandle = handle
-			break
-		}
-	}
-	// Check if we should use batch processing while still holding the lock
-	// This prevents a race where the handle could be removed after we release the lock
-	if fileHandle != 0 && tuning.BatchOperations && s.batchProc != nil {
-		// Verify handle still exists in map before using it
-		if _, exists := s.fileMap.handles[fileHandle]; exists {
-			useBatch = true
-		}
-	}
-	s.fileMap.RUnlock()
-
-	// Use batch processing if we determined it's safe to do so
-	if useBatch {
-		status, err := s.batchProc.BatchWrite(ctx, fileHandle, offset, data)
-		if err == nil && status == NFS_OK {
-			// Invalidate cache after successful write
-			s.attrCache.Invalidate(node.path)
-			// Clear only the specific file's buffer, not all buffers
-			s.readBuf.ClearPath(node.path)
-
-			// Update node attributes to reflect changes
-			info, statErr := s.fs.Stat(node.path)
-			if statErr == nil {
-				node.mu.Lock()
-				node.attrs.Size = info.Size()
-				node.attrs.SetMtime(info.ModTime())
-				node.attrs.Refresh() // Initialize cache validity
-				node.mu.Unlock()
-			}
-
-			return int64(len(data)), nil
-		}
-		// If batch processing failed but not because of a file error, fall back to normal write
-		if status != NFSERR_NOENT && status != NFSERR_IO && status != NFSERR_ROFS {
-			// Fall through to standard write
-		} else {
-			return 0, err
-		}
-	}
-
 	// Standard write path
 	f, err := s.fs.OpenFile(node.path, os.O_WRONLY, 0)
 	if err != nil {
@@ -567,8 +463,6 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 	if err == nil {
 		// Invalidate cache after successful write
 		s.attrCache.Invalidate(node.path)
-		// Clear only the specific file's buffer, not all buffers
-		s.readBuf.ClearPath(node.path)
 
 		// Update modification time explicitly
 		now := time.Now()
@@ -1089,7 +983,6 @@ func (s *AbsfsNFS) Unexport() error {
 	s.fileMap.ReleaseAll()
 	// Clear caches
 	s.attrCache.Clear()
-	s.readBuf.Clear()
 	if s.dirCache != nil {
 		s.dirCache.Clear()
 	}

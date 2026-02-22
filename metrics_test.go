@@ -54,14 +54,6 @@ func TestMetricsCollection(t *testing.T) {
 		server.RecordAttrCacheMiss()
 	}
 
-	// Record read-ahead hits and misses
-	for i := 0; i < 20; i++ {
-		server.RecordReadAheadHit()
-	}
-	for i := 0; i < 10; i++ {
-		server.RecordReadAheadMiss()
-	}
-
 	// Wait to ensure uptime is at least 1 second
 	time.Sleep(1 * time.Second)
 
@@ -85,11 +77,6 @@ func TestMetricsCollection(t *testing.T) {
 	expectedAttrCacheHitRate := float64(10) / float64(10+5)
 	if metrics.CacheHitRate != expectedAttrCacheHitRate {
 		t.Errorf("Expected attr cache hit rate %f, got %f", expectedAttrCacheHitRate, metrics.CacheHitRate)
-	}
-
-	expectedReadAheadHitRate := float64(20) / float64(20+10)
-	if metrics.ReadAheadHitRate != expectedReadAheadHitRate {
-		t.Errorf("Expected read-ahead hit rate %f, got %f", expectedReadAheadHitRate, metrics.ReadAheadHitRate)
 	}
 
 	// Verify uptime
@@ -449,16 +436,6 @@ func TestMetricsCacheRecording(t *testing.T) {
 		nfs.RecordAttrCacheMiss()
 	})
 
-	t.Run("record read ahead hit", func(t *testing.T) {
-		nfs := createTestNFS()
-		nfs.RecordReadAheadHit()
-	})
-
-	t.Run("record read ahead miss", func(t *testing.T) {
-		nfs := createTestNFS()
-		nfs.RecordReadAheadMiss()
-	})
-
 	t.Run("record dir cache hit", func(t *testing.T) {
 		nfs := createTestNFS()
 		nfs.RecordDirCacheHit()
@@ -680,8 +657,6 @@ func TestMetricsRecordWithNilCollector(t *testing.T) {
 	// These should not panic
 	nfs.RecordAttrCacheHit()
 	nfs.RecordAttrCacheMiss()
-	nfs.RecordReadAheadHit()
-	nfs.RecordReadAheadMiss()
 	nfs.RecordDirCacheHit()
 	nfs.RecordDirCacheMiss()
 	nfs.RecordNegativeCacheHit()
@@ -753,8 +728,6 @@ func TestMetricsRecordingMore(t *testing.T) {
 	t.Run("record various events", func(t *testing.T) {
 		nfs.RecordAttrCacheHit()
 		nfs.RecordAttrCacheMiss()
-		nfs.RecordReadAheadHit()
-		nfs.RecordReadAheadMiss()
 		nfs.RecordDirCacheHit()
 		nfs.RecordDirCacheMiss()
 	})

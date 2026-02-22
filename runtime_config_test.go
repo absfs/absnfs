@@ -15,18 +15,12 @@ func TestGetExportOptions(t *testing.T) {
 	}
 
 	originalOptions := ExportOptions{
-		ReadOnly:            true,
-		AllowedIPs:          []string{"192.168.1.0/24", "10.0.0.1"},
-		Squash:              "root",
-		AttrCacheSize:       5000,
-		AttrCacheTimeout:    10 * time.Second,
-		ReadAheadMaxMemory:  50 * 1024 * 1024,
-		ReadAheadMaxFiles:   50,
-		MemoryHighWatermark: 0.75,
-		MemoryLowWatermark:  0.5,
-		MaxWorkers:          8,
-		BatchOperations:     true,
-		MaxBatchSize:        15,
+		ReadOnly:         true,
+		AllowedIPs:       []string{"192.168.1.0/24", "10.0.0.1"},
+		Squash:           "root",
+		AttrCacheSize:    5000,
+		AttrCacheTimeout: 10 * time.Second,
+		MaxWorkers:       8,
 	}
 
 	server, err := New(fs, originalOptions)
@@ -73,16 +67,10 @@ func TestUpdateExportOptions_SafeFields(t *testing.T) {
 	}
 
 	initialOptions := ExportOptions{
-		ReadOnly:            false,
-		AttrCacheSize:       1000,
-		AttrCacheTimeout:    5 * time.Second,
-		ReadAheadMaxMemory:  100 * 1024 * 1024,
-		ReadAheadMaxFiles:   100,
-		MemoryHighWatermark: 0.8,
-		MemoryLowWatermark:  0.6,
-		MaxWorkers:          4,
-		BatchOperations:     false,
-		MaxBatchSize:        10,
+		ReadOnly:         false,
+		AttrCacheSize:    1000,
+		AttrCacheTimeout: 5 * time.Second,
+		MaxWorkers:       4,
 	}
 
 	server, err := New(fs, initialOptions)
@@ -93,17 +81,11 @@ func TestUpdateExportOptions_SafeFields(t *testing.T) {
 
 	// Update safe fields
 	updatedOptions := ExportOptions{
-		ReadOnly:            true,
-		AllowedIPs:          []string{"10.0.0.0/8"},
-		AttrCacheSize:       2000,
-		AttrCacheTimeout:    10 * time.Second,
-		ReadAheadMaxMemory:  200 * 1024 * 1024,
-		ReadAheadMaxFiles:   200,
-		MemoryHighWatermark: 0.9,
-		MemoryLowWatermark:  0.7,
-		MaxWorkers:          8,
-		BatchOperations:     true,
-		MaxBatchSize:        20,
+		ReadOnly:         true,
+		AllowedIPs:       []string{"10.0.0.0/8"},
+		AttrCacheSize:    2000,
+		AttrCacheTimeout: 10 * time.Second,
+		MaxWorkers:       8,
 	}
 
 	err = server.UpdateExportOptions(updatedOptions)
@@ -130,32 +112,8 @@ func TestUpdateExportOptions_SafeFields(t *testing.T) {
 		t.Errorf("AttrCacheTimeout not updated: got %v, want 10s", opts.AttrCacheTimeout)
 	}
 
-	if opts.ReadAheadMaxMemory != 200*1024*1024 {
-		t.Errorf("ReadAheadMaxMemory not updated: got %d, want %d", opts.ReadAheadMaxMemory, 200*1024*1024)
-	}
-
-	if opts.ReadAheadMaxFiles != 200 {
-		t.Errorf("ReadAheadMaxFiles not updated: got %d, want 200", opts.ReadAheadMaxFiles)
-	}
-
-	if opts.MemoryHighWatermark != 0.9 {
-		t.Errorf("MemoryHighWatermark not updated: got %f, want 0.9", opts.MemoryHighWatermark)
-	}
-
-	if opts.MemoryLowWatermark != 0.7 {
-		t.Errorf("MemoryLowWatermark not updated: got %f, want 0.7", opts.MemoryLowWatermark)
-	}
-
 	if opts.MaxWorkers != 8 {
 		t.Errorf("MaxWorkers not updated: got %d, want 8", opts.MaxWorkers)
-	}
-
-	if !opts.BatchOperations {
-		t.Error("BatchOperations not updated: got false, want true")
-	}
-
-	if opts.MaxBatchSize != 20 {
-		t.Errorf("MaxBatchSize not updated: got %d, want 20", opts.MaxBatchSize)
 	}
 
 	// Verify underlying components were resized
@@ -230,11 +188,9 @@ func TestUpdateExportOptions_ConcurrentUpdates(t *testing.T) {
 			for j := 0; j < numIterations; j++ {
 				// Update options
 				opts := ExportOptions{
-					ReadOnly:        id%2 == 0,
-					MaxWorkers:      id + 1,
-					AttrCacheSize:   1000 + id*100,
-					MaxBatchSize:    5 + id,
-					BatchOperations: true,
+					ReadOnly:     id%2 == 0,
+					MaxWorkers:   id + 1,
+					AttrCacheSize: 1000 + id*100,
 				}
 
 				err := server.UpdateExportOptions(opts)
@@ -386,50 +342,6 @@ func TestAttrCache_UpdateTTL(t *testing.T) {
 	result, _ = cache.Get("/test/file2")
 	if result == nil {
 		t.Error("Entry expired too early with new TTL")
-	}
-}
-
-func TestReadAheadBuffer_Resize(t *testing.T) {
-	buffer := NewReadAheadBuffer(4096)
-	buffer.Configure(10, 100*1024) // 10 files, 100KB total
-
-	// Fill the buffer with some files
-	for i := 0; i < 10; i++ {
-		path := "/test/file" + string(rune(i))
-		data := make([]byte, 10*1024) // 10KB each
-		buffer.Fill(path, data, 0)
-	}
-
-	files, _ := buffer.Stats()
-	if files != 10 {
-		t.Errorf("Initial buffer files: got %d, want 10", files)
-	}
-
-	// Resize to smaller limits
-	buffer.Resize(5, 50*1024) // 5 files, 50KB total
-
-	files, memory := buffer.Stats()
-	if files > 5 {
-		t.Errorf("Buffer not evicted: got %d files, want <=5", files)
-	}
-
-	if memory > 50*1024 {
-		t.Errorf("Buffer memory not reduced: got %d, want <=51200", memory)
-	}
-
-	// Resize to larger limits
-	buffer.Resize(20, 200*1024)
-
-	// Should be able to add more files now
-	for i := 10; i < 20; i++ {
-		path := "/test/file" + string(rune(i))
-		data := make([]byte, 10*1024)
-		buffer.Fill(path, data, 0)
-	}
-
-	files, _ = buffer.Stats()
-	if files > 20 {
-		t.Errorf("Buffer exceeded new max files: got %d, want <=20", files)
 	}
 }
 

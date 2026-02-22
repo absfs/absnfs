@@ -55,10 +55,7 @@ type AbsfsNFS struct {
 	mountPath        string                  // Export path
 	attrCache        *AttrCache              // Cache for file attributes
 	dirCache         *DirCache               // Cache for directory entries
-	readBuf          *ReadAheadBuffer        // Read-ahead buffer
-	memoryMonitor    *MemoryMonitor          // Monitors system memory usage (optional)
 	workerPool       *WorkerPool             // Worker pool for concurrent operations
-	batchProc        *BatchProcessor         // Processor for batched operations
 	metrics          *MetricsCollector       // Metrics collection and reporting
 	rateLimiter      *RateLimiter            // Rate limiter for DoS protection
 

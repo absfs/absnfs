@@ -116,9 +116,6 @@ func TestNewAbsNFS(t *testing.T) {
 		if nfs.attrCache == nil {
 			t.Error("Attribute cache not initialized")
 		}
-		if nfs.readBuf == nil {
-			t.Error("Read-ahead buffer not initialized")
-		}
 		if nfs.logger == nil {
 			t.Error("Logger not initialized")
 		}
@@ -553,10 +550,6 @@ func TestAbsfsNFSClose(t *testing.T) {
 			// Atime: time.Now()
 		})
 
-		// Add data to read buffer
-		testData := []byte("test read buffer data")
-		nfs.readBuf.Fill(testPath, testData, 0)
-
 		// Close the NFS server
 		if err := nfs.Close(); err != nil {
 			t.Fatalf("Close() failed: %v", err)
@@ -669,9 +662,7 @@ func TestAbsfsNFSClose(t *testing.T) {
 		nfs := &AbsfsNFS{
 			fileMap:    nil,
 			attrCache:  nil,
-			readBuf:    nil,
 			workerPool: nil,
-			batchProc:  nil,
 		}
 
 		// Close should handle nil components gracefully
@@ -697,13 +688,6 @@ func TestAbsfsNFSClose(t *testing.T) {
 			})
 		}
 
-		// Populate read buffer
-		for i := 0; i < 50; i++ {
-			path := fmt.Sprintf("/readpath%d", i)
-			data := []byte(fmt.Sprintf("buffer data %d", i))
-			nfs.readBuf.Fill(path, data, int64(i*1024))
-		}
-
 		// Close and verify caches are cleared
 		if err := nfs.Close(); err != nil {
 			t.Fatalf("Close() failed: %v", err)
@@ -719,7 +703,7 @@ func TestAbsfsNFSClose(t *testing.T) {
 		}
 	})
 
-	t.Run("close with read-ahead enabled", func(t *testing.T) {
+	t.Run("close with active handles", func(t *testing.T) {
 		_, cleanup := setupAbsNFSTest(t)
 		defer cleanup()
 
@@ -728,13 +712,9 @@ func TestAbsfsNFSClose(t *testing.T) {
 			t.Fatalf("Failed to create memfs: %v", err)
 		}
 
-		// Create NFS with read-ahead enabled
-		nfs, err := New(fs, ExportOptions{
-			EnableReadAhead: true,
-			ReadAheadSize:   4096,
-		})
+		nfs, err := New(fs, ExportOptions{})
 		if err != nil {
-			t.Fatalf("Failed to create NFS with read-ahead: %v", err)
+			t.Fatalf("Failed to create NFS: %v", err)
 		}
 
 		// Create some activity
@@ -755,7 +735,7 @@ func TestAbsfsNFSClose(t *testing.T) {
 
 		// Close with all components active
 		if err := nfs.Close(); err != nil {
-			t.Fatalf("Close() with read-ahead enabled failed: %v", err)
+			t.Fatalf("Close() failed: %v", err)
 		}
 
 		// Verify cleanup

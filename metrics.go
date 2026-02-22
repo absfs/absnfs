@@ -37,12 +37,10 @@ type NFSMetrics struct {
 	P95WriteLatency time.Duration
 
 	// Cache metrics
-	CacheHitRate         float64
-	ReadAheadHitRate     float64
-	AttrCacheSize        int
-	AttrCacheCapacity    int
-	ReadAheadBufferSize  int64
-	DirCacheHitRate      float64
+	CacheHitRate      float64
+	AttrCacheSize     int
+	AttrCacheCapacity int
+	DirCacheHitRate   float64
 	NegativeCacheSize    int     // Number of negative cache entries
 	NegativeCacheHitRate float64 // Hit rate for negative cache lookups
 
@@ -94,8 +92,6 @@ type MetricsCollector struct {
 	metrics             NFSMetrics
 	attrCacheHits       uint64
 	attrCacheMisses     uint64
-	readAheadHits       uint64
-	readAheadMisses     uint64
 	dirCacheHits        uint64
 	dirCacheMisses      uint64
 	negativeCacheHits   uint64
@@ -242,18 +238,6 @@ func (m *MetricsCollector) RecordAttrCacheMiss() {
 	m.updateCacheHitRate()
 }
 
-// RecordReadAheadHit records a hit in the read-ahead buffer
-func (m *MetricsCollector) RecordReadAheadHit() {
-	atomic.AddUint64(&m.readAheadHits, 1)
-	m.updateReadAheadHitRate()
-}
-
-// RecordReadAheadMiss records a miss in the read-ahead buffer
-func (m *MetricsCollector) RecordReadAheadMiss() {
-	atomic.AddUint64(&m.readAheadMisses, 1)
-	m.updateReadAheadHitRate()
-}
-
 // RecordDirCacheHit records a hit in the directory cache
 func (m *MetricsCollector) RecordDirCacheHit() {
 	atomic.AddUint64(&m.dirCacheHits, 1)
@@ -398,21 +382,6 @@ func (m *MetricsCollector) updateCacheHitRate() {
 	}
 }
 
-// updateReadAheadHitRate updates the read-ahead buffer hit rate
-func (m *MetricsCollector) updateReadAheadHitRate() {
-	hits := atomic.LoadUint64(&m.readAheadHits)
-	misses := atomic.LoadUint64(&m.readAheadMisses)
-	total := hits + misses
-
-	if total > 0 {
-		hitRate := float64(hits) / float64(total)
-
-		m.mutex.Lock()
-		m.metrics.ReadAheadHitRate = hitRate
-		m.mutex.Unlock()
-	}
-}
-
 // updateDirCacheHitRate updates the directory cache hit rate
 func (m *MetricsCollector) updateDirCacheHitRate() {
 	hits := atomic.LoadUint64(&m.dirCacheHits)
@@ -445,7 +414,7 @@ func (m *MetricsCollector) updateNegativeCacheHitRate() {
 
 // updateCacheMetrics updates various cache-related metrics
 func (m *MetricsCollector) updateCacheMetrics() {
-	if m.server == nil || m.server.attrCache == nil || m.server.readBuf == nil {
+	if m.server == nil || m.server.attrCache == nil {
 		return
 	}
 
@@ -455,16 +424,12 @@ func (m *MetricsCollector) updateCacheMetrics() {
 	// Get negative cache size
 	negativeSize := m.server.attrCache.NegativeStats()
 
-	// Get read-ahead buffer size
-	readAheadSize := m.server.readBuf.Size()
-
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
 	m.metrics.AttrCacheSize = attrSize
 	m.metrics.AttrCacheCapacity = attrCapacity
 	m.metrics.NegativeCacheSize = negativeSize
-	m.metrics.ReadAheadBufferSize = readAheadSize
 }
 
 // GetMetrics returns a snapshot of the current metrics

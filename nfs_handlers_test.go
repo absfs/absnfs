@@ -4076,8 +4076,6 @@ func TestReadDirPlusOperations(t *testing.T) {
 	})
 }
 
-// Tests for batch processing edge cases
-
 // Tests for WriteWithContext edge cases
 func TestWriteWithContextEdgeCases(t *testing.T) {
 	t.Run("write with nil node", func(t *testing.T) {
@@ -4385,11 +4383,9 @@ func TestEncodeFileAttributesTypes(t *testing.T) {
 	}
 }
 
-// Tests for batch processing with context cancellation
-
 // Tests for cache read with various scenarios
 func TestCacheReadScenarios(t *testing.T) {
-	t.Run("read ahead buffer fill", func(t *testing.T) {
+	t.Run("basic read", func(t *testing.T) {
 		nfs, mfs := createTestServer(t)
 		defer nfs.Close()
 
@@ -4417,43 +4413,6 @@ func TestCacheReadScenarios(t *testing.T) {
 }
 
 // Tests for encodeFileAttributes with various file types
-
-// Tests for read-ahead buffer operations with chunked reads
-func TestReadAheadBufferChunkedOperations(t *testing.T) {
-	nfs, mfs := createTestServer(t)
-	defer nfs.Close()
-
-	// Create a test file
-	f, _ := mfs.Create("/readahead.txt")
-	content := make([]byte, 10000)
-	for i := range content {
-		content[i] = byte(i % 256)
-	}
-	f.Write(content)
-	f.Close()
-
-	node, _ := nfs.Lookup("/readahead.txt")
-	handle := nfs.fileMap.Allocate(node)
-
-	t.Run("read multiple chunks", func(t *testing.T) {
-		// Read in multiple chunks to exercise read-ahead
-		for offset := int64(0); offset < 10000; offset += 1000 {
-			data, err := nfs.Read(node, offset, 1000)
-			if err != nil {
-				t.Errorf("Read at offset %d failed: %v", offset, err)
-			}
-			if len(data) == 0 {
-				t.Errorf("Read at offset %d returned empty data", offset)
-			}
-		}
-	})
-
-	t.Run("configure read-ahead buffer", func(t *testing.T) {
-		nfs.readBuf.Configure(20, 2*1024*1024)
-	})
-
-	_ = handle
-}
 
 // Tests for attributes encoding edge cases
 
@@ -4511,8 +4470,6 @@ func TestAttributesEncodingEdgeCases(t *testing.T) {
 	// We skip that test case since the function doesn't validate input
 }
 
-// Tests for batch processing more edge cases
-
 // Tests for directory read operations with context
 func TestDirectoryReadWithContext(t *testing.T) {
 	nfs, mfs := createTestServer(t)
@@ -4564,52 +4521,6 @@ func TestDirectoryReadWithContext(t *testing.T) {
 }
 
 // Tests for auth validation scenarios
-
-// Tests for read-ahead buffer edge cases
-func TestReadAheadEdgeCases(t *testing.T) {
-	nfs, mfs := createTestServer(t, func(o *ExportOptions) {
-		o.EnableReadAhead = true
-		o.ReadAheadSize = 4096
-		o.ReadAheadMaxFiles = 5
-		o.ReadAheadMaxMemory = 100 * 1024
-	})
-	defer nfs.Close()
-
-	// Create files of various sizes
-	sizes := []int{100, 1000, 10000, 50000}
-	for i, size := range sizes {
-		content := make([]byte, size)
-		for j := range content {
-			content[j] = byte((i + j) % 256)
-		}
-		f, _ := mfs.Create("/sizefile" + string(rune('0'+i)) + ".txt")
-		f.Write(content)
-		f.Close()
-	}
-
-	t.Run("read various file sizes", func(t *testing.T) {
-		for i, size := range sizes {
-			node, _ := nfs.Lookup("/sizefile" + string(rune('0'+i)) + ".txt")
-			data, err := nfs.Read(node, 0, int64(size))
-			if err != nil {
-				t.Errorf("Read size %d failed: %v", size, err)
-			}
-			if len(data) != size {
-				t.Errorf("Read size %d returned %d bytes", size, len(data))
-			}
-		}
-	})
-
-	t.Run("read-ahead buffer stats", func(t *testing.T) {
-		files, memory := nfs.readBuf.Stats()
-		t.Logf("ReadAhead stats: files=%d, memory=%d", files, memory)
-	})
-
-	t.Run("read-ahead buffer clear", func(t *testing.T) {
-		// This exercises the Clear method
-		nfs.readBuf.Clear()
-	})
-}
 
 // Tests for noopLogger methods
 
@@ -4697,131 +4608,6 @@ func TestWccAttrEncoding(t *testing.T) {
 }
 
 // Tests for DirCache resize
-
-// Tests for ReadAheadBuffer resize with edge cases
-func TestReadAheadBufferResizeEdgeCases(t *testing.T) {
-	nfs, mfs := createTestServer(t)
-	defer nfs.Close()
-
-	// Create a test file
-	f, _ := mfs.Create("/resizetest.txt")
-	f.Write([]byte("test content for resize operations"))
-	f.Close()
-
-	t.Run("resize with zero values", func(t *testing.T) {
-		// Should use defaults
-		nfs.readBuf.Resize(0, 0)
-		files, memory := nfs.readBuf.Stats()
-		if files < 0 || memory < 0 {
-			t.Error("Stats should not be negative")
-		}
-	})
-
-	t.Run("resize with negative values", func(t *testing.T) {
-		// Should use defaults
-		nfs.readBuf.Resize(-1, -1)
-		files, memory := nfs.readBuf.Stats()
-		if files < 0 || memory < 0 {
-			t.Error("Stats should not be negative")
-		}
-	})
-
-	t.Run("resize with valid values", func(t *testing.T) {
-		nfs.readBuf.Resize(50, 1024*1024)
-		files, memory := nfs.readBuf.Stats()
-		if files < 0 || memory < 0 {
-			t.Error("Stats should not be negative")
-		}
-	})
-}
-
-// Tests for batch read error paths
-
-// Tests for ReadAheadBuffer additional paths
-func TestReadAheadBufferPaths(t *testing.T) {
-	nfs, mfs := createTestServer(t)
-	defer nfs.Close()
-
-	// Create test files
-	for i := 0; i < 5; i++ {
-		f, _ := mfs.Create("/rab" + string(rune('a'+i)) + ".txt")
-		f.Write(bytes.Repeat([]byte("x"), 1024))
-		f.Close()
-	}
-
-	t.Run("read with buffer hit", func(t *testing.T) {
-		node, _ := nfs.Lookup("/raba.txt")
-		// First read populates buffer
-		_, _ = nfs.Read(node, 0, 100)
-		// Second read should hit buffer
-		_, _ = nfs.Read(node, 50, 100)
-	})
-
-	t.Run("clear path", func(t *testing.T) {
-		nfs.readBuf.ClearPath("/raba.txt")
-	})
-
-	t.Run("configure buffer", func(t *testing.T) {
-		nfs.readBuf.Configure(50, 1024*1024)
-	})
-}
-
-// Tests for encodeFileAttributes error paths
-
-// Tests for ReadAheadBuffer Read edge cases
-func TestReadAheadBufferReadEdgeCases(t *testing.T) {
-	nfs, mfs := createTestServer(t)
-	defer nfs.Close()
-
-	// Create a file with known content
-	content := bytes.Repeat([]byte("abcdefghij"), 100)
-	f, _ := mfs.Create("/readedge.txt")
-	f.Write(content)
-	f.Close()
-
-	node, _ := nfs.Lookup("/readedge.txt")
-
-	t.Run("read at various offsets", func(t *testing.T) {
-		// Read at start
-		_, _ = nfs.Read(node, 0, 50)
-		// Read in middle
-		_, _ = nfs.Read(node, 200, 50)
-		// Read near end
-		_, _ = nfs.Read(node, int64(len(content)-50), 100)
-		// Read past end
-		_, _ = nfs.Read(node, int64(len(content)), 50)
-	})
-}
-
-// Tests for cache updateAccessLog
-
-// Tests for ReadAheadBuffer updateAccessOrder path
-func TestReadAheadBufferUpdateAccessOrder(t *testing.T) {
-	nfs, mfs := createTestServer(t, func(o *ExportOptions) {
-		o.ReadAheadMaxFiles = 3 // Small limit
-	})
-	defer nfs.Close()
-
-	// Create several files
-	for i := 0; i < 5; i++ {
-		content := bytes.Repeat([]byte(string(rune('a'+i))), 200)
-		f, _ := mfs.Create("/accessorder" + string(rune('0'+i)) + ".txt")
-		f.Write(content)
-		f.Close()
-	}
-
-	// Read files sequentially to fill buffer
-	for i := 0; i < 5; i++ {
-		node, _ := nfs.Lookup("/accessorder" + string(rune('0'+i)) + ".txt")
-		_, _ = nfs.Read(node, 0, 100)
-	}
-
-	// Re-read earlier files to update access order
-	for i := 0; i < 2; i++ {
-		node, _ := nfs.Lookup("/accessorder" + string(rune('0'+i)) + ".txt")
-		_, _ = nfs.Read(node, 50, 50)
-	}
-}
 
 // Tests for isAddrInUse
 
@@ -4971,8 +4757,6 @@ func TestEncodeAttributesResponseCoverage(t *testing.T) {
 		}
 	})
 }
-
-// Tests for ReadAheadBuffer Read edge cases
 
 // Tests for Symlink operation
 func TestSymlinkCoverage(t *testing.T) {

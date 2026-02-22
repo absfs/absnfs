@@ -150,22 +150,6 @@ func (n *AbsfsNFS) RecordAttrCacheMiss() {
 	n.metrics.RecordAttrCacheMiss()
 }
 
-// RecordReadAheadHit records a hit in the read-ahead buffer
-func (n *AbsfsNFS) RecordReadAheadHit() {
-	if n.metrics == nil {
-		return
-	}
-	n.metrics.RecordReadAheadHit()
-}
-
-// RecordReadAheadMiss records a miss in the read-ahead buffer
-func (n *AbsfsNFS) RecordReadAheadMiss() {
-	if n.metrics == nil {
-		return
-	}
-	n.metrics.RecordReadAheadMiss()
-}
-
 // RecordDirCacheHit records a hit in the directory cache
 func (n *AbsfsNFS) RecordDirCacheHit() {
 	if n.metrics == nil {

@@ -125,7 +125,6 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 			return nfsErrorWithWcc(reply, mapError(err)), nil
 		}
 		h.server.handler.attrCache.Invalidate(node.path)
-		h.server.handler.readBuf.ClearPath(node.path)
 		info, statErr := h.server.handler.fs.Stat(node.path)
 		if statErr == nil {
 			node.mu.Lock()

@@ -16,10 +16,6 @@ import (
 // Stale reads are harmless -- they only affect performance characteristics.
 type TuningOptions struct {
 	TransferSize          int
-	EnableReadAhead       bool
-	ReadAheadSize         int
-	ReadAheadMaxFiles     int
-	ReadAheadMaxMemory    int64
 	AttrCacheTimeout      time.Duration
 	AttrCacheSize         int
 	CacheNegativeLookups  bool
@@ -28,13 +24,7 @@ type TuningOptions struct {
 	DirCacheTimeout       time.Duration
 	DirCacheMaxEntries    int
 	DirCacheMaxDirSize    int
-	AdaptToMemoryPressure bool
-	MemoryHighWatermark   float64
-	MemoryLowWatermark    float64
-	MemoryCheckInterval   time.Duration
 	MaxWorkers            int
-	BatchOperations       bool
-	MaxBatchSize          int
 	MaxConnections        int
 	IdleTimeout           time.Duration
 	TCPKeepAlive          bool
@@ -78,10 +68,6 @@ func (n *AbsfsNFS) snapshotOptions() *RequestOptions {
 func tuningFromExportOptions(opts *ExportOptions) *TuningOptions {
 	t := &TuningOptions{
 		TransferSize:          opts.TransferSize,
-		EnableReadAhead:       opts.EnableReadAhead,
-		ReadAheadSize:         opts.ReadAheadSize,
-		ReadAheadMaxFiles:     opts.ReadAheadMaxFiles,
-		ReadAheadMaxMemory:    opts.ReadAheadMaxMemory,
 		AttrCacheTimeout:      opts.AttrCacheTimeout,
 		AttrCacheSize:         opts.AttrCacheSize,
 		CacheNegativeLookups:  opts.CacheNegativeLookups,
@@ -90,13 +76,7 @@ func tuningFromExportOptions(opts *ExportOptions) *TuningOptions {
 		DirCacheTimeout:       opts.DirCacheTimeout,
 		DirCacheMaxEntries:    opts.DirCacheMaxEntries,
 		DirCacheMaxDirSize:    opts.DirCacheMaxDirSize,
-		AdaptToMemoryPressure: opts.AdaptToMemoryPressure,
-		MemoryHighWatermark:   opts.MemoryHighWatermark,
-		MemoryLowWatermark:    opts.MemoryLowWatermark,
-		MemoryCheckInterval:   opts.MemoryCheckInterval,
 		MaxWorkers:            opts.MaxWorkers,
-		BatchOperations:       opts.BatchOperations,
-		MaxBatchSize:          opts.MaxBatchSize,
 		MaxConnections:        opts.MaxConnections,
 		IdleTimeout:           opts.IdleTimeout,
 		TCPKeepAlive:          opts.TCPKeepAlive,
@@ -149,10 +129,6 @@ func exportOptionsFromSnapshots(t *TuningOptions, p *PolicyOptions) ExportOption
 		EnableRateLimiting:    p.EnableRateLimiting,
 		Async:                 t.Async,
 		TransferSize:          t.TransferSize,
-		EnableReadAhead:       t.EnableReadAhead,
-		ReadAheadSize:         t.ReadAheadSize,
-		ReadAheadMaxFiles:     t.ReadAheadMaxFiles,
-		ReadAheadMaxMemory:    t.ReadAheadMaxMemory,
 		AttrCacheTimeout:      t.AttrCacheTimeout,
 		AttrCacheSize:         t.AttrCacheSize,
 		CacheNegativeLookups:  t.CacheNegativeLookups,
@@ -161,13 +137,7 @@ func exportOptionsFromSnapshots(t *TuningOptions, p *PolicyOptions) ExportOption
 		DirCacheTimeout:       t.DirCacheTimeout,
 		DirCacheMaxEntries:    t.DirCacheMaxEntries,
 		DirCacheMaxDirSize:    t.DirCacheMaxDirSize,
-		AdaptToMemoryPressure: t.AdaptToMemoryPressure,
-		MemoryHighWatermark:   t.MemoryHighWatermark,
-		MemoryLowWatermark:    t.MemoryLowWatermark,
-		MemoryCheckInterval:   t.MemoryCheckInterval,
 		MaxWorkers:            t.MaxWorkers,
-		BatchOperations:       t.BatchOperations,
-		MaxBatchSize:          t.MaxBatchSize,
 		MaxConnections:        t.MaxConnections,
 		IdleTimeout:           t.IdleTimeout,
 		TCPKeepAlive:          t.TCPKeepAlive,
@@ -309,18 +279,6 @@ func (n *AbsfsNFS) applyTuningSideEffects(old, updated *TuningOptions) {
 		}
 	}
 
-	// Update read-ahead buffer
-	if updated.ReadAheadMaxMemory > 0 && updated.ReadAheadMaxMemory != old.ReadAheadMaxMemory {
-		if n.readBuf != nil {
-			n.readBuf.Resize(updated.ReadAheadMaxFiles, updated.ReadAheadMaxMemory)
-		}
-	}
-	if updated.ReadAheadMaxFiles > 0 && updated.ReadAheadMaxFiles != old.ReadAheadMaxFiles {
-		if n.readBuf != nil {
-			n.readBuf.Resize(updated.ReadAheadMaxFiles, updated.ReadAheadMaxMemory)
-		}
-	}
-
 	// Update worker pool
 	if updated.MaxWorkers > 0 && updated.MaxWorkers != old.MaxWorkers {
 		if n.workerPool != nil {
@@ -367,26 +325,6 @@ type ExportOptions struct {
 	// Default: 65536 (64KB)
 	TransferSize int
 
-	// EnableReadAhead enables read-ahead buffering for improved sequential read performance
-	// When a client reads a file sequentially, the server prefetches additional data
-	// Default: true
-	EnableReadAhead bool
-
-	// ReadAheadSize controls the size in bytes of the read-ahead buffer
-	// Only applicable when EnableReadAhead is true
-	// Default: 262144 (256KB)
-	ReadAheadSize int
-
-	// ReadAheadMaxFiles controls the maximum number of files that can have active read-ahead buffers
-	// Helps limit memory usage by read-ahead buffering
-	// Default: 100 files
-	ReadAheadMaxFiles int
-
-	// ReadAheadMaxMemory controls the maximum amount of memory in bytes that can be used for read-ahead buffers
-	// Once this limit is reached, least recently used buffers will be evicted
-	// Default: 104857600 (100MB)
-	ReadAheadMaxMemory int64
-
 	// AttrCacheTimeout controls how long file attributes are cached
 	// Longer timeouts improve performance but may cause clients to see stale data
 	// Default: 5 * time.Second
@@ -432,47 +370,10 @@ type ExportOptions struct {
 	// Default: 10000 entries per directory
 	DirCacheMaxDirSize int
 
-	// AdaptToMemoryPressure enables automatic cache reduction when system memory is under pressure
-	// When enabled, the server will periodically check system memory usage and reduce cache sizes
-	// when memory usage exceeds MemoryHighWatermark, until usage falls below MemoryLowWatermark
-	// Default: false (disabled)
-	AdaptToMemoryPressure bool
-
-	// MemoryHighWatermark defines the threshold (as a fraction of total memory) at which
-	// memory pressure reduction actions will be triggered
-	// Only applicable when AdaptToMemoryPressure is true
-	// Valid range: 0.0 to 1.0 (0% to 100% of total memory)
-	// Default: 0.8 (80% of total memory)
-	MemoryHighWatermark float64
-
-	// MemoryLowWatermark defines the target memory usage (as a fraction of total memory)
-	// that the server will try to achieve when reducing cache sizes in response to memory pressure
-	// Only applicable when AdaptToMemoryPressure is true
-	// Valid range: 0.0 to MemoryHighWatermark
-	// Default: 0.6 (60% of total memory)
-	MemoryLowWatermark float64
-
-	// MemoryCheckInterval defines how frequently memory usage is checked for pressure detection
-	// Only applicable when AdaptToMemoryPressure is true
-	// Default: 30 * time.Second
-	MemoryCheckInterval time.Duration
-
 	// MaxWorkers controls the maximum number of goroutines used for handling concurrent operations
 	// More workers can improve performance for concurrent workloads but consume more CPU resources
 	// Default: runtime.NumCPU() * 4 (number of logical CPUs multiplied by 4)
 	MaxWorkers int
-
-	// BatchOperations enables grouping of similar operations for improved performance
-	// When enabled, the server will attempt to process multiple read/write operations
-	// together to reduce context switching and improve throughput
-	// Default: true
-	BatchOperations bool
-
-	// MaxBatchSize controls the maximum number of operations that can be included in a single batch
-	// Larger batches can improve performance but may increase latency for individual operations
-	// Only applicable when BatchOperations is true
-	// Default: 10 operations
-	MaxBatchSize int
 
 	// MaxConnections limits the number of simultaneous client connections
 	// Setting to 0 means unlimited connections (limited only by system resources)

@@ -128,118 +128,6 @@ func TestAttrCache(t *testing.T) {
 	})
 }
 
-func TestReadAheadBuffer(t *testing.T) {
-	t.Run("basic operations", func(t *testing.T) {
-		buffer := NewReadAheadBuffer(100) // 100 byte buffer size
-		buffer.Configure(10, 1000)        // Max 10 files, 1KB total
-
-		// Test initial state
-		if _, ok := buffer.Read("/test.txt", 0, 50, nil); ok {
-			t.Error("Expected false for non-existent entry")
-		}
-
-		// Fill with test data
-		testData := make([]byte, 100)
-		for i := range testData {
-			testData[i] = byte(i)
-		}
-		buffer.Fill("/test.txt", testData, 0)
-
-		// Read should return a copy
-		readData, ok := buffer.Read("/test.txt", 0, 50, nil)
-		if !ok {
-			t.Fatal("Expected true for valid read")
-		}
-		if len(readData) != 50 {
-			t.Errorf("Expected 50 bytes, got %d", len(readData))
-		}
-		for i := range readData {
-			if readData[i] != byte(i) {
-				t.Errorf("Data mismatch at position %d: expected %d, got %d", i, i, readData[i])
-			}
-		}
-
-		// Test offset reading
-		readData, ok = buffer.Read("/test.txt", 50, 50, nil)
-		if !ok {
-			t.Fatal("Expected true for valid read")
-		}
-		if len(readData) != 50 {
-			t.Errorf("Expected 50 bytes, got %d", len(readData))
-		}
-		for i := range readData {
-			if readData[i] != byte(i+50) {
-				t.Errorf("Data mismatch at position %d: expected %d, got %d", i, i+50, readData[i])
-			}
-		}
-
-		// Test reading past end
-		readData, ok = buffer.Read("/test.txt", 90, 50, nil)
-		if !ok {
-			t.Fatal("Expected true for valid read")
-		}
-		if len(readData) != 10 {
-			t.Errorf("Expected 10 bytes, got %d", len(readData))
-		}
-
-		// Test reading at end
-		readData, ok = buffer.Read("/test.txt", 100, 10, nil)
-		if !ok || len(readData) != 0 {
-			t.Error("Expected empty result at end")
-		}
-
-		// Test reading past end
-		_, ok = buffer.Read("/test.txt", 101, 10, nil)
-		if ok {
-			t.Error("Expected false for read past end")
-		}
-	})
-
-	t.Run("buffer eviction", func(t *testing.T) {
-		buffer := NewReadAheadBuffer(100) // 100 byte buffer size
-		buffer.Configure(3, 1000)         // Max 3 files, 1KB total
-
-		testData := make([]byte, 100)
-
-		// Fill multiple files
-		for i := 0; i < 5; i++ {
-			path := fmt.Sprintf("/file%d.txt", i)
-			buffer.Fill(path, testData, 0)
-		}
-
-		// Verify old buffers were evicted
-		if _, ok := buffer.Read("/file0.txt", 0, 10, nil); ok {
-			t.Error("Expected early buffer to be evicted")
-		}
-		if _, ok := buffer.Read("/file4.txt", 0, 10, nil); !ok {
-			t.Error("Expected recent buffer to be present")
-		}
-
-		// Check current memory usage
-		if buffer.Size() > 300 {
-			t.Errorf("Expected size <= 300, got %d", buffer.Size())
-		}
-	})
-
-	t.Run("memory limits", func(t *testing.T) {
-		buffer := NewReadAheadBuffer(100) // 100 byte buffer size
-		buffer.Configure(10, 300)         // Max 10 files, 300 bytes total (only room for 3 buffers)
-
-		testData := make([]byte, 100)
-
-		// Fill multiple files
-		for i := 0; i < 5; i++ {
-			path := fmt.Sprintf("/file%d.txt", i)
-			buffer.Fill(path, testData, 0)
-		}
-
-		// Verify memory limit is respected
-		if buffer.Size() > 300 {
-			t.Errorf("Expected memory usage <= 300, got %d", buffer.Size())
-		}
-	})
-}
-
 // TestH6_CacheInvalidateOrder verifies that Invalidate calls removeFromAccessLog
 // before delete, so that the access log can still look up the cache entry.
 func TestH6_CacheInvalidateOrder(t *testing.T) {
@@ -774,12 +662,6 @@ func TestCacheResize(t *testing.T) {
 		}
 	})
 
-	t.Run("resize read buffer", func(t *testing.T) {
-		buf := NewReadAheadBuffer(4096)
-		buf.Resize(20, 2*1024*1024)
-		// Just verify no panic
-	})
-
 	t.Run("resize dir cache", func(t *testing.T) {
 		cache := NewDirCache(5*time.Second, 100, 1000)
 		cache.Resize(50)
@@ -1050,10 +932,7 @@ func TestDirCacheUpdateAccessLog(t *testing.T) {
 
 // Tests for cache enforceMemoryLimits
 func TestCacheEnforceMemoryLimits(t *testing.T) {
-	nfs, mfs := createTestServer(t, func(o *ExportOptions) {
-		o.ReadAheadMaxFiles = 3
-		o.ReadAheadMaxMemory = 1024
-	})
+	nfs, mfs := createTestServer(t)
 	defer nfs.Close()
 
 	// Create files larger than limits

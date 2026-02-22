@@ -33,19 +33,6 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		options.TransferSize = 65536 // Default: 64KB
 	}
 
-	// Set read-ahead defaults
-	if options.ReadAheadSize <= 0 {
-		options.ReadAheadSize = 262144 // Default: 256KB
-	}
-
-	if options.ReadAheadMaxFiles <= 0 {
-		options.ReadAheadMaxFiles = 100 // Default: 100 files
-	}
-
-	if options.ReadAheadMaxMemory <= 0 {
-		options.ReadAheadMaxMemory = 104857600 // Default: 100MB
-	}
-
 	// Set attribute cache defaults
 	if options.AttrCacheTimeout <= 0 {
 		options.AttrCacheTimeout = 5 * time.Second
@@ -73,31 +60,9 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		options.DirCacheMaxDirSize = 10000
 	}
 
-	// Set memory pressure detection defaults
-	if options.MemoryHighWatermark <= 0 || options.MemoryHighWatermark > 1.0 {
-		options.MemoryHighWatermark = 0.8 // Default: 80% of total memory
-	}
-
-	if options.MemoryLowWatermark <= 0 || options.MemoryLowWatermark >= options.MemoryHighWatermark {
-		options.MemoryLowWatermark = 0.6 // Default: 60% of total memory
-	}
-
-	if options.MemoryCheckInterval <= 0 {
-		options.MemoryCheckInterval = 30 * time.Second // Check every 30 seconds by default
-	}
-
 	// Set worker pool defaults
 	if options.MaxWorkers <= 0 {
 		options.MaxWorkers = runtime.NumCPU() * 4 // Default: number of logical CPUs * 4
-	}
-
-	// For BatchOperations, we can't easily check if it was explicitly set to false
-	// or just has the default false value. We'll set the default to true for
-	// most other cases in the test.
-	// This field needs special handling in testing.
-
-	if options.MaxBatchSize <= 0 {
-		options.MaxBatchSize = 10 // Default: 10 operations per batch
 	}
 
 	// Connection management defaults
@@ -205,7 +170,6 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		logger:           log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
 		structuredLogger: structuredLogger,
 		attrCache:        NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
-		readBuf:          NewReadAheadBuffer(options.ReadAheadSize),
 	}
 
 	// Populate atomic option pointers from the fully-defaulted ExportOptions
@@ -216,23 +180,12 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		server.dirCache = NewDirCache(options.DirCacheTimeout, options.DirCacheMaxEntries, options.DirCacheMaxDirSize)
 	}
 
-	// Configure read-ahead buffer with size limits
-	server.readBuf.Configure(options.ReadAheadMaxFiles, options.ReadAheadMaxMemory)
-
 	// Configure negative caching
 	server.attrCache.ConfigureNegativeCaching(options.CacheNegativeLookups, options.NegativeCacheTimeout)
 
 	// Initialize and start worker pool
 	server.workerPool = NewWorkerPool(options.MaxWorkers, server)
 	server.workerPool.Start()
-
-	// Initialize batch processor
-	server.batchProc = NewBatchProcessor(server, options.MaxBatchSize)
-
-	// Start memory pressure monitoring if enabled
-	if options.AdaptToMemoryPressure {
-		server.startMemoryMonitoring()
-	}
 
 	// Initialize metrics collection
 	server.initMetrics()
@@ -274,25 +227,6 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	return server, nil
 }
 
-// startMemoryMonitoring initializes and starts the memory monitor
-func (n *AbsfsNFS) startMemoryMonitoring() {
-	t := n.tuning.Load()
-	n.memoryMonitor = NewMemoryMonitor(n)
-	n.memoryMonitor.Start(t.MemoryCheckInterval)
-	n.logger.Printf("Memory pressure monitoring enabled (check interval: %v, high watermark: %.1f%%, low watermark: %.1f%%)",
-		t.MemoryCheckInterval,
-		t.MemoryHighWatermark*100,
-		t.MemoryLowWatermark*100)
-}
-
-// stopMemoryMonitoring stops the memory monitor if it's running
-func (n *AbsfsNFS) stopMemoryMonitoring() {
-	if n.memoryMonitor != nil && n.memoryMonitor.IsActive() {
-		n.memoryMonitor.Stop()
-		n.logger.Printf("Memory pressure monitoring stopped")
-	}
-}
-
 // ExecuteWithWorker runs a task in the worker pool
 // If the worker pool is not available (disabled or full), it executes the task directly
 func (n *AbsfsNFS) ExecuteWithWorker(task func() interface{}) interface{} {
@@ -323,17 +257,9 @@ func (n *AbsfsNFS) GetAttrCacheSize() int {
 
 // Close releases resources and stops any background processes
 func (n *AbsfsNFS) Close() error {
-	// Stop memory monitoring if active
-	n.stopMemoryMonitoring()
-
 	// Stop worker pool
 	if n.workerPool != nil {
 		n.workerPool.Stop()
-	}
-
-	// Stop batch processor
-	if n.batchProc != nil {
-		n.batchProc.Stop()
 	}
 
 	// Release all file handles to prevent file descriptor leaks
@@ -348,10 +274,6 @@ func (n *AbsfsNFS) Close() error {
 
 	if n.dirCache != nil {
 		n.dirCache.Clear()
-	}
-
-	if n.readBuf != nil {
-		n.readBuf.Clear()
 	}
 
 	// Close structured logger if it's a SlogLogger
