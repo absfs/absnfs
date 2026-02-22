@@ -462,3 +462,178 @@ func TestIsIPAllowed(t *testing.T) {
 		})
 	}
 }
+
+// TestM4_RootSquashBothUIDAndGID verifies that root_squash squashes both
+// UID and GID when UID is 0 (root), regardless of the GID value.
+func TestM4_RootSquashBothUIDAndGID(t *testing.T) {
+	// Root user with non-zero GID should still get GID squashed
+	authSys := &AuthSysCredential{
+		UID: 0,
+		GID: 1000, // Non-zero GID
+	}
+
+	result := &AuthResult{
+		Allowed: true,
+		UID:     0,
+		GID:     1000,
+	}
+
+	applySquashing(result, authSys, "root")
+
+	if result.UID != 65534 {
+		t.Errorf("Expected UID to be squashed to 65534, got %d", result.UID)
+	}
+	if result.GID != 65534 {
+		t.Errorf("Expected GID to be squashed to 65534 when UID is root, got %d", result.GID)
+	}
+
+	// Non-root user should not be squashed
+	authSys2 := &AuthSysCredential{
+		UID: 1000,
+		GID: 0,
+	}
+
+	result2 := &AuthResult{
+		Allowed: true,
+		UID:     1000,
+		GID:     0,
+	}
+
+	applySquashing(result2, authSys2, "root")
+
+	if result2.UID != 1000 {
+		t.Errorf("Non-root UID should not be squashed, got %d", result2.UID)
+	}
+	// Root squash should squash primary GID 0 even for non-root UID,
+	// matching standard NFS server behavior (group root is privileged).
+	if result2.GID != 65534 {
+		t.Errorf("Primary GID 0 should be squashed to 65534 under root_squash, got %d", result2.GID)
+	}
+}
+
+// TestL8_AuthNoneDocumentation verifies that AUTH_NONE is accepted as
+// intentional standard NFS behavior for public/shared exports.
+func TestL8_AuthNoneDocumentation(t *testing.T) {
+	ctx := &AuthContext{
+		ClientIP:   "127.0.0.1",
+		ClientPort: 1023,
+		Credential: &RPCCredential{
+			Flavor: AUTH_NONE,
+			Body:   []byte{},
+		},
+	}
+
+	defaultOpts := ExportOptions{}
+	result := ValidateAuthentication(ctx, policyFromExportOptions(&defaultOpts))
+	if !result.Allowed {
+		t.Error("AUTH_NONE should be accepted for public/shared exports")
+	}
+	if result.UID != 65534 || result.GID != 65534 {
+		t.Errorf("AUTH_NONE should map to nobody (65534/65534), got %d/%d", result.UID, result.GID)
+	}
+}
+
+// TestL9_AuxGIDsRootSquash verifies that auxiliary GID 0 entries are squashed
+// to the anonymous GID when root_squash is enabled.
+func TestL9_AuxGIDsRootSquash(t *testing.T) {
+	authSys := &AuthSysCredential{
+		UID:     0,
+		GID:     0,
+		AuxGIDs: []uint32{0, 1000, 0, 2000},
+	}
+
+	result := &AuthResult{
+		Allowed: true,
+		UID:     0,
+		GID:     0,
+	}
+
+	applySquashing(result, authSys, "root")
+
+	// Check that GID 0 entries in AuxGIDs are squashed
+	for i, gid := range authSys.AuxGIDs {
+		switch i {
+		case 0, 2:
+			if gid != 65534 {
+				t.Errorf("AuxGIDs[%d] = %d, want 65534 (squashed)", i, gid)
+			}
+		case 1:
+			if gid != 1000 {
+				t.Errorf("AuxGIDs[%d] = %d, want 1000 (unchanged)", i, gid)
+			}
+		case 3:
+			if gid != 2000 {
+				t.Errorf("AuxGIDs[%d] = %d, want 2000 (unchanged)", i, gid)
+			}
+		}
+	}
+
+	// Non-root user: AuxGIDs should not be affected
+	authSys2 := &AuthSysCredential{
+		UID:     1000,
+		GID:     1000,
+		AuxGIDs: []uint32{0, 500},
+	}
+
+	result2 := &AuthResult{
+		Allowed: true,
+		UID:     1000,
+		GID:     1000,
+	}
+
+	applySquashing(result2, authSys2, "root")
+
+	// GID 0 in aux list should still be squashed for root_squash
+	if authSys2.AuxGIDs[0] != 65534 {
+		t.Errorf("AuxGIDs[0] = %d, want 65534 (squashed even for non-root user in root_squash)", authSys2.AuxGIDs[0])
+	}
+	if authSys2.AuxGIDs[1] != 500 {
+		t.Errorf("AuxGIDs[1] = %d, want 500 (unchanged)", authSys2.AuxGIDs[1])
+	}
+}
+
+// TestR26_RootSquashDoesNotMutateOriginalAuxGIDs verifies that applySquashing
+// does not mutate the original AuxGIDs slice.
+func TestR26_RootSquashDoesNotMutateOriginalAuxGIDs(t *testing.T) {
+	// Create a shared slice that simulates reuse across calls
+	sharedAuxGIDs := []uint32{0, 1000, 0, 2000}
+
+	// Create AuthSysCredential referencing the shared slice
+	authSys1 := &AuthSysCredential{
+		UID:     0,
+		GID:     0,
+		AuxGIDs: sharedAuxGIDs,
+	}
+
+	// Save a copy of the original values
+	originalValues := make([]uint32, len(sharedAuxGIDs))
+	copy(originalValues, sharedAuxGIDs)
+
+	result := &AuthResult{Allowed: true, UID: 0, GID: 0}
+	applySquashing(result, authSys1, "root")
+
+	// Verify the original shared slice was NOT mutated
+	for i, v := range sharedAuxGIDs {
+		if v != originalValues[i] {
+			t.Errorf("Original sharedAuxGIDs[%d] was mutated: got %d, expected %d", i, v, originalValues[i])
+		}
+	}
+
+	// Verify that authSys1.AuxGIDs was properly squashed (on its own copy)
+	for i, gid := range authSys1.AuxGIDs {
+		switch i {
+		case 0, 2:
+			if gid != 65534 {
+				t.Errorf("authSys1.AuxGIDs[%d] = %d, want 65534", i, gid)
+			}
+		case 1:
+			if gid != 1000 {
+				t.Errorf("authSys1.AuxGIDs[%d] = %d, want 1000", i, gid)
+			}
+		case 3:
+			if gid != 2000 {
+				t.Errorf("authSys1.AuxGIDs[%d] = %d, want 2000", i, gid)
+			}
+		}
+	}
+}

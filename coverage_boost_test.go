@@ -39,6 +39,13 @@ func createTestServer(t *testing.T, opts ...func(*ExportOptions)) (*AbsfsNFS, *m
 	return nfs, mfs
 }
 
+// createTestNFS creates a minimal AbsfsNFS for testing
+func createTestNFS(t *testing.T) *AbsfsNFS {
+	t.Helper()
+	nfs, _ := createTestServer(t)
+	return nfs
+}
+
 // Tests for handleWrite edge cases
 func TestHandleWriteEdgeCases(t *testing.T) {
 	t.Run("write in read-only mode", func(t *testing.T) {
@@ -4590,8 +4597,8 @@ func TestEncodeRPCReplyCoverage(t *testing.T) {
 				Xid:     12345,
 				MsgType: 1, // REPLY
 			},
-			Status:       0,    // MSG_ACCEPTED
-			AcceptStatus: 0,    // SUCCESS
+			Status:       0, // MSG_ACCEPTED
+			AcceptStatus: 0, // SUCCESS
 			Data:         []byte("test payload"),
 		}
 		err := EncodeRPCReply(&buf, reply)

@@ -1,6 +1,8 @@
 package absnfs
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -385,6 +387,62 @@ func TestRateLimiterIntegration(t *testing.T) {
 
 		t.Logf("Attacker allowed: %d, Legitimate allowed: %d", allowedCount, legitimateAllowed)
 	})
+}
+
+// TestL6_RateLimiterPerConnectionRace verifies that concurrent calls to
+// AllowRequest for the same connID don't create duplicate limiters (TOCTOU race).
+func TestL6_RateLimiterPerConnectionRace(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+	rl := NewRateLimiter(config)
+
+	var wg sync.WaitGroup
+	const goroutines = 50
+	connID := "test-conn-1"
+
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			rl.AllowRequest("127.0.0.1", connID)
+		}()
+	}
+	wg.Wait()
+
+	// Verify only one limiter exists for the connID
+	count := 0
+	rl.perConnectionLimiter.Range(func(key, value interface{}) bool {
+		if key.(string) == connID {
+			count++
+		}
+		return true
+	})
+
+	if count != 1 {
+		t.Fatalf("expected exactly 1 limiter for connID, got %d", count)
+	}
+}
+
+// TestR32_PerIPLimiterCleanupBounded verifies that cleanup removes at most 100
+// entries per pass instead of iterating the entire map.
+func TestR32_PerIPLimiterCleanupBounded(t *testing.T) {
+	pl := NewPerIPLimiter(1000, 100, time.Minute)
+
+	// Create 200 IP entries that are all at max tokens (eligible for cleanup)
+	for i := 0; i < 200; i++ {
+		ip := fmt.Sprintf("10.0.%d.%d", i/256, i%256)
+		pl.limiters[ip] = NewTokenBucket(1000, 100)
+	}
+
+	initialCount := len(pl.limiters)
+	pl.cleanup()
+
+	remaining := len(pl.limiters)
+	deleted := initialCount - remaining
+
+	// Should have deleted exactly 100 (the bounded max)
+	if deleted != 100 {
+		t.Fatalf("expected 100 deletions, got %d", deleted)
+	}
 }
 
 func BenchmarkTokenBucket(b *testing.B) {

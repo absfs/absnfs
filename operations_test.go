@@ -3,8 +3,11 @@ package absnfs
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -1942,4 +1945,391 @@ type badWriter struct{}
 
 func (w *badWriter) Write(p []byte) (n int, err error) {
 	return 0, io.ErrShortWrite
+}
+
+// TestH7_SetAttrModeComparison verifies that SetAttr compares only permission
+// bits (not file type bits) when deciding whether to call Chmod.
+func TestH7_SetAttrModeComparison(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatalf("Failed to create memfs: %v", err)
+	}
+
+	nfs, err := New(fs, ExportOptions{})
+	if err != nil {
+		t.Fatalf("Failed to create NFS: %v", err)
+	}
+	defer nfs.Close()
+
+	// Create a test file
+	f, err := fs.Create("/testfile")
+	if err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+	f.Close()
+
+	node, err := nfs.Lookup("/testfile")
+	if err != nil {
+		t.Fatalf("Failed to lookup file: %v", err)
+	}
+
+	// Get current attrs
+	currentAttrs, err := nfs.GetAttr(node)
+	if err != nil {
+		t.Fatalf("Failed to getattr: %v", err)
+	}
+
+	// Set attrs with same permission bits but different type bits.
+	// This should NOT trigger a Chmod since only perm bits differ.
+	newAttrs := &NFSAttrs{
+		Mode: currentAttrs.Mode&os.ModePerm | os.ModeDir, // same perms, different type
+		Size: currentAttrs.Size,
+		Uid:  currentAttrs.Uid,
+		Gid:  currentAttrs.Gid,
+	}
+	newAttrs.SetMtime(currentAttrs.Mtime())
+	newAttrs.SetAtime(currentAttrs.Atime())
+
+	// This should succeed without error since perms are the same
+	err = nfs.SetAttr(node, newAttrs)
+	if err != nil {
+		t.Fatalf("SetAttr failed unexpectedly: %v", err)
+	}
+}
+
+// TestM10_DirectoryNlinkAtLeastTwo verifies that directories get nlink >= 2
+// when attributes are encoded.
+func TestM10_DirectoryNlinkAtLeastTwo(t *testing.T) {
+	// Create directory attrs
+	dirAttrs := &NFSAttrs{
+		Mode:   os.ModeDir | 0755,
+		Size:   4096,
+		FileId: 1,
+		Uid:    0,
+		Gid:    0,
+	}
+	dirAttrs.SetMtime(time.Now())
+	dirAttrs.SetAtime(time.Now())
+
+	var buf [256]byte
+	w := &sliceWriter{buf: buf[:0]}
+	err := encodeFileAttributes(w, dirAttrs)
+	if err != nil {
+		t.Fatalf("encodeFileAttributes failed: %v", err)
+	}
+
+	// The nlink field is the 3rd uint32 (bytes 8-11): type(4) + mode(4) + nlink(4)
+	if len(w.buf) < 12 {
+		t.Fatalf("Expected at least 12 bytes, got %d", len(w.buf))
+	}
+	nlink := uint32(w.buf[8])<<24 | uint32(w.buf[9])<<16 | uint32(w.buf[10])<<8 | uint32(w.buf[11])
+	if nlink < 2 {
+		t.Errorf("Expected nlink >= 2 for directory, got %d", nlink)
+	}
+
+	// Verify regular file still gets nlink=1
+	fileAttrs := &NFSAttrs{
+		Mode:   0644,
+		Size:   100,
+		FileId: 2,
+		Uid:    0,
+		Gid:    0,
+	}
+	fileAttrs.SetMtime(time.Now())
+	fileAttrs.SetAtime(time.Now())
+
+	w2 := &sliceWriter{buf: buf[:0]}
+	err = encodeFileAttributes(w2, fileAttrs)
+	if err != nil {
+		t.Fatalf("encodeFileAttributes failed: %v", err)
+	}
+
+	nlink2 := uint32(w2.buf[8])<<24 | uint32(w2.buf[9])<<16 | uint32(w2.buf[10])<<8 | uint32(w2.buf[11])
+	if nlink2 != 1 {
+		t.Errorf("Expected nlink=1 for regular file, got %d", nlink2)
+	}
+}
+
+// sliceWriter is a simple io.Writer for testing
+type sliceWriter struct {
+	buf []byte
+}
+
+func (w *sliceWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	return len(p), nil
+}
+
+// TestL4_IsChildOfDepthCheck verifies that isChildOf only matches direct
+// children (one level deep), not arbitrary descendants.
+func TestL4_IsChildOfDepthCheck(t *testing.T) {
+	tests := []struct {
+		path    string
+		dirPath string
+		want    bool
+	}{
+		{"/dir/file.txt", "/dir", true},           // Direct child
+		{"/dir/sub/file.txt", "/dir", false},      // Grandchild - should NOT match
+		{"/dir/sub/deep/file.txt", "/dir", false}, // Deep descendant
+		{"/file.txt", "/", true},                  // Direct child of root
+		{"/dir/sub/file.txt", "/", false},         // Not direct child of root
+		{"/dir", "/dir", false},                   // Same path
+		{"/", "/", false},                         // Root vs root
+		{"/dir2/file.txt", "/dir", false},         // Different prefix
+		{"/directory/file.txt", "/dir", false},    // Prefix but not parent
+	}
+
+	for _, tt := range tests {
+		got := isChildOf(tt.path, tt.dirPath)
+		if got != tt.want {
+			t.Errorf("isChildOf(%q, %q) = %v, want %v", tt.path, tt.dirPath, got, tt.want)
+		}
+	}
+}
+
+// TestR10_ChmodMasksTypeBits verifies that SetAttr and Create only pass
+// permission bits (not file type bits) to Chmod.
+func TestR10_ChmodMasksTypeBits(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatalf("Failed to create memfs: %v", err)
+	}
+
+	nfs, err := New(fs, ExportOptions{})
+	if err != nil {
+		t.Fatalf("Failed to create NFS: %v", err)
+	}
+	defer nfs.Close()
+
+	// Create a test file
+	f, err := fs.Create("/testfile")
+	if err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+	f.Close()
+
+	node, err := nfs.Lookup("/testfile")
+	if err != nil {
+		t.Fatalf("Failed to lookup file: %v", err)
+	}
+
+	currentAttrs, err := nfs.GetAttr(node)
+	if err != nil {
+		t.Fatalf("Failed to getattr: %v", err)
+	}
+
+	// Set attrs with type bits included (e.g. ModeDir) - Chmod should strip them
+	newAttrs := &NFSAttrs{
+		Mode: os.ModeDir | 0755, // includes type bits
+		Size: currentAttrs.Size,
+		Uid:  currentAttrs.Uid,
+		Gid:  currentAttrs.Gid,
+	}
+	newAttrs.SetMtime(currentAttrs.Mtime())
+	newAttrs.SetAtime(currentAttrs.Atime())
+
+	err = nfs.SetAttr(node, newAttrs)
+	if err != nil {
+		t.Fatalf("SetAttr failed: %v", err)
+	}
+
+	// Verify the file permissions are correct and type bits weren't applied
+	info, err := fs.Stat("/testfile")
+	if err != nil {
+		t.Fatalf("Failed to stat file: %v", err)
+	}
+	if info.Mode()&os.ModePerm != 0755 {
+		t.Errorf("Expected perms 0755, got %04o", info.Mode()&os.ModePerm)
+	}
+	if info.IsDir() {
+		t.Error("File should not have become a directory")
+	}
+}
+
+// TestR10_CreateChmodMasksTypeBits verifies that Create masks type bits when calling Chmod.
+func TestR10_CreateChmodMasksTypeBits(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatalf("Failed to create memfs: %v", err)
+	}
+
+	nfs, err := New(fs, ExportOptions{})
+	if err != nil {
+		t.Fatalf("Failed to create NFS: %v", err)
+	}
+	defer nfs.Close()
+
+	// Ensure root dir exists
+	dirNode, err := nfs.Lookup("/")
+	if err != nil {
+		t.Fatalf("Failed to lookup root: %v", err)
+	}
+
+	// Create with type bits included in mode
+	createAttrs := &NFSAttrs{
+		Mode: os.ModeDir | 0644, // type bits should be stripped
+	}
+	createAttrs.SetMtime(time.Now())
+	createAttrs.SetAtime(time.Now())
+
+	node, err := nfs.Create(dirNode, "newfile", createAttrs)
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	info, err := fs.Stat(node.path)
+	if err != nil {
+		t.Fatalf("Failed to stat created file: %v", err)
+	}
+	if info.Mode()&os.ModePerm != 0644 {
+		t.Errorf("Expected perms 0644, got %04o", info.Mode()&os.ModePerm)
+	}
+}
+
+// TestR11_ReadDirPlusLockProtection verifies that ReadDirPlus accesses
+// node.attrs with proper lock protection.
+func TestR11_ReadDirPlusLockProtection(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatalf("Failed to create memfs: %v", err)
+	}
+
+	nfs, err := New(fs, ExportOptions{})
+	if err != nil {
+		t.Fatalf("Failed to create NFS: %v", err)
+	}
+	defer nfs.Close()
+
+	// Create test directory and files
+	fs.Mkdir("/testdir", 0755)
+	for i := 0; i < 5; i++ {
+		f, err := fs.Create(fmt.Sprintf("/testdir/file%d", i))
+		if err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+		f.Close()
+	}
+
+	dirNode, err := nfs.Lookup("/testdir")
+	if err != nil {
+		t.Fatalf("Failed to lookup dir: %v", err)
+	}
+
+	// Run ReadDirPlus concurrently with attrs modifications to detect races
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = nfs.ReadDirPlus(dirNode)
+		}()
+	}
+	wg.Wait()
+}
+
+// TestR19_SetAttrZeroTimesSkipsChtimes verifies that SetAttr does not call
+// Chtimes when atime and mtime are zero-valued (not being changed).
+func TestR19_SetAttrZeroTimesSkipsChtimes(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatalf("Failed to create memfs: %v", err)
+	}
+
+	nfs, err := New(fs, ExportOptions{})
+	if err != nil {
+		t.Fatalf("Failed to create NFS: %v", err)
+	}
+	defer nfs.Close()
+
+	// Create a test file
+	f, err := fs.Create("/testfile")
+	if err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+	f.Close()
+
+	node, err := nfs.Lookup("/testfile")
+	if err != nil {
+		t.Fatalf("Failed to lookup file: %v", err)
+	}
+
+	// Get the current mtime
+	info, err := fs.Stat("/testfile")
+	if err != nil {
+		t.Fatalf("Failed to stat file: %v", err)
+	}
+	originalMtime := info.ModTime()
+
+	// Set attrs with zero-valued times (should NOT change file times)
+	newAttrs := &NFSAttrs{
+		Mode: node.attrs.Mode,
+		Size: node.attrs.Size,
+		Uid:  node.attrs.Uid,
+		Gid:  node.attrs.Gid,
+		// atime and mtime are zero-valued (time.Time{})
+	}
+
+	err = nfs.SetAttr(node, newAttrs)
+	if err != nil {
+		t.Fatalf("SetAttr failed: %v", err)
+	}
+
+	// Verify times were NOT changed to epoch
+	info, err = fs.Stat("/testfile")
+	if err != nil {
+		t.Fatalf("Failed to stat file after SetAttr: %v", err)
+	}
+	if info.ModTime() != originalMtime {
+		t.Errorf("File mtime changed when it shouldn't have: was %v, now %v",
+			originalMtime, info.ModTime())
+	}
+}
+
+// TestR20_LookupSetsFileId verifies that Lookup sets FileId to a deterministic
+// hash of the path, and that the FileId is preserved through the AttrCache.
+func TestR20_LookupSetsFileId(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatalf("Failed to create memfs: %v", err)
+	}
+
+	nfs, err := New(fs, ExportOptions{})
+	if err != nil {
+		t.Fatalf("Failed to create NFS: %v", err)
+	}
+	defer nfs.Close()
+
+	// Create a test file
+	f, err := fs.Create("/testfile")
+	if err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+	f.Close()
+
+	// Lookup should set FileId
+	node, err := nfs.Lookup("/testfile")
+	if err != nil {
+		t.Fatalf("Failed to lookup file: %v", err)
+	}
+
+	if node.attrs.FileId == 0 {
+		t.Error("FileId should not be zero after Lookup")
+	}
+
+	// Verify it's deterministic (same path = same FileId)
+	h := fnv.New64a()
+	h.Write([]byte("/testfile"))
+	expectedId := h.Sum64()
+	if node.attrs.FileId != expectedId {
+		t.Errorf("FileId = %d, expected fnv64a hash %d", node.attrs.FileId, expectedId)
+	}
+
+	// Second lookup should return the same FileId (from cache)
+	node2, err := nfs.Lookup("/testfile")
+	if err != nil {
+		t.Fatalf("Failed to lookup file again: %v", err)
+	}
+	if node2.attrs.FileId != expectedId {
+		t.Errorf("Cached FileId = %d, expected %d", node2.attrs.FileId, expectedId)
+	}
 }

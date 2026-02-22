@@ -345,6 +345,143 @@ func TestWorkerPoolResize(t *testing.T) {
 	}
 }
 
+// TestL3_WorkerPoolTimerLeak verifies that Submit uses a proper timer
+// instead of time.After (which leaks until it fires).
+// We test indirectly by confirming that Submit still works correctly
+// when the queue is full (timeout path).
+func TestL3_WorkerPoolTimerLeak(t *testing.T) {
+	nfs := createTestNFS(t)
+	defer nfs.Close()
+
+	pool := NewWorkerPool(1, nfs)
+	pool.Start()
+	defer pool.Stop()
+
+	// Fill the queue and the single worker with blocking tasks
+	blocker := make(chan struct{})
+	// Submit a blocking task to occupy the worker
+	pool.Submit(func() interface{} {
+		<-blocker
+		return nil
+	})
+	// Fill the buffered queue (size = 1*2 = 2)
+	for i := 0; i < 2; i++ {
+		pool.Submit(func() interface{} {
+			<-blocker
+			return nil
+		})
+	}
+
+	// Next submit should timeout (testing the timer path)
+	result := pool.Submit(func() interface{} { return "ok" })
+	if result != nil {
+		t.Fatal("expected nil when queue is full and submit times out")
+	}
+
+	close(blocker)
+}
+
+// TestL5_WorkerPoolResizePreservesTasks verifies that Resize re-enqueues
+// pending tasks instead of silently dropping them.
+func TestL5_WorkerPoolResizePreservesTasks(t *testing.T) {
+	nfs := createTestNFS(t)
+	defer nfs.Close()
+
+	pool := NewWorkerPool(2, nfs)
+	pool.Start()
+
+	// Block both workers
+	blocker := make(chan struct{})
+	var completed int32
+	for i := 0; i < 2; i++ {
+		pool.Submit(func() interface{} {
+			<-blocker
+			return nil
+		})
+	}
+
+	// Queue some tasks that will be pending
+	for i := 0; i < 2; i++ {
+		pool.Submit(func() interface{} {
+			atomic.AddInt32(&completed, 1)
+			return "done"
+		})
+	}
+
+	// Unblock workers so Stop() in Resize can proceed
+	close(blocker)
+	time.Sleep(50 * time.Millisecond)
+
+	// Resize - this should re-enqueue pending tasks
+	pool.Resize(4)
+	defer pool.Stop()
+
+	// Give re-enqueued tasks time to execute
+	time.Sleep(200 * time.Millisecond)
+
+	// Pending tasks should have been re-enqueued and completed
+	c := atomic.LoadInt32(&completed)
+	if c == 0 {
+		t.Fatal("expected at least some re-enqueued tasks to complete, got 0")
+	}
+}
+
+// TestR14_SubmitWaitNoDoubleClose verifies that SubmitWait no longer double-closes
+// the result channel (worker sends on buffered chan, SubmitWait just reads).
+func TestR14_SubmitWaitNoDoubleClose(t *testing.T) {
+	nfs := createTestNFS(t)
+	defer nfs.Close()
+
+	pool := NewWorkerPool(2, nfs)
+	pool.Start()
+	defer pool.Stop()
+
+	// SubmitWait should work without panicking from double-close
+	result, ok := pool.SubmitWait(func() interface{} { return "hello" })
+	if !ok {
+		t.Fatal("expected ok=true from SubmitWait")
+	}
+	if result != "hello" {
+		t.Fatalf("expected 'hello', got %v", result)
+	}
+}
+
+// TestR16_ResizeAfterStopNoPanic verifies that calling Resize after Stop
+// doesn't panic from double-closing the task queue channel.
+func TestR16_ResizeAfterStopNoPanic(t *testing.T) {
+	nfs := createTestNFS(t)
+	defer nfs.Close()
+
+	pool := NewWorkerPool(2, nfs)
+	pool.Start()
+	pool.Stop()
+
+	// This should not panic even though the channel is already closed
+	pool.Resize(4)
+	pool.Stop()
+}
+
+// TestR29_ConcurrentResize verifies that concurrent Resize calls are serialized
+// and don't cause panics.
+func TestR29_ConcurrentResize(t *testing.T) {
+	nfs := createTestNFS(t)
+	defer nfs.Close()
+
+	pool := NewWorkerPool(2, nfs)
+	pool.Start()
+	defer pool.Stop()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			pool.Resize(n + 1)
+		}(i)
+	}
+	wg.Wait()
+}
+
 func BenchmarkWorkerPool(b *testing.B) {
 	// Create a mock AbsfsNFS for the worker pool
 	mockServer := &AbsfsNFS{

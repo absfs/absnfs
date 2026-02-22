@@ -292,5 +292,88 @@ func TestIntegrationWithReadWrite(t *testing.T) {
 	})
 }
 
+// TestL2_BatchProcessorStopDrains verifies that BatchProcessor.Stop() sends
+// error results to pending waiters instead of leaving them blocked.
+func TestL2_BatchProcessorStopDrains(t *testing.T) {
+	nfs := createTestNFS(t)
+	defer nfs.Close()
+	nfs.UpdateTuningOptions(func(t *TuningOptions) { t.BatchOperations = true })
+
+	bp := NewBatchProcessor(nfs, 100) // large max so batch doesn't auto-fire
+
+	// Submit a request that will sit pending
+	resultChan := make(chan *BatchResult, 1)
+	req := &BatchRequest{
+		Type:       BatchTypeRead,
+		FileHandle: 999,
+		Offset:     0,
+		Length:     100,
+		Time:       time.Now(),
+		ResultChan: resultChan,
+		Context:    context.Background(),
+	}
+
+	added, _ := bp.AddRequest(req)
+	if !added {
+		t.Fatal("request should have been added")
+	}
+
+	// Stop should drain pending and notify waiters
+	bp.Stop()
+
+	// The waiter should receive an error result, not block forever
+	select {
+	case res := <-resultChan:
+		if res == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if res.Error == nil {
+			t.Fatal("expected error in result after Stop")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for result after Stop - waiter was not notified")
+	}
+}
+
+// TestR31_BatchProcessorUnlockBeforeGoroutine verifies that the timer-based
+// batch processing path works correctly (unlock before goroutine dispatch).
+func TestR31_BatchProcessorUnlockBeforeGoroutine(t *testing.T) {
+	nfs := createTestNFS(t)
+	defer nfs.Close()
+	nfs.UpdateTuningOptions(func(t *TuningOptions) { t.BatchOperations = true })
+
+	// Small delay so timer fires quickly
+	bp := NewBatchProcessor(nfs, 100)
+
+	resultChan := make(chan *BatchResult, 1)
+	req := &BatchRequest{
+		Type:       BatchTypeRead,
+		FileHandle: 999,
+		Offset:     0,
+		Length:     100,
+		Time:       time.Now(),
+		ResultChan: resultChan,
+		Context:    context.Background(),
+	}
+
+	added, _ := bp.AddRequest(req)
+	if !added {
+		t.Fatal("request should have been added")
+	}
+
+	// Wait for timer-based processing (default delay is 10ms, ticker is 5ms)
+	select {
+	case res := <-resultChan:
+		if res == nil {
+			t.Fatal("expected non-nil result")
+		}
+		// We expect an error since file handle 999 doesn't exist
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for timer-based batch processing")
+	}
+
+	bp.Stop()
+}
+
 // Skip TestBatchProcessorShutdown for now as it might cause timeouts
 // We'll verify the shutdown mechanism is working through other tests

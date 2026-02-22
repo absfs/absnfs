@@ -2,6 +2,7 @@ package absnfs
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -235,4 +236,206 @@ func TestReadAheadBuffer(t *testing.T) {
 			t.Errorf("Expected memory usage <= 300, got %d", buffer.Size())
 		}
 	})
+}
+
+// TestH6_CacheInvalidateOrder verifies that Invalidate calls removeFromAccessLog
+// before delete, so that the access log can still look up the cache entry.
+func TestH6_CacheInvalidateOrder(t *testing.T) {
+	cache := NewAttrCache(10*time.Second, 100)
+
+	// Add an entry
+	attrs := &NFSAttrs{Mode: 0644, Size: 100}
+	cache.Put("/test/file.txt", attrs)
+
+	// Verify entry exists
+	got, found := cache.Get("/test/file.txt")
+	if !found || got == nil {
+		t.Fatal("Expected cache entry to exist after Put")
+	}
+
+	// Invalidate should not panic and should remove both the entry and access log
+	cache.Invalidate("/test/file.txt")
+
+	// Verify entry is gone
+	got, found = cache.Get("/test/file.txt")
+	if found || got != nil {
+		t.Error("Expected cache entry to be removed after Invalidate")
+	}
+
+	// Verify cache size is 0
+	if cache.Size() != 0 {
+		t.Errorf("Expected cache size 0 after Invalidate, got %d", cache.Size())
+	}
+
+	// Test DirCache Invalidate order too
+	dirCache := NewDirCache(10*time.Second, 100, 1000)
+	dirCache.Put("/testdir", []os.FileInfo{})
+
+	entries, found := dirCache.Get("/testdir")
+	if !found {
+		t.Fatal("Expected dir cache entry to exist after Put")
+	}
+	_ = entries
+
+	dirCache.Invalidate("/testdir")
+	_, found = dirCache.Get("/testdir")
+	if found {
+		t.Error("Expected dir cache entry to be removed after Invalidate")
+	}
+}
+
+// TestM7_AttrCacheThreeStateReturn verifies that AttrCache.Get returns a
+// 3-state result: (attrs, true) for hit, (nil, true) for negative hit,
+// (nil, false) for miss.
+func TestM7_AttrCacheThreeStateReturn(t *testing.T) {
+	cache := NewAttrCache(10*time.Second, 100)
+	cache.ConfigureNegativeCaching(true, 10*time.Second)
+
+	// Cache miss: path not in cache at all
+	attrs, found := cache.Get("/nonexistent")
+	if found {
+		t.Error("Expected cache miss (found=false) for path not in cache")
+	}
+	if attrs != nil {
+		t.Error("Expected nil attrs for cache miss")
+	}
+
+	// Positive cache hit
+	cache.Put("/exists", &NFSAttrs{Mode: 0644, Size: 42})
+	attrs, found = cache.Get("/exists")
+	if !found {
+		t.Error("Expected cache hit (found=true) for cached path")
+	}
+	if attrs == nil {
+		t.Error("Expected non-nil attrs for positive cache hit")
+	}
+
+	// Negative cache hit
+	cache.PutNegative("/deleted")
+	attrs, found = cache.Get("/deleted")
+	if !found {
+		t.Error("Expected negative cache hit (found=true) for negatively cached path")
+	}
+	if attrs != nil {
+		t.Error("Expected nil attrs for negative cache hit")
+	}
+}
+
+// TestR3_InvalidateNegativeInDirAccessLogOrder verifies that InvalidateNegativeInDir
+// removes entries from the access log before deleting from the cache map, preventing
+// ghost elements in the LRU list.
+func TestR3_InvalidateNegativeInDirAccessLogOrder(t *testing.T) {
+	cache := NewAttrCache(10*time.Second, 100)
+	cache.ConfigureNegativeCaching(true, 10*time.Second)
+
+	// Add several negative entries under /dir
+	cache.PutNegative("/dir/a")
+	cache.PutNegative("/dir/b")
+	cache.PutNegative("/dir/c")
+
+	// Add a positive entry too
+	cache.Put("/dir/existing", &NFSAttrs{Mode: 0644, Size: 10})
+
+	// Verify all entries exist
+	if cache.Size() != 4 {
+		t.Fatalf("Expected 4 cache entries, got %d", cache.Size())
+	}
+
+	// Invalidate negative entries in /dir
+	cache.InvalidateNegativeInDir("/dir")
+
+	// Negative entries should be gone, positive entry should remain
+	if cache.Size() != 1 {
+		t.Errorf("Expected 1 cache entry after InvalidateNegativeInDir, got %d", cache.Size())
+	}
+
+	// The positive entry should still be accessible
+	got, found := cache.Get("/dir/existing")
+	if !found || got == nil {
+		t.Error("Positive entry should still exist after InvalidateNegativeInDir")
+	}
+
+	// Verify that the LRU list is consistent by filling cache to max and forcing eviction
+	for i := 0; i < 100; i++ {
+		cache.Put(fmt.Sprintf("/other/%d", i), &NFSAttrs{Mode: 0644, Size: int64(i)})
+	}
+	// If ghost elements existed, the cache size would exceed maxSize
+	if cache.Size() > 100 {
+		t.Errorf("Cache size %d exceeds max 100, LRU list may have ghost elements", cache.Size())
+	}
+}
+
+// TestR20_AttrCachePreservesFileId verifies that AttrCache.Put and Get
+// correctly copy the FileId field.
+func TestR20_AttrCachePreservesFileId(t *testing.T) {
+	cache := NewAttrCache(10*time.Second, 100)
+
+	attrs := &NFSAttrs{
+		Mode:   0644,
+		Size:   100,
+		FileId: 12345,
+		Uid:    1000,
+		Gid:    1000,
+	}
+	attrs.SetMtime(time.Now())
+	attrs.SetAtime(time.Now())
+
+	cache.Put("/test", attrs)
+
+	got, found := cache.Get("/test")
+	if !found || got == nil {
+		t.Fatal("Expected cache hit")
+	}
+	if got.FileId != 12345 {
+		t.Errorf("FileId = %d, expected 12345", got.FileId)
+	}
+}
+
+// TestR24_DirCacheExpiredEntryRecheck verifies that DirCache.Get re-checks
+// the entry after upgrading from RLock to Lock when removing expired entries.
+func TestR24_DirCacheExpiredEntryRecheck(t *testing.T) {
+	// Create a cache with very short TTL
+	cache := NewDirCache(1*time.Millisecond, 100, 1000)
+
+	// Add an entry
+	cache.Put("/testdir", []os.FileInfo{})
+
+	// Wait for it to expire
+	time.Sleep(5 * time.Millisecond)
+
+	// Get should return miss for expired entry
+	_, found := cache.Get("/testdir")
+	if found {
+		t.Error("Expected cache miss for expired entry")
+	}
+
+	// Verify it was cleaned up
+	if cache.Size() != 0 {
+		t.Errorf("Expected cache size 0 after expired entry cleanup, got %d", cache.Size())
+	}
+}
+
+// TestR25_AttrCacheExpiredEntryRecheck verifies that AttrCache.Get re-checks
+// the entry after upgrading from RLock to Lock when removing expired entries.
+func TestR25_AttrCacheExpiredEntryRecheck(t *testing.T) {
+	// Create a cache with very short TTL
+	cache := NewAttrCache(1*time.Millisecond, 100)
+
+	// Add an entry
+	attrs := &NFSAttrs{Mode: 0644, Size: 100}
+	cache.Put("/test", attrs)
+
+	// Wait for it to expire
+	time.Sleep(5 * time.Millisecond)
+
+	// Get should return miss for expired entry
+	got, found := cache.Get("/test")
+	if found || got != nil {
+		t.Error("Expected cache miss for expired entry")
+	}
+
+	// Verify it was cleaned up
+	if cache.Size() != 0 {
+		t.Errorf("Expected cache size 0 after expired entry cleanup, got %d", cache.Size())
+	}
 }
