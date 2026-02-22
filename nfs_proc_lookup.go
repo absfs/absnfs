@@ -76,7 +76,7 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 		nodeAttrsCopy := *node.attrs
 		node.mu.RUnlock()
 		var buf bytes.Buffer
-		xdrEncodeUint32(&buf, NFSERR_NOENT)
+		xdrEncodeUint32(&buf, mapError(err))
 		xdrEncodeUint32(&buf, 1)
 		if err := encodeFileAttributes(&buf, &nodeAttrsCopy); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil

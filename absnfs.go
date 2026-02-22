@@ -257,6 +257,12 @@ func (n *AbsfsNFS) GetAttrCacheSize() int {
 
 // Close releases resources and stops any background processes
 func (n *AbsfsNFS) Close() error {
+	// Stop the server if Export() created one
+	if n.exportServer != nil {
+		n.exportServer.Stop()
+		n.exportServer = nil
+	}
+
 	// Stop worker pool
 	if n.workerPool != nil {
 		n.workerPool.Stop()

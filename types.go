@@ -58,6 +58,7 @@ type AbsfsNFS struct {
 	workerPool       *WorkerPool             // Worker pool for concurrent operations
 	metrics          *MetricsCollector       // Metrics collection and reporting
 	rateLimiter      *RateLimiter            // Rate limiter for DoS protection
+	exportServer     *Server                 // Server created by Export(), nil if not exported
 
 	// Options are stored as immutable snapshots behind atomic pointers.
 	// Readers load the pointer -- no lock needed.

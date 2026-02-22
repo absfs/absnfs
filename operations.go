@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 	"strings"
 	"time"
 
@@ -38,14 +39,24 @@ func mapError(err error) uint32 {
 		return NFSERR_NOTSUPP
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrTimeout):
 		return NFSERR_DELAY
-	case os.IsNotExist(err):
+	case errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOENT):
 		return NFSERR_NOENT
-	case os.IsPermission(err):
+	case errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM):
 		return NFSERR_PERM
-	case os.IsExist(err):
+	case errors.Is(err, os.ErrExist) || errors.Is(err, syscall.EEXIST):
 		return NFSERR_EXIST
 	case errors.Is(err, os.ErrInvalid):
 		return NFSERR_INVAL
+	case errors.Is(err, syscall.ENOTDIR):
+		return NFSERR_NOTDIR
+	case errors.Is(err, syscall.EISDIR):
+		return NFSERR_ISDIR
+	case errors.Is(err, syscall.ENOSPC):
+		return NFSERR_NOSPC
+	case errors.Is(err, syscall.EFBIG):
+		return NFSERR_FBIG
+	case errors.Is(err, syscall.ENAMETOOLONG):
+		return NFSERR_NAMETOOLONG
 	default:
 		return NFSERR_IO
 	}
@@ -908,7 +919,11 @@ func (s *AbsfsNFS) Export(mountPath string, port int) error {
 	}
 
 	server.SetHandler(s)
-	return server.Listen()
+	if err := server.Listen(); err != nil {
+		return err
+	}
+	s.exportServer = server
+	return nil
 }
 
 // Symlink implements the SYMLINK operation
@@ -979,6 +994,11 @@ func (s *AbsfsNFS) Readlink(node *NFSNode) (string, error) {
 
 // Unexport stops serving the NFS export
 func (s *AbsfsNFS) Unexport() error {
+	// Stop the server if Export() created one
+	if s.exportServer != nil {
+		s.exportServer.Stop()
+		s.exportServer = nil
+	}
 	// Cleanup all open file handles
 	s.fileMap.ReleaseAll()
 	// Clear caches
