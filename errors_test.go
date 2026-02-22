@@ -2,6 +2,8 @@ package absnfs
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"testing"
 )
 
@@ -278,4 +280,140 @@ func (e *wrappedError) Error() string {
 
 func (e *wrappedError) Unwrap() error {
 	return e.inner
+}
+
+// Tests for isAuthError
+func TestIsAuthErrorCoverage(t *testing.T) {
+	t.Run("nil error", func(t *testing.T) {
+		if isAuthError(nil) {
+			t.Error("nil should not be an auth error")
+		}
+	})
+
+	t.Run("os.ErrPermission", func(t *testing.T) {
+		if !isAuthError(os.ErrPermission) {
+			t.Error("os.ErrPermission should be an auth error")
+		}
+	})
+
+	t.Run("permission denied message", func(t *testing.T) {
+		err := errors.New("permission denied")
+		if !isAuthError(err) {
+			t.Error("'permission denied' should be an auth error")
+		}
+	})
+
+	t.Run("EACCES message", func(t *testing.T) {
+		err := errors.New("EACCES: permission denied")
+		if !isAuthError(err) {
+			t.Error("EACCES should be an auth error")
+		}
+	})
+
+	t.Run("EPERM message", func(t *testing.T) {
+		err := errors.New("EPERM: operation not permitted")
+		if !isAuthError(err) {
+			t.Error("EPERM should be an auth error")
+		}
+	})
+
+	t.Run("authentication message", func(t *testing.T) {
+		err := errors.New("authentication failed")
+		if !isAuthError(err) {
+			t.Error("'authentication' should be an auth error")
+		}
+	})
+
+	t.Run("unauthorized message", func(t *testing.T) {
+		err := errors.New("unauthorized access")
+		if !isAuthError(err) {
+			t.Error("'unauthorized' should be an auth error")
+		}
+	})
+
+	t.Run("non-auth error", func(t *testing.T) {
+		err := errors.New("file not found")
+		if isAuthError(err) {
+			t.Error("'file not found' should not be an auth error")
+		}
+	})
+}
+
+// Tests for isStaleFileHandle
+func TestIsStaleFileHandleCoverage(t *testing.T) {
+	t.Run("nil error", func(t *testing.T) {
+		if isStaleFileHandle(nil) {
+			t.Error("nil should not be stale file handle")
+		}
+	})
+
+	t.Run("stale message", func(t *testing.T) {
+		err := errors.New("stale file handle")
+		if !isStaleFileHandle(err) {
+			t.Error("'stale' should be stale file handle")
+		}
+	})
+
+	t.Run("ESTALE message", func(t *testing.T) {
+		err := errors.New("ESTALE")
+		if !isStaleFileHandle(err) {
+			t.Error("ESTALE should be stale file handle")
+		}
+	})
+
+	t.Run("no such file message", func(t *testing.T) {
+		err := errors.New("no such file or directory")
+		if !isStaleFileHandle(err) {
+			t.Error("'no such file or directory' should be stale file handle")
+		}
+	})
+
+	t.Run("file handle message", func(t *testing.T) {
+		err := errors.New("invalid file handle")
+		if !isStaleFileHandle(err) {
+			t.Error("'file handle' should be stale file handle")
+		}
+	})
+
+	t.Run("non-stale error", func(t *testing.T) {
+		err := errors.New("timeout occurred")
+		if isStaleFileHandle(err) {
+			t.Error("'timeout' should not be stale file handle")
+		}
+	})
+}
+
+func TestIsResourceErrorZeroCoverage(t *testing.T) {
+	t.Run("nil error", func(t *testing.T) {
+		if isResourceError(nil) {
+			t.Errorf("nil should not be a resource error")
+		}
+	})
+
+	t.Run("non-resource errors", func(t *testing.T) {
+		if isResourceError(fmt.Errorf("file not found")) {
+			t.Errorf("'file not found' should not be a resource error")
+		}
+		if isResourceError(fmt.Errorf("permission denied")) {
+			t.Errorf("'permission denied' should not be a resource error")
+		}
+	})
+
+	t.Run("resource errors", func(t *testing.T) {
+		if !isResourceError(fmt.Errorf("no space left on device")) {
+			t.Errorf("'no space left' should be a resource error")
+		}
+		if !isResourceError(fmt.Errorf("quota exceeded")) {
+			t.Errorf("'quota exceeded' should be a resource error")
+		}
+		if !isResourceError(fmt.Errorf("too many open files")) {
+			t.Errorf("'too many open files' should be a resource error")
+		}
+		if !isResourceError(fmt.Errorf("ENOSPC")) {
+			t.Errorf("ENOSPC should be a resource error")
+		}
+		if !isResourceError(fmt.Errorf("resource limit reached")) {
+			t.Errorf("'resource limit' should be a resource error")
+		}
+	})
 }

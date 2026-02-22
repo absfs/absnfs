@@ -469,3 +469,20 @@ func BenchmarkRateLimiter(b *testing.B) {
 		rl.AllowRequest("192.168.1.1", "conn1")
 	}
 }
+
+func TestTokenBucketAllowNZeroCoverage(t *testing.T) {
+	tb := NewTokenBucket(10, 10)
+
+	t.Run("allow multiple tokens", func(t *testing.T) {
+		if !tb.AllowN(5) {
+			t.Errorf("Expected to allow 5 tokens")
+		}
+	})
+
+	t.Run("deny when not enough tokens", func(t *testing.T) {
+		tb.AllowN(5)
+		if tb.AllowN(10) {
+			t.Errorf("Expected to deny 10 tokens when only ~0 available")
+		}
+	})
+}

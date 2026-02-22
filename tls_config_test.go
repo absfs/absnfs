@@ -505,3 +505,25 @@ func containsAt(s, substr string) bool {
 	}
 	return false
 }
+
+func TestTLSConfigGetClientAuthStringZeroCoverage(t *testing.T) {
+	config := DefaultTLSConfig()
+
+	t.Run("get client auth string", func(t *testing.T) {
+		result := config.GetClientAuthString()
+		if result == "" {
+			t.Errorf("Expected non-empty string")
+		}
+	})
+}
+
+func TestTLSConfigCloneZeroCoverage(t *testing.T) {
+	config := DefaultTLSConfig()
+
+	t.Run("clone config", func(t *testing.T) {
+		cloned := config.Clone()
+		if cloned == nil {
+			t.Errorf("Expected cloned config, got nil")
+		}
+	})
+}

@@ -289,3 +289,36 @@ func TestR3_WriteWithContextErrShadowing(t *testing.T) {
 		t.Errorf("Expected 'hello world', got %q", string(readData))
 	}
 }
+
+func TestNFSNodeReadDirZeroCoverage(t *testing.T) {
+	mfs, _ := memfs.NewFS()
+	mfs.Mkdir("/testdir", 0755)
+	mfs.Create("/testdir/file1.txt")
+	mfs.Create("/testdir/file2.txt")
+
+	node := &NFSNode{
+		SymlinkFileSystem: mfs,
+		path:              "/testdir",
+		attrs:             &NFSAttrs{Mode: os.ModeDir | 0755},
+	}
+
+	t.Run("read directory entries", func(t *testing.T) {
+		entries, err := node.ReadDir(-1)
+		if err != nil {
+			t.Fatalf("ReadDir failed: %v", err)
+		}
+		if len(entries) < 2 {
+			t.Errorf("Expected at least 2 entries, got %d", len(entries))
+		}
+	})
+
+	t.Run("read limited entries", func(t *testing.T) {
+		entries, err := node.ReadDir(1)
+		if err != nil {
+			t.Fatalf("ReadDir failed: %v", err)
+		}
+		if len(entries) != 1 {
+			t.Errorf("Expected 1 entry, got %d", len(entries))
+		}
+	})
+}

@@ -2285,6 +2285,119 @@ func TestR19_SetAttrZeroTimesSkipsChtimes(t *testing.T) {
 	}
 }
 
+// Tests for validateFilename edge cases
+func TestValidateFilenameCoverage(t *testing.T) {
+	t.Run("valid filename", func(t *testing.T) {
+		if status := validateFilename("myfile.txt"); status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("empty name", func(t *testing.T) {
+		if status := validateFilename(""); status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL, got %d", status)
+		}
+	})
+
+	t.Run("name too long", func(t *testing.T) {
+		longName := make([]byte, 256)
+		for i := range longName {
+			longName[i] = 'a'
+		}
+		if status := validateFilename(string(longName)); status != NFSERR_NAMETOOLONG {
+			t.Errorf("Expected NFSERR_NAMETOOLONG, got %d", status)
+		}
+	})
+
+	t.Run("name with null byte", func(t *testing.T) {
+		if status := validateFilename("file\x00name"); status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for null byte, got %d", status)
+		}
+	})
+
+	t.Run("name with forward slash", func(t *testing.T) {
+		if status := validateFilename("path/file"); status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for forward slash, got %d", status)
+		}
+	})
+
+	t.Run("name with backslash", func(t *testing.T) {
+		if status := validateFilename("path\\file"); status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for backslash, got %d", status)
+		}
+	})
+
+	t.Run("dot name", func(t *testing.T) {
+		if status := validateFilename("."); status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for dot, got %d", status)
+		}
+	})
+
+	t.Run("dotdot name", func(t *testing.T) {
+		if status := validateFilename(".."); status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for dotdot, got %d", status)
+		}
+	})
+
+	t.Run("valid hidden file", func(t *testing.T) {
+		if status := validateFilename(".hidden"); status != NFS_OK {
+			t.Errorf("Expected NFS_OK for hidden file, got %d", status)
+		}
+	})
+
+	t.Run("max length name", func(t *testing.T) {
+		maxName := make([]byte, 255)
+		for i := range maxName {
+			maxName[i] = 'x'
+		}
+		if status := validateFilename(string(maxName)); status != NFS_OK {
+			t.Errorf("Expected NFS_OK for max length name, got %d", status)
+		}
+	})
+}
+
+// Tests for validateMode
+func TestValidateModeCoverage(t *testing.T) {
+	t.Run("valid file mode 0644", func(t *testing.T) {
+		if status := validateMode(0644, false); status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("valid directory mode 0755", func(t *testing.T) {
+		if status := validateMode(0755, true); status != NFS_OK {
+			t.Errorf("Expected NFS_OK, got %d", status)
+		}
+	})
+
+	t.Run("mode with file type bits", func(t *testing.T) {
+		// 0100644 = regular file + 0644 permissions
+		if status := validateMode(0100644, false); status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for file type bits, got %d", status)
+		}
+	})
+
+	t.Run("mode with setuid/setgid/sticky bits", func(t *testing.T) {
+		// R21: 07777 is now valid (setuid + setgid + sticky + all perms)
+		if status := validateMode(07777, false); status != NFS_OK {
+			t.Errorf("Expected NFS_OK for setuid/setgid/sticky bits, got %d", status)
+		}
+	})
+
+	t.Run("mode with invalid bits beyond 07777", func(t *testing.T) {
+		// 010000 has bits outside the valid 07777 range
+		if status := validateMode(010000, false); status != NFSERR_INVAL {
+			t.Errorf("Expected NFSERR_INVAL for invalid bits, got %d", status)
+		}
+	})
+
+	t.Run("zero mode", func(t *testing.T) {
+		if status := validateMode(0, false); status != NFS_OK {
+			t.Errorf("Expected NFS_OK for zero mode, got %d", status)
+		}
+	})
+}
+
 // TestR20_LookupSetsFileId verifies that Lookup sets FileId to a deterministic
 // hash of the path, and that the FileId is preserved through the AttrCache.
 func TestR20_LookupSetsFileId(t *testing.T) {

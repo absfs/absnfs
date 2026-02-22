@@ -695,6 +695,53 @@ func TestServerErrorHandling(t *testing.T) {
 	})
 }
 
+// Tests for GetMetrics and IsHealthy on AbsfsNFS
+func TestAbsfsNFSMetricsAPI(t *testing.T) {
+	createTestNFS := func() *AbsfsNFS {
+		mfs, _ := memfs.NewFS()
+		config := DefaultRateLimiterConfig()
+		nfs, _ := New(mfs, ExportOptions{
+			EnableRateLimiting: false,
+			RateLimitConfig:    &config,
+		})
+		return nfs
+	}
+
+	t.Run("get metrics", func(t *testing.T) {
+		nfs := createTestNFS()
+		metrics := nfs.GetMetrics()
+		// Metrics is returned by value, just ensure it doesn't panic
+		_ = metrics
+	})
+
+	t.Run("is healthy", func(t *testing.T) {
+		nfs := createTestNFS()
+		healthy := nfs.IsHealthy()
+		if !healthy {
+			t.Error("Expected healthy status")
+		}
+	})
+
+	t.Run("get metrics nil collector", func(t *testing.T) {
+		nfs := createTestNFS()
+		nfs.metrics = nil
+		metrics := nfs.GetMetrics()
+		// When collector is nil, GetMetrics returns zero value
+		// Just ensure it doesn't panic
+		_ = metrics
+	})
+
+	t.Run("is healthy nil collector", func(t *testing.T) {
+		nfs := createTestNFS()
+		nfs.metrics = nil
+		// Should not panic
+		healthy := nfs.IsHealthy()
+		if !healthy {
+			t.Error("Expected healthy when no metrics collector")
+		}
+	})
+}
+
 // TestAllowedIPsEnforcement tests that the AllowedIPs security control is properly enforced
 func TestAllowedIPsEnforcement(t *testing.T) {
 	fs, err := memfs.NewFS()

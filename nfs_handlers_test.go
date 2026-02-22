@@ -3,6 +3,8 @@ package absnfs
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"os"
 	"runtime"
 	"testing"
 	"time"
@@ -3405,4 +3407,235 @@ func TestHandleSymlinkCoverage(t *testing.T) {
 			t.Errorf("Expected GARBAGE_ARGS, got %d", status)
 		}
 	})
+}
+
+func TestDecodeAndLookupHandle(t *testing.T) {
+	server, handler, _, err := newTestServerForHandlers()
+	if err != nil {
+		t.Fatalf("Failed to create test server: %v", err)
+	}
+
+	// Get a valid handle
+	rootNode, _ := server.handler.Lookup("/")
+	rootHandle := server.handler.fileMap.Allocate(rootNode)
+
+	t.Run("successful decode and lookup", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, rootHandle)
+		reply := &RPCReply{}
+
+		node, handle := handler.decodeAndLookupHandle(bytes.NewReader(buf.Bytes()), reply)
+		if node == nil {
+			t.Errorf("Expected node, got nil")
+		}
+		if handle != rootHandle {
+			t.Errorf("Expected handle %d, got %d", rootHandle, handle)
+		}
+	})
+
+	t.Run("invalid handle data", func(t *testing.T) {
+		body := []byte{0x00, 0x00} // Too short
+		reply := &RPCReply{}
+
+		node, _ := handler.decodeAndLookupHandle(bytes.NewReader(body), reply)
+		if node != nil {
+			t.Errorf("Expected nil node for invalid handle data")
+		}
+	})
+
+	t.Run("non-existent handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, 999999)
+		reply := &RPCReply{}
+
+		node, _ := handler.decodeAndLookupHandle(bytes.NewReader(buf.Bytes()), reply)
+		if node != nil {
+			t.Errorf("Expected nil node for non-existent handle")
+		}
+	})
+}
+
+func TestEncodePostOpAttr(t *testing.T) {
+	attrs := &NFSAttrs{
+		Mode: 0644,
+		Size: 1024,
+		Uid:  1000,
+		Gid:  1000,
+	}
+	attrs.SetMtime(time.Now())
+	attrs.SetAtime(time.Now())
+
+	t.Run("encode post_op_attr", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := encodePostOpAttr(&buf, attrs)
+		if err != nil {
+			t.Fatalf("encodePostOpAttr failed: %v", err)
+		}
+
+		if buf.Len() < 4 {
+			t.Errorf("Expected at least 4 bytes, got %d", buf.Len())
+		}
+	})
+}
+
+func TestEncodeNoPostOpAttr(t *testing.T) {
+	t.Run("encode empty post_op_attr", func(t *testing.T) {
+		var buf bytes.Buffer
+		encodeNoPostOpAttr(&buf)
+
+		if buf.Len() != 4 {
+			t.Errorf("Expected 4 bytes, got %d", buf.Len())
+		}
+
+		data := buf.Bytes()
+		if data[0] != 0 || data[1] != 0 || data[2] != 0 || data[3] != 0 {
+			t.Errorf("Expected all zeros, got %v", data)
+		}
+	})
+}
+
+func TestNewNFSAttrsZeroCoverage(t *testing.T) {
+	now := time.Now()
+	atime := now.Add(-time.Hour)
+
+	t.Run("create new attrs", func(t *testing.T) {
+		attrs := NewNFSAttrs(0755|os.ModeDir, 4096, now, atime, 1000, 1000)
+
+		if attrs.Mode != 0755|os.ModeDir {
+			t.Errorf("Expected mode %v, got %v", 0755|os.ModeDir, attrs.Mode)
+		}
+		if attrs.Size != 4096 {
+			t.Errorf("Expected size 4096, got %d", attrs.Size)
+		}
+		if attrs.Uid != 1000 {
+			t.Errorf("Expected uid 1000, got %d", attrs.Uid)
+		}
+		if attrs.Gid != 1000 {
+			t.Errorf("Expected gid 1000, got %d", attrs.Gid)
+		}
+		if !attrs.Mtime().Equal(now) {
+			t.Errorf("Expected mtime %v, got %v", now, attrs.Mtime())
+		}
+		if !attrs.Atime().Equal(atime) {
+			t.Errorf("Expected atime %v, got %v", atime, attrs.Atime())
+		}
+	})
+}
+
+// Tests for encodeFileAttributes with all file types
+func TestEncodeFileAttributesAllTypes(t *testing.T) {
+	now := time.Now()
+
+	t.Run("block device", func(t *testing.T) {
+		attrs := &NFSAttrs{
+			Mode: os.ModeDevice | os.FileMode(0644),
+			Size: 0,
+		}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
+
+		var buf bytes.Buffer
+		err := encodeFileAttributes(&buf, attrs)
+		if err != nil {
+			t.Fatalf("Failed to encode block device: %v", err)
+		}
+		if buf.Len() != 84 {
+			t.Errorf("Expected 84 bytes, got %d", buf.Len())
+		}
+	})
+
+	t.Run("character device", func(t *testing.T) {
+		attrs := &NFSAttrs{
+			Mode: os.ModeDevice | os.ModeCharDevice | os.FileMode(0644),
+			Size: 0,
+		}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
+
+		var buf bytes.Buffer
+		err := encodeFileAttributes(&buf, attrs)
+		if err != nil {
+			t.Fatalf("Failed to encode char device: %v", err)
+		}
+	})
+
+	t.Run("socket", func(t *testing.T) {
+		attrs := &NFSAttrs{
+			Mode: os.ModeSocket | os.FileMode(0644),
+			Size: 0,
+		}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
+
+		var buf bytes.Buffer
+		err := encodeFileAttributes(&buf, attrs)
+		if err != nil {
+			t.Fatalf("Failed to encode socket: %v", err)
+		}
+	})
+
+	t.Run("named pipe", func(t *testing.T) {
+		attrs := &NFSAttrs{
+			Mode: os.ModeNamedPipe | os.FileMode(0644),
+			Size: 0,
+		}
+		attrs.SetMtime(now)
+		attrs.SetAtime(now)
+
+		var buf bytes.Buffer
+		err := encodeFileAttributes(&buf, attrs)
+		if err != nil {
+			t.Fatalf("Failed to encode named pipe: %v", err)
+		}
+	})
+}
+
+// Tests for encodeWccAttr
+func TestEncodeWccAttrCoverage(t *testing.T) {
+	now := time.Now()
+
+	t.Run("successful encoding", func(t *testing.T) {
+		attrs := &NFSAttrs{
+			Mode: os.FileMode(0644),
+			Size: 1024,
+		}
+		attrs.SetMtime(now)
+
+		var buf bytes.Buffer
+		err := encodeWccAttr(&buf, attrs)
+		if err != nil {
+			t.Fatalf("Failed to encode wcc attr: %v", err)
+		}
+		// Size: 8 (size) + 4+4 (mtime) + 4+4 (ctime) = 24 bytes
+		if buf.Len() != 24 {
+			t.Errorf("Expected 24 bytes, got %d", buf.Len())
+		}
+	})
+
+	t.Run("error on write", func(t *testing.T) {
+		attrs := &NFSAttrs{
+			Size: 1024,
+		}
+		attrs.SetMtime(now)
+
+		fw := &wccFailingWriter{failAfter: 0}
+		err := encodeWccAttr(fw, attrs)
+		if err == nil {
+			t.Error("Expected error from failing writer")
+		}
+	})
+}
+
+// wccFailingWriter fails after specified number of writes (for wcc tests)
+type wccFailingWriter struct {
+	writes    int
+	failAfter int
+}
+
+func (w *wccFailingWriter) Write(p []byte) (n int, err error) {
+	if w.writes >= w.failAfter {
+		return 0, errors.New("write failed")
+	}
+	w.writes++
+	return len(p), nil
 }

@@ -545,3 +545,190 @@ func TestR3_AttrCacheGetPassesServerForMetrics(t *testing.T) {
 	nfs.RecordAttrCacheHit()
 	nfs.RecordAttrCacheMiss()
 }
+
+func TestDirCacheResizeZeroCoverage(t *testing.T) {
+	cache := NewDirCache(time.Second, 100, 1000)
+
+	// Create mock FileInfo entries using memfs
+	mfs, _ := memfs.NewFS()
+	mfs.Create("/file1.txt")
+	mfs.Create("/file2.txt")
+	info1, _ := mfs.Stat("/file1.txt")
+	info2, _ := mfs.Stat("/file2.txt")
+	entries := []os.FileInfo{info1, info2}
+
+	cache.Put("/dir1", entries)
+	cache.Put("/dir2", entries)
+	cache.Put("/dir3", entries)
+
+	t.Run("resize to smaller", func(t *testing.T) {
+		cache.Resize(2)
+		size, _, _ := cache.Stats()
+		if size > 2 {
+			t.Errorf("Expected max 2 entries after resize, got %d", size)
+		}
+	})
+
+	t.Run("resize to larger", func(t *testing.T) {
+		cache.Resize(1000)
+	})
+
+	t.Run("resize with invalid value", func(t *testing.T) {
+		cache.Resize(0)
+		cache.Resize(-1)
+	})
+}
+
+func TestDirCacheUpdateTTLZeroCoverage(t *testing.T) {
+	cache := NewDirCache(time.Second, 100, 1000)
+
+	t.Run("update TTL", func(t *testing.T) {
+		cache.UpdateTTL(5 * time.Second)
+	})
+
+	t.Run("update TTL with invalid value", func(t *testing.T) {
+		cache.UpdateTTL(0)
+		cache.UpdateTTL(-time.Second)
+	})
+}
+
+// Tests for NewDirCache with edge cases
+func TestNewDirCacheCoverage(t *testing.T) {
+	t.Run("default values for zero inputs", func(t *testing.T) {
+		cache := NewDirCache(0, 0, 0)
+		if cache == nil {
+			t.Fatal("Expected non-nil cache")
+		}
+		// Defaults should be applied
+		if cache.maxEntries <= 0 {
+			t.Error("Expected positive maxEntries default")
+		}
+		if cache.maxDirSize <= 0 {
+			t.Error("Expected positive maxDirSize default")
+		}
+		if cache.timeout <= 0 {
+			t.Error("Expected positive timeout default")
+		}
+	})
+
+	t.Run("negative values trigger defaults", func(t *testing.T) {
+		cache := NewDirCache(-1*time.Second, -1, -1)
+		if cache == nil {
+			t.Fatal("Expected non-nil cache")
+		}
+		if cache.maxEntries <= 0 {
+			t.Error("Expected positive maxEntries after negative input")
+		}
+	})
+
+	t.Run("custom values preserved", func(t *testing.T) {
+		cache := NewDirCache(30*time.Second, 500, 5000)
+		if cache.timeout != 30*time.Second {
+			t.Errorf("Expected 30s timeout, got %v", cache.timeout)
+		}
+		if cache.maxEntries != 500 {
+			t.Errorf("Expected 500 maxEntries, got %d", cache.maxEntries)
+		}
+		if cache.maxDirSize != 5000 {
+			t.Errorf("Expected 5000 maxDirSize, got %d", cache.maxDirSize)
+		}
+	})
+}
+
+// Tests for NewAttrCache with edge cases
+func TestNewAttrCacheCoverage(t *testing.T) {
+	t.Run("zero size uses default", func(t *testing.T) {
+		cache := NewAttrCache(5*time.Second, 0)
+		if cache == nil {
+			t.Fatal("Expected non-nil cache")
+		}
+		if cache.maxSize <= 0 {
+			t.Error("Expected positive maxSize default")
+		}
+	})
+
+	t.Run("negative size uses default", func(t *testing.T) {
+		cache := NewAttrCache(5*time.Second, -100)
+		if cache == nil {
+			t.Fatal("Expected non-nil cache")
+		}
+		if cache.maxSize <= 0 {
+			t.Error("Expected positive maxSize after negative input")
+		}
+	})
+
+	t.Run("positive values", func(t *testing.T) {
+		cache := NewAttrCache(10*time.Second, 500)
+		if cache == nil {
+			t.Fatal("Expected non-nil cache")
+		}
+		if cache.maxSize != 500 {
+			t.Errorf("Expected maxSize 500, got %d", cache.maxSize)
+		}
+	})
+}
+
+// Tests for AttrCache removeFromAccessLog
+func TestAttrCacheRemoveFromAccessLog(t *testing.T) {
+	t.Run("remove non-existent path", func(t *testing.T) {
+		cache := NewAttrCache(5*time.Second, 100)
+		// Should not panic
+		cache.removeFromAccessLog("/nonexistent")
+	})
+
+	t.Run("remove existing path", func(t *testing.T) {
+		cache := NewAttrCache(5*time.Second, 100)
+		attrs := &NFSAttrs{
+			Mode: os.FileMode(0644),
+			Size: 100,
+		}
+		cache.Put("/test/file", attrs)
+		cache.removeFromAccessLog("/test/file")
+		// Verify the element was removed from list
+		cache.mu.RLock()
+		cached, ok := cache.cache["/test/file"]
+		cache.mu.RUnlock()
+		if ok && cached.listElement != nil {
+			t.Error("Expected listElement to be nil after removeFromAccessLog")
+		}
+	})
+}
+
+// Tests for DirCache removeFromAccessList
+func TestDirCacheRemoveFromAccessList(t *testing.T) {
+	t.Run("remove non-existent path", func(t *testing.T) {
+		cache := NewDirCache(5*time.Second, 100, 1000)
+		// Should not panic
+		cache.removeFromAccessList("/nonexistent")
+	})
+
+	t.Run("remove existing path", func(t *testing.T) {
+		cache := NewDirCache(5*time.Second, 100, 1000)
+		cache.Put("/test/dir", []os.FileInfo{})
+		cache.removeFromAccessList("/test/dir")
+		// Verify the element was removed from list
+		cache.mu.RLock()
+		cached, ok := cache.entries["/test/dir"]
+		cache.mu.RUnlock()
+		if ok && cached.listElement != nil {
+			t.Error("Expected listElement to be nil after removeFromAccessList")
+		}
+	})
+}
+
+// Tests for DirCache Put with oversized directory
+func TestDirCachePutOversized(t *testing.T) {
+	t.Run("reject directory exceeding maxDirSize", func(t *testing.T) {
+		cache := NewDirCache(5*time.Second, 100, 10) // maxDirSize = 10
+
+		// Create more entries than allowed
+		entries := make([]os.FileInfo, 20)
+		cache.Put("/large/dir", entries)
+
+		// Should not be cached
+		_, found := cache.Get("/large/dir")
+		if found {
+			t.Error("Expected oversized directory to not be cached")
+		}
+	})
+}

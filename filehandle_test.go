@@ -316,3 +316,36 @@ func TestCovBoost_AllocateEvictionSmallMax(t *testing.T) {
 		t.Errorf("expected 1 after eviction with maxHandles=1, got %d", fm.Count())
 	}
 }
+
+func TestFileHandleMapGetOrErrorZeroCoverage(t *testing.T) {
+	fm := &FileHandleMap{
+		handles:     make(map[uint64]absfs.File),
+		nextHandle:  1,
+		freeHandles: NewUint64MinHeap(),
+	}
+
+	mfs, _ := memfs.NewFS()
+	f, _ := mfs.Create("/test.txt")
+
+	handle := fm.Allocate(f)
+
+	t.Run("get existing handle", func(t *testing.T) {
+		file, err := fm.GetOrError(handle)
+		if err != nil {
+			t.Errorf("Expected no error, got %v", err)
+		}
+		if file == nil {
+			t.Errorf("Expected file, got nil")
+		}
+	})
+
+	t.Run("get non-existent handle", func(t *testing.T) {
+		_, err := fm.GetOrError(999999)
+		if err == nil {
+			t.Errorf("Expected error for non-existent handle")
+		}
+		if _, ok := err.(*InvalidFileHandleError); !ok {
+			t.Errorf("Expected InvalidFileHandleError, got %T", err)
+		}
+	})
+}

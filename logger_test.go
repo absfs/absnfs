@@ -632,3 +632,23 @@ func TestR3_SetLoggerConcurrentSafety(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestNoopLoggerZeroCoverage(t *testing.T) {
+	logger := NewNoopLogger()
+
+	t.Run("debug", func(t *testing.T) {
+		logger.Debug("test message", LogField{Key: "key", Value: "value"})
+	})
+
+	t.Run("info", func(t *testing.T) {
+		logger.Info("test message", LogField{Key: "key", Value: "value"})
+	})
+
+	t.Run("warn", func(t *testing.T) {
+		logger.Warn("test message", LogField{Key: "key", Value: "value"})
+	})
+
+	t.Run("error", func(t *testing.T) {
+		logger.Error("test message", LogField{Key: "key", Value: "value"})
+	})
+}
