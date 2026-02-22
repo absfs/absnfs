@@ -637,234 +637,80 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 	}
 }
 
-func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandler) {
-	defer conn.Close()
-
-	// Set timeouts for network operations
-	const (
-		readTimeout  = 5 * time.Second
-		writeTimeout = 5 * time.Second
-	)
-
-	// Generate a unique connection ID for per-connection rate limiting
-	connID := fmt.Sprintf("conn-%d", s.nextConnID.Add(1))
-
-	// Snapshot rate limiter for this connection
-	var connRateLimiter *RateLimiter
-	if s.handler != nil {
-		connRateLimiter = s.handler.rateLimiter
-	}
-	defer func() {
-		// Clean up connection-specific rate limiter on exit
-		if connRateLimiter != nil {
-			connRateLimiter.CleanupConnection(connID)
-		}
-	}()
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		default:
-			// Set read deadline
-			if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
-				return
-			}
-
-			// Read RPC call
-			call, body, readErr := s.readRPCCall(conn)
-			if readErr != nil {
-				// Don't log common expected errors in tests
-				if readErr != io.EOF && !isTimeoutError(readErr) && !isConnectionResetError(readErr) {
-					s.logger.Printf("read error: %v", readErr)
-				}
-				return
-			}
-
-			// Update last activity time for this connection
-			s.updateConnectionActivity(conn)
-
-			// Extract client IP and port for authentication
-			authCtx := &AuthContext{
-				Credential: &call.Credential,
-			}
-			if remoteAddr := conn.RemoteAddr(); remoteAddr != nil {
-				if tcpAddr, ok := remoteAddr.(*net.TCPAddr); ok {
-					authCtx.ClientIP = tcpAddr.IP.String()
-					authCtx.ClientPort = tcpAddr.Port
-				} else {
-					// Fallback for non-TCP connections
-					addrStr := remoteAddr.String()
-					host, port, err := net.SplitHostPort(addrStr)
-					if err == nil {
-						authCtx.ClientIP = host
-						// Parse port as int
-						if p, err := net.LookupPort("tcp", port); err == nil {
-							authCtx.ClientPort = p
-						}
-					}
-				}
-			}
-
-			// Check rate limit before processing request
-			if connRateLimiter != nil && s.handler != nil && s.handler.policy.Load().EnableRateLimiting {
-				if !connRateLimiter.AllowRequest(authCtx.ClientIP, connID) {
-					// Rate limit exceeded - send error reply
-					reply := &RPCReply{
-						Header: call.Header,
-						Status: MSG_DENIED,
-						Verifier: RPCVerifier{
-							Flavor: 0,
-							Body:   []byte{},
-						},
-					}
-
-					if s.options.Debug {
-						s.logger.Printf("Rate limit exceeded for client %s", authCtx.ClientIP)
-					}
-
-					// Log structured message
-					if slog := s.handler.getStructuredLogger(); slog != nil {
-						tuning := s.handler.tuning.Load()
-						if tuning.Log != nil && tuning.Log.LogClientIPs {
-							slog.Warn("rate limit exceeded",
-								LogField{Key: "client_ip", Value: authCtx.ClientIP})
-						} else {
-							slog.Warn("rate limit exceeded")
-						}
-					}
-
-					// Record rate limit rejection in metrics
-					if s.handler.metrics != nil {
-						s.handler.metrics.RecordRateLimitExceeded()
-					}
-
-					// Send rejection and return on write error
-					if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err == nil {
-						if writeErr := s.writeRPCReply(conn, reply); writeErr != nil {
-							return
-						}
-					}
-					continue
-				}
-			}
-
-			// Use worker pool to handle the call if available
-			var reply *RPCReply
-			var handleErr error
-
-			if s.handler != nil && s.handler.workerPool != nil {
-				// Process with worker pool
-				result := s.handler.ExecuteWithWorker(func() interface{} {
-					r, e := procHandler.HandleCall(call, body, authCtx)
-					return struct {
-						Reply *RPCReply
-						Err   error
-					}{r, e}
-				})
-
-				// Extract result
-				typedResult, ok := result.(struct {
-					Reply *RPCReply
-					Err   error
-				})
-				if !ok {
-					s.logger.Printf("worker pool returned unexpected result type")
-					return
-				}
-				reply, handleErr = typedResult.Reply, typedResult.Err
-			} else {
-				// Process directly
-				reply, handleErr = procHandler.HandleCall(call, body, authCtx)
-			}
-			if handleErr != nil {
-				s.logger.Printf("handle error: %v", handleErr)
-				return
-			}
-
-			// Set write deadline
-			if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
-				return
-			}
-
-			// Send reply
-			if writeErr := s.writeRPCReply(conn, reply); writeErr != nil {
-				// Don't log common expected errors in tests
-				if !isTimeoutError(writeErr) && !isConnectionResetError(writeErr) {
-					s.logger.Printf("write error: %v", writeErr)
-				}
-				return
-			}
-
-			// Update last activity time for this connection after successful write
-			s.updateConnectionActivity(conn)
-		}
-	}
+// connIO abstracts the read/write framing for a connection, allowing the
+// shared connection loop to work with both raw TCP and record-marking modes.
+type connIO interface {
+	ReadCall() (*RPCCall, io.Reader, error)
+	WriteReply(*RPCReply) error
 }
 
-func (s *Server) readRPCCall(conn net.Conn) (*RPCCall, io.Reader, error) {
-	// Read the RPC call (without record marking - legacy mode)
-	call, err := DecodeRPCCall(conn)
+// rawConnIO implements connIO for direct TCP connections (no record marking).
+type rawConnIO struct {
+	server *Server
+	conn   net.Conn
+}
+
+func (r *rawConnIO) ReadCall() (*RPCCall, io.Reader, error) {
+	call, err := DecodeRPCCall(r.conn)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	// Return the connection as the body reader
-	return call, conn, nil
+	return call, r.conn, nil
 }
 
-func (s *Server) writeRPCReply(conn net.Conn, reply *RPCReply) error {
-	return EncodeRPCReply(conn, reply)
+func (r *rawConnIO) WriteReply(reply *RPCReply) error {
+	return EncodeRPCReply(r.conn, reply)
 }
 
-// readRPCCallWithRecordMarking reads an RPC call with record marking framing
-func (s *Server) readRPCCallWithRecordMarking(rmConn *RecordMarkingConn) (*RPCCall, []byte, error) {
-	// Read complete record with framing
-	data, err := rmConn.ReadRecord()
+// recordMarkingConnIO implements connIO for RFC 1831 record-marking connections.
+type recordMarkingConnIO struct {
+	server *Server
+	rmConn *RecordMarkingConn
+}
+
+func (rm *recordMarkingConnIO) ReadCall() (*RPCCall, io.Reader, error) {
+	data, err := rm.rmConn.ReadRecord()
 	if err != nil {
 		return nil, nil, err
 	}
-
-	// Decode the RPC call from the record data
 	reader := bytes.NewReader(data)
 	call, err := DecodeRPCCall(reader)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	// Return remaining bytes as the body
 	remaining := data[len(data)-reader.Len():]
-	return call, remaining, nil
+	return call, bytes.NewReader(remaining), nil
 }
 
-// writeRPCReplyWithRecordMarking writes an RPC reply with record marking framing
-func (s *Server) writeRPCReplyWithRecordMarking(rmConn *RecordMarkingConn, reply *RPCReply) error {
-	// Encode the reply to a buffer
+func (rm *recordMarkingConnIO) WriteReply(reply *RPCReply) error {
 	var buf bytes.Buffer
 	if err := EncodeRPCReply(&buf, reply); err != nil {
 		return err
 	}
+	return rm.rmConn.WriteRecord(buf.Bytes())
+}
 
-	// Write with record marking
-	return rmConn.WriteRecord(buf.Bytes())
+func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandler) {
+	cio := &rawConnIO{server: s, conn: conn}
+	s.handleConnectionLoop(conn, procHandler, cio, 5*time.Second, 5*time.Second)
 }
 
 // handleConnectionWithRecordMarking handles a connection with RFC 1831 record marking
 func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *NFSProcedureHandler) {
+	rmConn := NewRecordMarkingConn(conn, conn)
+	cio := &recordMarkingConnIO{server: s, rmConn: rmConn}
+	s.handleConnectionLoop(conn, procHandler, cio, 30*time.Second, 30*time.Second)
+}
+
+// handleConnectionLoop is the shared connection handling loop used by both
+// raw TCP and record-marking modes. The connIO interface abstracts the
+// read/write framing so the auth, rate limiting, worker dispatch, and
+// connection lifecycle logic lives in one place.
+func (s *Server) handleConnectionLoop(conn net.Conn, procHandler *NFSProcedureHandler, cio connIO, readTimeout, writeTimeout time.Duration) {
 	defer conn.Close()
 
-	const (
-		readTimeout  = 30 * time.Second
-		writeTimeout = 30 * time.Second
-	)
-
-	// Create record marking wrapper
-	rmConn := NewRecordMarkingConn(conn, conn)
-
-	// Generate a unique connection ID for per-connection rate limiting
 	connID := fmt.Sprintf("conn-%d", s.nextConnID.Add(1))
 
-	// Snapshot rate limiter for this connection
 	var connRateLimiter *RateLimiter
 	if s.handler != nil {
 		connRateLimiter = s.handler.rateLimiter
@@ -884,13 +730,12 @@ func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *N
 				return
 			}
 
-			// Read RPC call with record marking
-			call, bodyData, readErr := s.readRPCCallWithRecordMarking(rmConn)
+			call, body, readErr := cio.ReadCall()
 			if readErr != nil {
-				// Always log in debug mode for troubleshooting
-				if s.options.Debug {
-					s.logger.Printf("RPC read error: %v (EOF=%v, timeout=%v, reset=%v)",
-						readErr, readErr == io.EOF, isTimeoutError(readErr), isConnectionResetError(readErr))
+				if readErr != io.EOF && !isTimeoutError(readErr) && !isConnectionResetError(readErr) {
+					if s.options.Debug {
+						s.logger.Printf("read error: %v", readErr)
+					}
 				}
 				return
 			}
@@ -936,11 +781,20 @@ func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *N
 					if s.options.Debug {
 						s.logger.Printf("Rate limit exceeded for client %s", authCtx.ClientIP)
 					}
+					if slog := s.handler.getStructuredLogger(); slog != nil {
+						tuning := s.handler.tuning.Load()
+						if tuning.Log != nil && tuning.Log.LogClientIPs {
+							slog.Warn("rate limit exceeded",
+								LogField{Key: "client_ip", Value: authCtx.ClientIP})
+						} else {
+							slog.Warn("rate limit exceeded")
+						}
+					}
 					if s.handler.metrics != nil {
 						s.handler.metrics.RecordRateLimitExceeded()
 					}
 					if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err == nil {
-						if writeErr := s.writeRPCReplyWithRecordMarking(rmConn, reply); writeErr != nil {
+						if writeErr := cio.WriteReply(reply); writeErr != nil {
 							return
 						}
 					}
@@ -948,16 +802,13 @@ func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *N
 				}
 			}
 
-			// Create a reader from the body data
-			bodyReader := bytes.NewReader(bodyData)
-
-			// Handle the call
+			// Dispatch to handler via worker pool or directly
 			var reply *RPCReply
 			var handleErr error
 
 			if s.handler != nil && s.handler.workerPool != nil {
 				result := s.handler.ExecuteWithWorker(func() interface{} {
-					r, e := procHandler.HandleCall(call, bodyReader, authCtx)
+					r, e := procHandler.HandleCall(call, body, authCtx)
 					return struct {
 						Reply *RPCReply
 						Err   error
@@ -968,14 +819,12 @@ func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *N
 					Err   error
 				})
 				if !ok {
-					if s.options.Debug {
-						s.logger.Printf("worker pool returned unexpected result type")
-					}
-					continue
+					s.logger.Printf("worker pool returned unexpected result type")
+					return
 				}
 				reply, handleErr = typedResult.Reply, typedResult.Err
 			} else {
-				reply, handleErr = procHandler.HandleCall(call, bodyReader, authCtx)
+				reply, handleErr = procHandler.HandleCall(call, body, authCtx)
 			}
 
 			if handleErr != nil {
@@ -989,7 +838,7 @@ func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *N
 				return
 			}
 
-			if writeErr := s.writeRPCReplyWithRecordMarking(rmConn, reply); writeErr != nil {
+			if writeErr := cio.WriteReply(reply); writeErr != nil {
 				if !isTimeoutError(writeErr) && !isConnectionResetError(writeErr) {
 					if s.options.Debug {
 						s.logger.Printf("write error: %v", writeErr)
