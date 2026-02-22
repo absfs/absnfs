@@ -210,10 +210,12 @@ func TestR3_AccessPermissionChecking(t *testing.T) {
 
 		// Auth context: owner (UID 1000)
 		authCtx := &AuthContext{
-			ClientIP:   "127.0.0.1",
-			ClientPort: 12345,
-			Credential: &RPCCredential{Flavor: AUTH_NONE},
-			AuthSys:    &AuthSysCredential{UID: 1000, GID: 9999},
+			ClientIP:     "127.0.0.1",
+			ClientPort:   12345,
+			Credential:   &RPCCredential{Flavor: AUTH_NONE},
+			AuthSys:      &AuthSysCredential{UID: 1000, GID: 9999},
+			EffectiveUID: 1000,
+			EffectiveGID: 9999,
 		}
 
 		var buf bytes.Buffer
@@ -263,10 +265,12 @@ func TestR3_AccessPermissionChecking(t *testing.T) {
 
 		// Auth context: neither owner nor group (UID 9999, GID 8888)
 		authCtx := &AuthContext{
-			ClientIP:   "127.0.0.1",
-			ClientPort: 12345,
-			Credential: &RPCCredential{Flavor: AUTH_NONE},
-			AuthSys:    &AuthSysCredential{UID: 9999, GID: 8888},
+			ClientIP:     "127.0.0.1",
+			ClientPort:   12345,
+			Credential:   &RPCCredential{Flavor: AUTH_NONE},
+			AuthSys:      &AuthSysCredential{UID: 9999, GID: 8888},
+			EffectiveUID: 9999,
+			EffectiveGID: 8888,
 		}
 
 		var buf bytes.Buffer
@@ -315,10 +319,12 @@ func TestR3_AccessPermissionChecking(t *testing.T) {
 
 		// Auth context: root (UID 0)
 		authCtx := &AuthContext{
-			ClientIP:   "127.0.0.1",
-			ClientPort: 12345,
-			Credential: &RPCCredential{Flavor: AUTH_NONE},
-			AuthSys:    &AuthSysCredential{UID: 0, GID: 0},
+			ClientIP:     "127.0.0.1",
+			ClientPort:   12345,
+			Credential:   &RPCCredential{Flavor: AUTH_NONE},
+			AuthSys:      &AuthSysCredential{UID: 0, GID: 0},
+			EffectiveUID: 0,
+			EffectiveGID: 0,
 		}
 
 		var buf bytes.Buffer
@@ -393,11 +399,11 @@ func TestR3_AccessPermissionChecking(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. MOUNT path validation (filepath.Clean)
+// 5. MOUNT path validation (path.Clean)
 // ---------------------------------------------------------------------------
 
 // TestR3_MountPathValidation verifies that the mount handler uses
-// filepath.Clean to sanitize mount paths, preventing traversal attacks.
+// path.Clean to sanitize mount paths, preventing traversal attacks.
 func TestR3_MountPathValidation(t *testing.T) {
 	server, handler, authCtx, err := newTestServerForBugfixes()
 	if err != nil {
@@ -438,7 +444,7 @@ func TestR3_MountPathValidation(t *testing.T) {
 				t.Fatalf("handleMountCall returned error: %v", err)
 			}
 
-			// The traversal path should be cleaned by filepath.Clean,
+			// The traversal path should be cleaned by path.Clean,
 			// resulting in "/" which should succeed or a valid path
 			data := getReplyData(result)
 			if data == nil {

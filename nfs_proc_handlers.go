@@ -563,6 +563,12 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
+	// Consume XDR opaque padding (0-3 bytes to reach 4-byte boundary)
+	if pad := (4 - int(count)%4) % 4; pad > 0 {
+		padBuf := make([]byte, pad)
+		io.ReadFull(body, padBuf) // Best effort - padding may not be present in all implementations
+	}
+
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
 		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
@@ -734,7 +740,9 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, mapError(err))
-		encodeWccData(&buf, dirPreAttrs, dirPostAttrs)
+		if wccErr := encodeWccData(&buf, dirPreAttrs, dirPostAttrs); wccErr != nil {
+			return nfsErrorWithWcc(reply, mapError(err)), nil
+		}
 		reply.Data = buf.Bytes()
 		return reply, nil
 	}
@@ -822,7 +830,9 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, mapError(err))
-		encodeWccData(&buf, dirPreAttrs, dirPostAttrs)
+		if wccErr := encodeWccData(&buf, dirPreAttrs, dirPostAttrs); wccErr != nil {
+			return nfsErrorWithWcc(reply, mapError(err)), nil
+		}
 		reply.Data = buf.Bytes()
 		return reply, nil
 	}
@@ -1019,16 +1029,6 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 
 // handleReaddir handles NFSPROC3_READDIR - read directory entries
 func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
-	// Rate limiting
-	if h.server.handler.rateLimiter != nil && h.server.handler.policy.Load().EnableRateLimiting {
-		if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeReaddir) {
-			if h.server.handler.metrics != nil {
-				h.server.handler.metrics.RecordRateLimitExceeded()
-			}
-			return nfsErrorWithPostOp(reply, NFSERR_DELAY), nil
-		}
-	}
-
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
 		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
@@ -1046,6 +1046,16 @@ func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, aut
 	var count uint32
 	if err := binary.Read(body, binary.BigEndian, &count); err != nil {
 		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
+	}
+
+	// Rate limiting (after body consumption to prevent stream desync)
+	if h.server.handler.rateLimiter != nil && h.server.handler.policy.Load().EnableRateLimiting {
+		if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeReaddir) {
+			if h.server.handler.metrics != nil {
+				h.server.handler.metrics.RecordRateLimitExceeded()
+			}
+			return nfsErrorWithPostOp(reply, NFSERR_DELAY), nil
+		}
 	}
 
 	dir, ok := h.lookupNode(handleVal)
@@ -1166,6 +1176,16 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 	}
 	if err := binary.Read(body, binary.BigEndian, &maxCount); err != nil {
 		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
+	}
+
+	// Rate limiting (after body consumption to prevent stream desync)
+	if h.server.handler.rateLimiter != nil && h.server.handler.policy.Load().EnableRateLimiting {
+		if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeReaddir) {
+			if h.server.handler.metrics != nil {
+				h.server.handler.metrics.RecordRateLimitExceeded()
+			}
+			return nfsErrorWithPostOp(reply, NFSERR_DELAY), nil
+		}
 	}
 
 	dir, ok := h.lookupNode(handleVal)
@@ -1305,7 +1325,7 @@ func (h *NFSProcedureHandler) handleFsstat(body io.Reader, reply *RPCReply, auth
 	binary.Write(&buf, binary.BigEndian, uint64(1000000))           // tfiles
 	binary.Write(&buf, binary.BigEndian, uint64(900000))            // ffiles
 	binary.Write(&buf, binary.BigEndian, uint64(900000))            // afiles
-	binary.Write(&buf, binary.BigEndian, uint32(0))                 // invarsec
+	binary.Write(&buf, binary.BigEndian, uint32(1))                 // invarsec (1 second stability)
 
 	reply.Data = buf.Bytes()
 	return reply, nil
@@ -1422,16 +1442,9 @@ func (h *NFSProcedureHandler) handleAccess(body io.Reader, reply *RPCReply, auth
 	fileGid := attrs.Gid
 	isDir := attrs.Mode&os.ModeDir != 0
 
-	// Get effective UID/GID from auth context
-	var effectiveUID, effectiveGID uint32
-	if authCtx.AuthSys != nil {
-		effectiveUID = authCtx.AuthSys.UID
-		effectiveGID = authCtx.AuthSys.GID
-	} else {
-		// AUTH_NONE maps to nobody
-		effectiveUID = 65534
-		effectiveGID = 65534
-	}
+	// Use effective (squashed) UID/GID set by HandleCall authentication
+	effectiveUID := authCtx.EffectiveUID
+	effectiveGID := authCtx.EffectiveGID
 
 	// Determine which permission bits apply (owner, group, other)
 	var permBits os.FileMode
@@ -1440,7 +1453,21 @@ func (h *NFSProcedureHandler) handleAccess(body io.Reader, reply *RPCReply, auth
 	} else if effectiveGID == fileGid {
 		permBits = (fileMode >> 3) & 7 // group bits
 	} else {
-		permBits = fileMode & 7 // other bits
+		// Check auxiliary groups
+		isGroupMember := false
+		if authCtx.AuthSys != nil {
+			for _, auxGID := range authCtx.AuthSys.AuxGIDs {
+				if auxGID == fileGid {
+					isGroupMember = true
+					break
+				}
+			}
+		}
+		if isGroupMember {
+			permBits = (fileMode >> 3) & 7 // group bits
+		} else {
+			permBits = fileMode & 7 // other bits
+		}
 	}
 	// Root (UID 0) gets all permissions
 	if effectiveUID == 0 {
@@ -1579,7 +1606,9 @@ func (h *NFSProcedureHandler) handleRemove(body io.Reader, reply *RPCReply, auth
 
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, mapError(err))
-		encodeWccData(&buf, dirPreAttrs, dirPostAttrs)
+		if wccErr := encodeWccData(&buf, dirPreAttrs, dirPostAttrs); wccErr != nil {
+			return nfsErrorWithWcc(reply, mapError(err)), nil
+		}
 		reply.Data = buf.Bytes()
 		return reply, nil
 	}
@@ -1834,4 +1863,16 @@ func (h *NFSProcedureHandler) handleLink(body io.Reader, reply *RPCReply, authCt
 		Reason:    "hard links are not supported by this NFS implementation",
 	}
 	return nfsErrorWithPostOpAndWcc(reply, mapError(notSupported)), nil
+}
+
+// handleMknod handles MKNOD (create special device) requests.
+// Returns NFSERR_NOTSUPP since special device files are not supported.
+func (h *NFSProcedureHandler) handleMknod(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
+	// Consume the MKNOD arguments to prevent stream desync
+	// MKNOD3args: diropargs3(nfs_fh3 dir + filename3 name) + mknoddata3(ftype3 + union)
+	xdrDecodeFileHandle(body) // dir handle
+	xdrDecodeString(body)     // name
+	xdrDecodeUint32(body)     // ftype3 discriminant
+
+	return nfsErrorWithWcc(reply, NFSERR_NOTSUPP), nil
 }

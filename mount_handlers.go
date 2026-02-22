@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
-	"path/filepath"
+	"path"
 	"strings"
 )
 
@@ -26,7 +26,7 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 		if h.server.handler.rateLimiter != nil && h.server.handler.policy.Load().EnableRateLimiting {
 			if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeMount) {
 				var buf bytes.Buffer
-				xdrEncodeUint32(&buf, NFSERR_DELAY) // Server is busy
+				xdrEncodeUint32(&buf, 10006) // MNT3ERR_SERVERFAULT - server is busy
 				reply.Data = buf.Bytes()
 
 				// Record rate limit exceeded
@@ -45,7 +45,7 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 		}
 
 		// Validate mount path - must be "/" or a clean path within the export
-		mountPath = filepath.Clean(mountPath)
+		mountPath = path.Clean(mountPath)
 		if mountPath != "/" && !strings.HasPrefix(mountPath, "/") {
 			var buf bytes.Buffer
 			xdrEncodeUint32(&buf, 2) // MNT3ERR_NOENT

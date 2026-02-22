@@ -36,6 +36,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -81,15 +82,19 @@ type AbsfsNFS struct {
 	tuning atomic.Pointer[TuningOptions]
 	policy atomic.Pointer[PolicyOptions]
 
+	// tuningMu serializes tuning updates to prevent lost-update races.
+	tuningMu sync.Mutex
+
 	// policyMu serializes policy changes (drain-and-swap).
 	policyMu sync.Mutex
 
-	// inflight tracks the number of in-flight NFS requests using the current policy.
-	// Incremented at HandleCall entry, decremented at HandleCall exit.
-	inflight sync.WaitGroup
+	// policyRWMu protects policy reads during NFS requests.
+	// HandleCall acquires RLock (via TryRLock) for the duration of request processing.
+	// UpdatePolicyOptions acquires Lock to drain in-flight requests and swap policy.
+	policyRWMu sync.RWMutex
 
-	// draining is set to true during a policy swap to reject new requests.
-	draining atomic.Bool
+	// loggerMu protects structuredLogger writes from concurrent access.
+	loggerMu sync.RWMutex
 }
 
 // ExportOptions defines the configuration for an NFS export
@@ -454,6 +459,12 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		return nil, os.ErrInvalid
 	}
 
+	// Validate squash mode
+	squash := strings.ToLower(options.Squash)
+	if squash != "" && squash != "root" && squash != "all" && squash != "none" {
+		return nil, fmt.Errorf("invalid squash mode %q: must be root, all, or none", options.Squash)
+	}
+
 	// Set default values if not specified
 	if options.TransferSize <= 0 {
 		options.TransferSize = 65536 // Default: 64KB
@@ -780,7 +791,10 @@ func (n *AbsfsNFS) Close() error {
 	}
 
 	// Close structured logger if it's a SlogLogger
-	if slogger, ok := n.structuredLogger.(*SlogLogger); ok {
+	n.loggerMu.Lock()
+	slogger, isSlog := n.structuredLogger.(*SlogLogger)
+	n.loggerMu.Unlock()
+	if isSlog {
 		if err := slogger.Close(); err != nil {
 			return fmt.Errorf("failed to close logger: %w", err)
 		}
@@ -797,8 +811,8 @@ func (n *AbsfsNFS) SetLogger(logger Logger) error {
 		return fmt.Errorf("nil server")
 	}
 
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.loggerMu.Lock()
+	defer n.loggerMu.Unlock()
 
 	// Close existing logger if it's a SlogLogger before replacing it
 	if slogger, ok := n.structuredLogger.(*SlogLogger); ok {
@@ -833,56 +847,19 @@ func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
 		return fmt.Errorf("nil server")
 	}
 
-	// Apply tuning changes (lock-free, immediate)
+	// Apply tuning changes (lock-free, immediate).
+	// Use tuningFromExportOptions for complete field coverage.
+	// Preserve Timeouts and Log from the current snapshot when not provided,
+	// since nil pointer fields would cause panics on NFS operations.
 	n.UpdateTuningOptions(func(t *TuningOptions) {
-		if newOptions.AttrCacheSize > 0 {
-			t.AttrCacheSize = newOptions.AttrCacheSize
+		newTuning := tuningFromExportOptions(&newOptions)
+		if newTuning.Timeouts == nil {
+			newTuning.Timeouts = t.Timeouts
 		}
-		if newOptions.AttrCacheTimeout > 0 {
-			t.AttrCacheTimeout = newOptions.AttrCacheTimeout
+		if newTuning.Log == nil {
+			newTuning.Log = t.Log
 		}
-		t.CacheNegativeLookups = newOptions.CacheNegativeLookups
-		if newOptions.NegativeCacheTimeout > 0 {
-			t.NegativeCacheTimeout = newOptions.NegativeCacheTimeout
-		}
-		t.EnableDirCache = newOptions.EnableDirCache
-		if newOptions.DirCacheMaxEntries > 0 {
-			t.DirCacheMaxEntries = newOptions.DirCacheMaxEntries
-		}
-		if newOptions.DirCacheTimeout > 0 {
-			t.DirCacheTimeout = newOptions.DirCacheTimeout
-		}
-		if newOptions.DirCacheMaxDirSize > 0 {
-			t.DirCacheMaxDirSize = newOptions.DirCacheMaxDirSize
-		}
-		if newOptions.ReadAheadMaxMemory > 0 {
-			t.ReadAheadMaxMemory = newOptions.ReadAheadMaxMemory
-		}
-		if newOptions.ReadAheadMaxFiles > 0 {
-			t.ReadAheadMaxFiles = newOptions.ReadAheadMaxFiles
-		}
-		if newOptions.MemoryHighWatermark > 0 && newOptions.MemoryHighWatermark <= 1.0 {
-			t.MemoryHighWatermark = newOptions.MemoryHighWatermark
-		}
-		if newOptions.MemoryLowWatermark > 0 && newOptions.MemoryLowWatermark < t.MemoryHighWatermark {
-			t.MemoryLowWatermark = newOptions.MemoryLowWatermark
-		}
-		if newOptions.MaxWorkers > 0 {
-			t.MaxWorkers = newOptions.MaxWorkers
-		}
-		t.BatchOperations = newOptions.BatchOperations
-		if newOptions.MaxBatchSize > 0 {
-			t.MaxBatchSize = newOptions.MaxBatchSize
-		}
-		t.Async = newOptions.Async
-		if newOptions.Timeouts != nil {
-			tCopy := *newOptions.Timeouts
-			t.Timeouts = &tCopy
-		}
-		if newOptions.Log != nil {
-			logCopy := *newOptions.Log
-			t.Log = &logCopy
-		}
+		*t = *newTuning
 	})
 
 	// Validate immutable fields before attempting policy update.
