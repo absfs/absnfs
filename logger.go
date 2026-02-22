@@ -1,3 +1,8 @@
+// logger.go: Structured logging interface and default implementation.
+//
+// Defines the Logger interface (Debug, Info, Warn, Error, WithField,
+// WithFields), a defaultLogger adapter wrapping Go's standard log
+// package, and log level constants.
 package absnfs
 
 import (

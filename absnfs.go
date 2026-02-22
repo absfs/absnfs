@@ -1,3 +1,8 @@
+// absnfs.go: Constructor and lifecycle methods for AbsfsNFS.
+//
+// Contains New() for creating server instances, Close() for graceful
+// shutdown, and runtime configuration methods like SetLogger() and
+// UpdateExportOptions(). This is the main API entry point.
 package absnfs
 
 import (

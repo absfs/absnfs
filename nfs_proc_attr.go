@@ -1,3 +1,9 @@
+// nfs_proc_attr.go: NFSv3 attribute and access operations.
+//
+// Implements the GETATTR, SETATTR, and ACCESS procedures as defined
+// in RFC 1813 sections 3.3.1, 3.3.2, and 3.3.4. These handlers read
+// and modify file/directory metadata and check client access permissions
+// against the exported filesystem.
 package absnfs
 
 import (

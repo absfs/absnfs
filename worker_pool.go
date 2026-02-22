@@ -1,3 +1,7 @@
+// worker_pool.go: Concurrent request processing via goroutine pool.
+//
+// Contains WorkerPool which manages a fixed set of worker goroutines
+// for handling NFS requests, with task queuing and graceful shutdown.
 package absnfs
 
 import (

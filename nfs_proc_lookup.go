@@ -1,3 +1,8 @@
+// nfs_proc_lookup.go: NFSv3 name resolution operations.
+//
+// Implements the LOOKUP and READLINK procedures as defined in RFC 1813
+// sections 3.3.3 and 3.3.5. LOOKUP resolves a filename within a directory
+// to a file handle; READLINK reads the target of a symbolic link.
 package absnfs
 
 import (

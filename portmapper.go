@@ -1,3 +1,9 @@
+// portmapper.go: ONC RPC portmapper/rpcbind client (RFC 1833).
+//
+// Registers and unregisters NFS and MOUNT services with the local
+// portmapper daemon so that NFS clients can discover which port
+// the server is listening on. Includes connection management and
+// retry logic for communicating with the portmapper service.
 package absnfs
 
 import (

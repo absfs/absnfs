@@ -1,3 +1,7 @@
+// errors.go: Typed error definitions for NFS operations.
+//
+// Contains InvalidFileHandleError, StaleFileHandleError, and related
+// error constructors used throughout the NFS handler layer.
 package absnfs
 
 import "fmt"

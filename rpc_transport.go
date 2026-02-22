@@ -1,3 +1,10 @@
+// rpc_transport.go: Record marking for TCP-based ONC RPC.
+//
+// Implements RFC 1831 section 10 record fragment framing via
+// RecordMarkingConn, which wraps a TCP connection to handle
+// multi-fragment RPC messages. Provides ReadRecord and WriteRecord
+// methods for reading and writing complete RPC messages as a
+// sequence of length-prefixed fragments.
 package absnfs
 
 import (

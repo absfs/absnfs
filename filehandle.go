@@ -1,3 +1,8 @@
+// filehandle.go: NFS file handle allocation and lifecycle management.
+//
+// Contains FileHandleMap methods for allocating, looking up, releasing,
+// and evicting file handles. Uses a min-heap for O(log n) handle ID
+// reuse and supports LRU eviction when the handle limit is reached.
 package absnfs
 
 import (

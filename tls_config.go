@@ -1,3 +1,7 @@
+// tls_config.go: TLS/SSL configuration for secure NFS connections.
+//
+// Contains TLS setup helpers for creating tls.Config with mutual TLS
+// (mTLS) support, certificate loading, and CA verification.
 package absnfs
 
 import (

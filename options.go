@@ -1,3 +1,9 @@
+// options.go: Configuration types and live-update logic.
+//
+// Defines TuningOptions (cache sizes, worker pool, transfer size),
+// PolicyOptions (allowed hosts, squash mode, read-only), ExportOptions
+// (user-facing union of both), TimeoutConfig, and LogConfig. Policy
+// changes are applied at runtime via drain-and-swap through atomic pointers.
 package absnfs
 
 import (

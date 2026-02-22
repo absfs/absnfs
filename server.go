@@ -1,3 +1,11 @@
+// server.go: NFS server lifecycle and TCP connection handling.
+//
+// Contains the Server type with Listen/Serve/Stop methods for managing
+// the server lifecycle, and the connIO interface pattern (rawConnIO,
+// recordMarkingConnIO) that unifies raw TCP and record-marking
+// connection handling. The handleConnectionLoop function is the
+// per-connection RPC processing loop that reads calls and dispatches
+// them to the appropriate protocol handler.
 package absnfs
 
 import (

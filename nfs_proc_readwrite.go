@@ -1,3 +1,8 @@
+// nfs_proc_readwrite.go: NFSv3 data transfer operations.
+//
+// Implements the READ, WRITE, and COMMIT procedures as defined in
+// RFC 1813 sections 3.3.6, 3.3.7, and 3.3.21. These handlers move
+// file data between client and server and ensure write durability.
 package absnfs
 
 import (

@@ -1,3 +1,8 @@
+// nfs_node.go: NFS file tree management.
+//
+// Implements NFSNode methods for resolving paths, finding or creating
+// child nodes, and maintaining the in-memory tree that maps NFS file
+// handles to filesystem paths. Also satisfies the absfs.File interface.
 package absnfs
 
 import (

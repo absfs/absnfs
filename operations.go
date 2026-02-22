@@ -1,3 +1,9 @@
+// operations.go: Filesystem operation layer bridging NFS to absfs.
+//
+// Contains ReadFile, WriteFile, CreateFile, RemoveFile, MakeDirectory,
+// RemoveDirectory, Rename, Symlink, and related helpers. Translates NFS
+// request semantics into absfs.FileSystem calls, handling path resolution,
+// striped locking, and error mapping.
 package absnfs
 
 import (

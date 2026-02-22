@@ -1,3 +1,9 @@
+// nfs_proc_create.go: NFSv3 object creation operations.
+//
+// Implements the CREATE, MKDIR, SYMLINK, and MKNOD procedures as defined
+// in RFC 1813 sections 3.3.8, 3.3.9, 3.3.10, and 3.3.11. These handlers
+// create regular files, directories, symbolic links, and device nodes in
+// the exported filesystem. All respect the read-only policy check.
 package absnfs
 
 import (

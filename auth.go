@@ -1,3 +1,9 @@
+// auth.go: Authentication and access control.
+//
+// Implements IP-based host filtering (AllowedHosts), UID/GID squash modes
+// (none, root, all), TLS client certificate verification, and AUTH_SYS
+// credential extraction from RPC calls. Produces the AuthContext consumed
+// by NFS request handlers.
 package absnfs
 
 import (

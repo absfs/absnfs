@@ -1,3 +1,8 @@
+// metrics.go: Internal metrics collection and reporting.
+//
+// Contains MetricsCollector which tracks per-operation counts, latencies,
+// error rates, bytes transferred, and cache hit rates. Provides
+// GetSummary() for periodic reporting and performance analysis.
 package absnfs
 
 import (

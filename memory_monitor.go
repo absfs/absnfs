@@ -1,3 +1,8 @@
+// memory_monitor.go: System memory pressure monitoring and response.
+//
+// Contains MemoryMonitor which periodically samples Go runtime memory
+// stats and triggers cache eviction when memory usage exceeds
+// configurable thresholds.
 package absnfs
 
 import (

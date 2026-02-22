@@ -1,3 +1,8 @@
+// metrics_api.go: Public metrics query API for AbsfsNFS.
+//
+// Contains methods on AbsfsNFS that expose collected metrics:
+// GetMetrics(), GetMetricsSummary(), GetOperationMetrics(),
+// GetCacheMetrics(), ResetMetrics(), and related helpers.
 package absnfs
 
 import (

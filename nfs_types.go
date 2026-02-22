@@ -1,3 +1,7 @@
+// nfs_types.go: NFS protocol constants.
+//
+// Defines NFS3 status codes (NFS_OK, NFSERR_*) and ACCESS3 permission
+// check bits as specified in RFC 1813.
 package absnfs
 
 // NFS status codes as defined in the NFS protocol

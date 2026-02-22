@@ -1,3 +1,9 @@
+// nfs_proc_handlers.go: NFSv3 shared types and miscellaneous procedures.
+//
+// Defines the sattr3 type and its decoder, used across all handlers that
+// accept client-supplied attributes. Also implements NULL, FSSTAT, FSINFO,
+// and PATHCONF as defined in RFC 1813 sections 3.3.1, 3.3.18, 3.3.19,
+// and 3.3.20.
 package absnfs
 
 import (

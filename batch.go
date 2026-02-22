@@ -1,3 +1,7 @@
+// batch.go: Batch operation processing for NFS requests.
+//
+// Contains BatchProcessor for grouping and executing multiple NFS
+// operations together to amortize per-operation overhead.
 package absnfs
 
 import (

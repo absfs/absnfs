@@ -1,3 +1,8 @@
+// rate_limiter.go: Token bucket rate limiting for DoS protection.
+//
+// Contains RateLimiter with per-client and global rate limits using a
+// token bucket algorithm. Used by the connection handler to throttle
+// excessive requests.
 package absnfs
 
 import (

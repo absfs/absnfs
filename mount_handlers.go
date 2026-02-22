@@ -1,3 +1,9 @@
+// mount_handlers.go: NFSv3 MOUNT protocol (RFC 1813 Appendix I).
+//
+// Handles MNT (mount export), UMNT (unmount), DUMP (list active
+// mounts), and EXPORT (list available exports). Manages the export
+// path and active mount tracking. Supports both MOUNT v1 and v3
+// for compatibility with different client implementations.
 package absnfs
 
 import (

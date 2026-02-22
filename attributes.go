@@ -1,3 +1,8 @@
+// attributes.go: NFS file attribute encoding.
+//
+// Contains encodeFileAttributes (NFS3 fattr3 wire format),
+// encodeWccData (weak cache consistency), file-type constants,
+// and XDR encoding helpers for file metadata in NFS responses.
 package absnfs
 
 import (

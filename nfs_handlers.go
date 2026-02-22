@@ -1,3 +1,9 @@
+// nfs_handlers.go: NFS RPC dispatch layer.
+//
+// Contains NFSProcedureHandler which maps NFS3 procedure numbers to
+// handler functions and dispatches incoming RPC calls via HandleCall.
+// Includes error reply helpers, drain-and-swap logic for live policy
+// updates, and routing for NFS, MOUNT, and portmapper programs.
 package absnfs
 
 import (

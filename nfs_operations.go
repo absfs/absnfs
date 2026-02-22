@@ -1,3 +1,8 @@
+// nfs_operations.go: Higher-level NFS operation helpers.
+//
+// Provides StatFile, LookupFile, ListDirectory, validateFilename, and
+// related functions that compose multiple filesystem calls into
+// NFS-appropriate operation bundles with proper error translation.
 package absnfs
 
 import (

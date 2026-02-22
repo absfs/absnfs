@@ -1,3 +1,8 @@
+// cache.go: Attribute, directory, and read-ahead caching.
+//
+// Provides three cache types -- AttrCache (LRU file attributes with TTL),
+// DirCache (LRU directory listings), and ReadAheadBuffer (sequential read
+// prefetch) -- each with configurable size limits and eviction.
 package absnfs
 
 import (

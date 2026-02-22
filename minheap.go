@@ -1,3 +1,7 @@
+// minheap.go: Min-heap data structure for file handle ID reuse.
+//
+// Contains uint64MinHeap implementing container/heap.Interface, used
+// by FileHandleMap to efficiently recycle released handle IDs.
 package absnfs
 
 import "container/heap"

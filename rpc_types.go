@@ -1,3 +1,9 @@
+// rpc_types.go: XDR encoding/decoding and ONC RPC message types.
+//
+// Implements RPC call and reply structures per RFC 1831 (ONC RPC)
+// with XDR serialization per RFC 4506. Contains RPCCall, RPCReply,
+// RPCHeader, and XDR encoding helpers (encodeUint32, encodeString,
+// encodeOpaque, etc.) used throughout the NFS protocol stack.
 package absnfs
 
 import (

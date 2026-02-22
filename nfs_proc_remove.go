@@ -1,3 +1,9 @@
+// nfs_proc_remove.go: NFSv3 object removal and renaming operations.
+//
+// Implements the REMOVE, RMDIR, RENAME, and LINK procedures as defined
+// in RFC 1813 sections 3.3.12, 3.3.13, 3.3.14, and 3.3.15. These
+// handlers delete files and directories, rename entries, and create
+// hard links within the exported filesystem.
 package absnfs
 
 import (

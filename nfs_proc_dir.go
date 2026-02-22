@@ -1,3 +1,9 @@
+// nfs_proc_dir.go: NFSv3 directory listing operations.
+//
+// Implements the READDIR and READDIRPLUS procedures as defined in
+// RFC 1813 sections 3.3.16 and 3.3.17. READDIR returns directory entry
+// names and file IDs; READDIRPLUS additionally returns full attributes
+// and file handles, reducing the need for follow-up LOOKUP/GETATTR calls.
 package absnfs
 
 import (
