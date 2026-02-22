@@ -124,6 +124,14 @@ func applySquashing(result *AuthResult, authSys *AuthSysCredential, squash strin
 		// Map all users to nobody
 		result.UID = 65534
 		result.GID = 65534
+		// Squash all auxiliary GIDs (copy first to avoid mutating shared slice)
+		if len(authSys.AuxGIDs) > 0 {
+			auxCopy := make([]uint32, len(authSys.AuxGIDs))
+			for i := range auxCopy {
+				auxCopy[i] = 65534
+			}
+			authSys.AuxGIDs = auxCopy
+		}
 
 	case "none", "":
 		// No squashing - use the credentials as provided

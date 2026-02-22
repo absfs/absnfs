@@ -82,7 +82,9 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 		reply.Data = buf.Bytes()
 		return reply, nil
 	}
-	defer handler.policyRWMu.RUnlock()
+	// DO NOT defer RUnlock here -- the goroutine owns the lock so that
+	// drain-and-swap blocks until the goroutine's filesystem work finishes,
+	// not just until HandleCall returns on timeout.
 
 	// Snapshot options for this request
 	opts := handler.snapshotOptions()
@@ -95,6 +97,7 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 	// Validate authentication using policy snapshot
 	authResult := ValidateAuthentication(authCtx, opts.Policy)
 	if !authResult.Allowed {
+		handler.policyRWMu.RUnlock()
 		reply.Status = MSG_DENIED
 		if h.server.options.Debug {
 			h.server.logger.Printf("Authentication denied: %s (client: %s:%d, flavor: %d)",
@@ -113,6 +116,7 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 	replyChan := make(chan *RPCReply, 1)
 
 	go func() {
+		defer handler.policyRWMu.RUnlock()
 		select {
 		case <-ctx.Done():
 			return

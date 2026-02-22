@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -55,6 +56,7 @@ type Batch struct {
 // BatchProcessor manages the batching of operations
 type BatchProcessor struct {
 	enabled   bool                 // Whether batching is enabled
+	stopped   int32                // Atomic flag: 1 once Stop() begins (prevents new wg.Add)
 	maxSize   int                  // Maximum batch size
 	delay     time.Duration        // Maximum delay before processing a batch
 	batches   map[BatchType]*Batch // Active batches by type
@@ -98,6 +100,12 @@ func NewBatchProcessor(nfs *AbsfsNFS, maxSize int) *BatchProcessor {
 //   - added: true if the request was added to a batch, false if caller should handle individually
 //   - triggered: true if batch processing was triggered (only meaningful when added=true)
 func (bp *BatchProcessor) AddRequest(req *BatchRequest) (added bool, triggered bool) {
+	// If processor is stopping/stopped, reject immediately so callers fall back
+	// to individual processing. This prevents wg.Add after wg.Wait has begun.
+	if atomic.LoadInt32(&bp.stopped) != 0 {
+		return false, false
+	}
+
 	// If batching is disabled, return immediately to process individually
 	if !bp.enabled {
 		return false, false
@@ -132,6 +140,11 @@ func (bp *BatchProcessor) AddRequest(req *BatchRequest) (added bool, triggered b
 
 		// Unlock the old batch before passing to goroutine to prevent deadlock
 		batch.mu.Unlock()
+
+		// Re-check stopped under lock to avoid wg.Add after wg.Wait
+		if atomic.LoadInt32(&bp.stopped) != 0 {
+			return true, false
+		}
 
 		// Process the full batch asynchronously with wait group tracking
 		bp.wg.Add(1)
@@ -174,6 +187,11 @@ func (bp *BatchProcessor) processBatches() {
 
 					// R31: Unlock before goroutine dispatch to match AddRequest pattern
 					batch.mu.Unlock()
+
+					// Skip dispatch if stopping to avoid wg.Add after wg.Wait
+					if atomic.LoadInt32(&bp.stopped) != 0 {
+						continue
+					}
 
 					// Process the ready batch asynchronously with wait group tracking
 					bp.wg.Add(1)
@@ -545,6 +563,7 @@ func (bp *BatchProcessor) processDirReadBatch(batch *Batch) {
 
 // Stop stops the batch processor, draining pending items and notifying waiters
 func (bp *BatchProcessor) Stop() {
+	atomic.StoreInt32(&bp.stopped, 1)
 	bp.cancel()
 	bp.wg.Wait()
 

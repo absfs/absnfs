@@ -31,6 +31,9 @@ type WorkerPool struct {
 	logger *AbsfsNFS
 	// R29: Mutex to serialize Resize calls
 	resizeMu sync.Mutex
+	// closeMu prevents Submit from sending on a closed taskQueue.
+	// Submit holds RLock; Stop holds Lock before closing the channel.
+	closeMu sync.RWMutex
 }
 
 // Task represents a unit of work to be processed by a worker
@@ -114,6 +117,11 @@ func (p *WorkerPool) worker(id int) {
 // Submit adds a task to the worker pool
 // Returns a channel that will receive the result, or nil if the task was rejected
 func (p *WorkerPool) Submit(execute func() interface{}) chan interface{} {
+	// Hold closeMu.RLock for the entire check+send sequence so that
+	// Stop cannot close taskQueue between our running check and the send.
+	p.closeMu.RLock()
+	defer p.closeMu.RUnlock()
+
 	if atomic.LoadInt32(&p.running) == 0 {
 		return nil // Not running
 	}
@@ -165,8 +173,8 @@ func (p *WorkerPool) Stop() {
 	// Signal all workers to stop
 	p.cancel()
 
-	// Close the task queue
-	// Use defer and recover to safely handle potential "close of closed channel" panic
+	// Close the task queue under closeMu so that no Submit is mid-send.
+	p.closeMu.Lock()
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -175,6 +183,7 @@ func (p *WorkerPool) Stop() {
 		}()
 		close(p.taskQueue)
 	}()
+	p.closeMu.Unlock()
 
 	// Wait for all workers to finish
 	p.wg.Wait()

@@ -442,3 +442,50 @@ func TestFileHandleMapGetOrErrorCoverage(t *testing.T) {
 		}
 	})
 }
+
+// TestAllocateDeduplicatesByPath verifies that allocating handles for the
+// same path returns the same handle (path deduplication prevents handle leak).
+func TestAllocateDeduplicatesByPath(t *testing.T) {
+	fm := &FileHandleMap{
+		handles:     make(map[uint64]absfs.File),
+		pathHandles: make(map[string]uint64),
+		nextHandle:  1,
+		freeHandles: NewUint64MinHeap(),
+		maxHandles:  1000,
+	}
+
+	node1 := &NFSNode{path: "/test/file"}
+	node2 := &NFSNode{path: "/test/file"} // same path, different instance
+
+	h1 := fm.Allocate(node1)
+	h2 := fm.Allocate(node2)
+
+	if h1 != h2 {
+		t.Errorf("same path should return same handle: got h1=%d, h2=%d", h1, h2)
+	}
+	if fm.Count() != 1 {
+		t.Errorf("should have 1 handle, got %d", fm.Count())
+	}
+}
+
+// TestAllocateEvictionReturnsToFreeList verifies that evicted handles
+// are returned to the free list for reuse.
+func TestAllocateEvictionReturnsToFreeList(t *testing.T) {
+	fm := &FileHandleMap{
+		handles:     make(map[uint64]absfs.File),
+		pathHandles: make(map[string]uint64),
+		nextHandle:  1,
+		freeHandles: NewUint64MinHeap(),
+		maxHandles:  5,
+	}
+
+	// Allocate 6 handles (triggers eviction at 6th)
+	for i := 0; i < 6; i++ {
+		fm.Allocate(&NFSNode{path: fmt.Sprintf("/file%d", i)})
+	}
+
+	// Free list should have the evicted handle
+	if fm.freeHandles.IsEmpty() {
+		t.Error("evicted handles should be in the free list")
+	}
+}

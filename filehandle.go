@@ -15,10 +15,22 @@ import (
 const DefaultMaxHandles = 100000
 
 // Allocate creates a new file handle for the given absfs.File
-// Optimized to O(log n) or O(1) using a free list instead of O(n) linear search
+// Optimized to O(log n) or O(1) using a free list instead of O(n) linear search.
+// For NFSNode files, deduplicates by path: if a handle already exists for
+// the same path, updates the file reference and returns the existing handle.
+// This prevents unbounded handle growth from repeated LOOKUP/READDIRPLUS calls.
 func (fm *FileHandleMap) Allocate(f absfs.File) uint64 {
 	fm.Lock()
 	defer fm.Unlock()
+
+	// Deduplicate by path for NFSNode files
+	if node, ok := f.(*NFSNode); ok && node.path != "" {
+		if existing, found := fm.pathHandles[node.path]; found {
+			// Update the file reference (may have newer attrs) and return existing handle
+			fm.handles[existing] = f
+			return existing
+		}
+	}
 
 	var handle uint64
 
@@ -32,6 +44,11 @@ func (fm *FileHandleMap) Allocate(f absfs.File) uint64 {
 	}
 
 	fm.handles[handle] = f
+
+	// Record path mapping for NFSNode files
+	if node, ok := f.(*NFSNode); ok && node.path != "" {
+		fm.pathHandles[node.path] = handle
+	}
 
 	// Evict oldest handles if map exceeds maxHandles
 	maxH := fm.maxHandles
@@ -53,8 +70,13 @@ func (fm *FileHandleMap) Allocate(f absfs.File) uint64 {
 		// Evict starting from the lowest handles
 		for h := minHandle; evictCount > 0; h++ {
 			if file, exists := fm.handles[h]; exists {
+				// Clean up path mapping for evicted entries
+				if node, ok := file.(*NFSNode); ok {
+					delete(fm.pathHandles, node.path)
+				}
 				file.Close()
 				delete(fm.handles, h)
+				fm.freeHandles.PushValue(h)
 				evictCount--
 			}
 		}
@@ -94,6 +116,10 @@ func (fm *FileHandleMap) Release(handle uint64) {
 	defer fm.Unlock()
 
 	if f, exists := fm.handles[handle]; exists {
+		// Clean up path mapping
+		if node, ok := f.(*NFSNode); ok {
+			delete(fm.pathHandles, node.path)
+		}
 		f.Close()
 		delete(fm.handles, handle)
 		// Add the freed handle to the free list for reuse
@@ -111,7 +137,8 @@ func (fm *FileHandleMap) ReleaseAll() {
 		delete(fm.handles, handle)
 	}
 
-	// Clear the free list since all handles are now released
+	// Clear the path mapping and free list since all handles are now released
+	fm.pathHandles = make(map[string]uint64)
 	fm.freeHandles = NewUint64MinHeap()
 }
 

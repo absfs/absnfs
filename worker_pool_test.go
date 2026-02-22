@@ -1,6 +1,7 @@
 package absnfs
 
 import (
+	"io"
 	"log"
 	"os"
 	"runtime"
@@ -727,4 +728,62 @@ func TestWorkerPoolResizeCoverage(t *testing.T) {
 	t.Run("resize to zero", func(t *testing.T) {
 		nfs.workerPool.Resize(0)
 	})
+}
+
+// TestWorkerPoolSubmitDuringStopNoPanic verifies that calling Submit
+// concurrently with Stop does not panic (send on closed channel).
+func TestWorkerPoolSubmitDuringStopNoPanic(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		nfs := &AbsfsNFS{}
+		nfs.logger = log.New(io.Discard, "", 0)
+		pool := NewWorkerPool(4, nfs)
+		pool.Start()
+
+		var wg sync.WaitGroup
+		// Hammer Submit from many goroutines
+		for j := 0; j < 10; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for k := 0; k < 50; k++ {
+					pool.Submit(func() interface{} {
+						return nil
+					})
+				}
+			}()
+		}
+		// Concurrently stop
+		go pool.Stop()
+		wg.Wait()
+	}
+	// Test passes if no panic
+}
+
+// TestWorkerPoolResizeDuringSubmitNoPanic verifies that calling Resize
+// concurrently with Submit does not panic.
+func TestWorkerPoolResizeDuringSubmitNoPanic(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		nfs := &AbsfsNFS{}
+		nfs.logger = log.New(io.Discard, "", 0)
+		pool := NewWorkerPool(4, nfs)
+		pool.Start()
+
+		var wg sync.WaitGroup
+		for j := 0; j < 5; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for k := 0; k < 100; k++ {
+					pool.Submit(func() interface{} { return nil })
+				}
+			}()
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pool.Resize(8)
+		}()
+		wg.Wait()
+		pool.Stop()
+	}
 }

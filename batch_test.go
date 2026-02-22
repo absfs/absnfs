@@ -2,6 +2,7 @@ package absnfs
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -2157,6 +2158,38 @@ func TestProcessGetAttrBatchNotInCache(t *testing.T) {
 			t.Log("BatchGetAttr returned no data")
 		}
 	})
+}
+
+// TestBatchProcessorAddRequestDuringStopNoPanic verifies that calling
+// AddRequest concurrently with Stop does not panic.
+func TestBatchProcessorAddRequestDuringStopNoPanic(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		nfs := createTestNFS(t)
+		nfs.UpdateTuningOptions(func(t *TuningOptions) { t.BatchOperations = true })
+
+		bp := NewBatchProcessor(nfs, 100)
+
+		var wg sync.WaitGroup
+		ctx := context.Background()
+		for j := 0; j < 5; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for k := 0; k < 20; k++ {
+					bp.AddRequest(&BatchRequest{
+						Type:       BatchTypeRead,
+						FileHandle: 1,
+						ResultChan: make(chan *BatchResult, 1),
+						Context:    ctx,
+					})
+				}
+			}()
+		}
+		go bp.Stop()
+		wg.Wait()
+
+		nfs.Close()
+	}
 }
 
 // Tests for additional cache access patterns

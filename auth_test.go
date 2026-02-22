@@ -1139,3 +1139,27 @@ func TestIPFilteringViaAuth(t *testing.T) {
 		})
 	}
 }
+
+// TestAllSquashClearsAuxGIDs verifies that "all" squash mode squashes
+// every auxiliary GID to 65534 (nobody), not just UID and GID.
+func TestAllSquashClearsAuxGIDs(t *testing.T) {
+	authSys := &AuthSysCredential{
+		UID:     1000,
+		GID:     1000,
+		AuxGIDs: []uint32{50, 100, 200},
+	}
+	result := &AuthResult{Allowed: true, UID: 1000, GID: 1000}
+	applySquashing(result, authSys, "all")
+
+	if result.UID != 65534 {
+		t.Errorf("UID = %d, want 65534", result.UID)
+	}
+	if result.GID != 65534 {
+		t.Errorf("GID = %d, want 65534", result.GID)
+	}
+	for i, gid := range authSys.AuxGIDs {
+		if gid != 65534 {
+			t.Errorf("AuxGIDs[%d] = %d, want 65534", i, gid)
+		}
+	}
+}
