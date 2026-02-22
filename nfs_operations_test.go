@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/absfs/absfs"
 	"github.com/absfs/memfs"
 )
 
@@ -858,7 +859,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		}
 
 		// Verify symlink was created
-		symlinkFS, ok := server.handler.fs.(SymlinkFileSystem)
+		symlinkFS, ok := server.handler.fs.(absfs.SymlinkFileSystem)
 		if !ok {
 			t.Skip("Filesystem does not support symlinks")
 		}
@@ -926,7 +927,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 
 		// Create a symlink
 		target := "/testfile.txt"
-		symlinkFS, ok := server.handler.fs.(SymlinkFileSystem)
+		symlinkFS, ok := server.handler.fs.(absfs.SymlinkFileSystem)
 		if !ok {
 			t.Skip("Filesystem does not support symlinks")
 		}

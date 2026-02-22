@@ -919,47 +919,6 @@ func TestOperationsAdvanced(t *testing.T) {
 		}
 	})
 
-	// Test file attribute conversion
-	t.Run("file attribute conversion", func(t *testing.T) {
-		// Create test file with specific attributes
-		f, err := fs.Create("/attrtest")
-		if err != nil {
-			t.Fatalf("Failed to create test file: %v", err)
-		}
-		f.Close()
-
-		// Get file info
-		info, err := fs.Stat("/attrtest")
-		if err != nil {
-			t.Fatalf("Failed to stat file: %v", err)
-		}
-
-		// Convert to NFS attributes
-		attrs := toFileAttribute(info)
-
-		// Verify conversion
-		if attrs.Type != uint32(info.Mode()>>16) {
-			t.Errorf("Wrong file type: got %d", attrs.Type)
-		}
-		if attrs.Mode != uint32(info.Mode()&0xFFFF) {
-			t.Errorf("Wrong file mode: got %d", attrs.Mode)
-		}
-		if attrs.Size != uint64(info.Size()) {
-			t.Errorf("Wrong file size: got %d", attrs.Size)
-		}
-
-		expectedTime := uint32(info.ModTime().Unix())
-		if attrs.Mtime != expectedTime {
-			t.Errorf("Wrong mtime: got %d, want %d", attrs.Mtime, expectedTime)
-		}
-		if attrs.Atime != expectedTime {
-			t.Errorf("Wrong atime: got %d, want %d", attrs.Atime, expectedTime)
-		}
-		if attrs.Ctime != expectedTime {
-			t.Errorf("Wrong ctime: got %d, want %d", attrs.Ctime, expectedTime)
-		}
-	})
-
 	// Test helper functions
 	t.Run("helper functions", func(t *testing.T) {
 		// Test min function

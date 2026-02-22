@@ -45,22 +45,6 @@ func mapError(err error) uint32 {
 	}
 }
 
-// toFileAttribute converts absfs FileInfo to NFS FileAttribute
-func toFileAttribute(info os.FileInfo) FileAttribute {
-	mode := info.Mode()
-	mtime := info.ModTime()
-	return FileAttribute{
-		Type:   uint32(mode >> 16),
-		Mode:   uint32(mode & 0xFFFF),
-		Nlink:  1,
-		Size:   uint64(info.Size()),
-		Mtime:  uint32(mtime.Unix()),
-		Atime:  uint32(mtime.Unix()),
-		Ctime:  uint32(mtime.Unix()),
-		Fileid: uint64(time.Now().UnixNano()), // Generate a unique file ID
-	}
-}
-
 // sanitizePath validates and sanitizes a path to prevent directory traversal attacks.
 // It ensures the resulting path is within the base directory and rejects paths containing ".." components.
 func sanitizePath(basePath, name string) (string, error) {

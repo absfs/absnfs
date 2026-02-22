@@ -47,18 +47,6 @@ import (
 // Version represents the current version of the absnfs package
 const Version = "1.0.3"
 
-// NOTE: absfs.SymlinkFileSystem from the absfs package is now the standard interface.
-// The local SymlinkFileSystem interface below is kept for backwards compatibility
-// but code should prefer using absfs.SymlinkFileSystem directly.
-
-// SymlinkFileSystem represents a filesystem that supports symbolic links
-// Deprecated: Use absfs.SymlinkFileSystem instead
-type SymlinkFileSystem interface {
-	Symlink(oldname, newname string) error
-	Readlink(name string) (string, error)
-	Lstat(name string) (os.FileInfo, error)
-}
-
 // AbsfsNFS represents an NFS server that exports an absfs filesystem
 type AbsfsNFS struct {
 	mu               sync.RWMutex            // Protects shared mutable state
