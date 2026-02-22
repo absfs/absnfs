@@ -711,16 +711,6 @@ func TestMetricsIsHealthy(t *testing.T) {
 }
 
 // Tests for RecordOperationStart
-func TestRecordOperationStartCoverage(t *testing.T) {
-	nfs, _ := createTestServer(t)
-	defer nfs.Close()
-
-	ops := []string{"READ", "WRITE", "LOOKUP", "CREATE", "REMOVE"}
-	for _, op := range ops {
-		nfs.RecordOperationStart(op)
-	}
-}
-
 func TestMetricsRecordingMore(t *testing.T) {
 	nfs, _ := createTestServer(t)
 	defer nfs.Close()

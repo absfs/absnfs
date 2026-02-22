@@ -2246,31 +2246,6 @@ func TestCovBoost_HandleMkdir_StaleHandle(t *testing.T) {
 	}
 }
 
-func TestCovBoost_ValidateFilename_NullByte(t *testing.T) {
-	if validateFilename("foo\x00bar") != NFSERR_INVAL {
-		t.Error("expected NFSERR_INVAL")
-	}
-}
-func TestCovBoost_ValidateFilename_Backslash(t *testing.T) {
-	if validateFilename("foo\\bar") != NFSERR_INVAL {
-		t.Error("expected NFSERR_INVAL")
-	}
-}
-func TestCovBoost_ValidateFilename_TooLong(t *testing.T) {
-	long := make([]byte, 256)
-	for i := range long {
-		long[i] = 'a'
-	}
-	if validateFilename(string(long)) != NFSERR_NAMETOOLONG {
-		t.Error("expected NFSERR_NAMETOOLONG")
-	}
-}
-func TestCovBoost_ValidateFilename_Dot(t *testing.T) {
-	if validateFilename(".") != NFSERR_INVAL {
-		t.Error("expected NFSERR_INVAL")
-	}
-}
-
 func TestCovBoost_HandleNFSCall_VersionMismatch(t *testing.T) {
 	srv, handler, auth := setupHandlerEnv(t)
 	_ = srv

@@ -4633,8 +4633,6 @@ func TestEncodeFileAttributesErrors(t *testing.T) {
 	})
 }
 
-// limitedWriter is a writer that fails after limit bytes
-
 // Tests for NFS attribute encoding for different file types
 func TestEncodeAttributesForAllTypes(t *testing.T) {
 	testCases := []struct {
@@ -4676,8 +4674,6 @@ func TestEncodeAttributesForAllTypes(t *testing.T) {
 	}
 }
 
-// Tests for processGetAttrBatch error path
-
 // Tests for encodeWccAttr error paths
 func TestEncodeWccAttrErrors(t *testing.T) {
 	attrs := &NFSAttrs{
@@ -4700,9 +4696,6 @@ func TestEncodeWccAttrErrors(t *testing.T) {
 	})
 }
 
-// Tests for encodeErrorResponse - additional coverage
-
-// Tests for encodeErrorResponse - additional coverage
 func TestEncodeErrorResponseCoverage(t *testing.T) {
 	errorCodes := []uint32{
 		NFS_OK,
@@ -4732,9 +4725,6 @@ func TestEncodeErrorResponseCoverage(t *testing.T) {
 	}
 }
 
-// Tests for encodeAttributesResponse
-
-// Tests for encodeAttributesResponse
 func TestEncodeAttributesResponseCoverage(t *testing.T) {
 	attrs := &NFSAttrs{
 		Mode:   0644,
@@ -4755,186 +4745,6 @@ func TestEncodeAttributesResponseCoverage(t *testing.T) {
 		if len(data) < 4 {
 			t.Errorf("Response too short: %d bytes", len(data))
 		}
-	})
-}
-
-// Tests for Symlink operation
-func TestSymlinkCoverage(t *testing.T) {
-	nfs, mfs := createTestServer(t)
-	defer nfs.Close()
-
-	// Create a file to link to
-	f, _ := mfs.Create("/target.txt")
-	f.Write([]byte("target content"))
-	f.Close()
-
-	rootNode, _ := nfs.Lookup("/")
-
-	t.Run("create symlink", func(t *testing.T) {
-		attrs := &NFSAttrs{Mode: 0777 | os.ModeSymlink}
-		_, err := nfs.Symlink(rootNode, "link.txt", "/target.txt", attrs)
-		if err != nil {
-			t.Logf("Symlink error (may be expected if fs doesn't support): %v", err)
-		}
-	})
-}
-
-// Tests for WriteWithContext
-
-// Tests for WriteWithContext
-func TestWriteWithContextCoverage(t *testing.T) {
-	nfs, mfs := createTestServer(t)
-	defer nfs.Close()
-
-	// Create a test file
-	f, _ := mfs.Create("/writecontext.txt")
-	f.Write([]byte("initial content"))
-	f.Close()
-
-	node, _ := nfs.Lookup("/writecontext.txt")
-
-	t.Run("write with context", func(t *testing.T) {
-		ctx := context.Background()
-		n, err := nfs.WriteWithContext(ctx, node, 0, []byte("new content"))
-		if err != nil {
-			t.Logf("Write error: %v", err)
-		}
-		if n > 0 {
-			t.Logf("Wrote %d bytes", n)
-		}
-	})
-
-	t.Run("write with cancelled context", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		_, err := nfs.WriteWithContext(ctx, node, 0, []byte("cancelled"))
-		if err == nil {
-			t.Log("Expected error for cancelled context")
-		}
-	})
-}
-
-// Tests for CreateWithContext
-
-// Tests for CreateWithContext
-func TestCreateWithContextCoverage(t *testing.T) {
-	nfs, _ := createTestServer(t)
-	defer nfs.Close()
-
-	rootNode, _ := nfs.Lookup("/")
-
-	t.Run("create with context", func(t *testing.T) {
-		ctx := context.Background()
-		attrs := &NFSAttrs{Mode: 0644}
-		node, err := nfs.CreateWithContext(ctx, rootNode, "created.txt", attrs)
-		if err != nil {
-			t.Logf("Create error: %v", err)
-		}
-		if node != nil {
-			t.Log("Created file successfully")
-		}
-	})
-
-	t.Run("create with cancelled context", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		attrs := &NFSAttrs{Mode: 0644}
-		_, err := nfs.CreateWithContext(ctx, rootNode, "cancelled.txt", attrs)
-		if err == nil {
-			t.Log("Expected error for cancelled context")
-		}
-	})
-}
-
-// Tests for RemoveWithContext
-
-// Tests for RemoveWithContext
-func TestRemoveWithContextCoverage(t *testing.T) {
-	nfs, mfs := createTestServer(t)
-	defer nfs.Close()
-
-	// Create a file to remove
-	f, _ := mfs.Create("/toremove.txt")
-	f.Close()
-
-	rootNode, _ := nfs.Lookup("/")
-
-	t.Run("remove with context", func(t *testing.T) {
-		ctx := context.Background()
-		err := nfs.RemoveWithContext(ctx, rootNode, "toremove.txt")
-		if err != nil {
-			t.Logf("Remove error: %v", err)
-		}
-	})
-
-	t.Run("remove with cancelled context", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		err := nfs.RemoveWithContext(ctx, rootNode, "nonexistent.txt")
-		if err == nil {
-			t.Log("Expected error for cancelled context")
-		}
-	})
-}
-
-// Additional tests for EncodeRPCReply
-
-// Tests for ReadWithContext
-func TestReadWithContextCoverage(t *testing.T) {
-	nfs, mfs := createTestServer(t)
-	defer nfs.Close()
-
-	// Create a test file
-	f, _ := mfs.Create("/readcontext.txt")
-	f.Write([]byte("read context content"))
-	f.Close()
-
-	node, _ := nfs.Lookup("/readcontext.txt")
-
-	t.Run("read with context", func(t *testing.T) {
-		ctx := context.Background()
-		data, err := nfs.ReadWithContext(ctx, node, 0, 20)
-		if err != nil {
-			t.Logf("Read error: %v", err)
-		}
-		if len(data) > 0 {
-			t.Logf("Read %d bytes", len(data))
-		}
-	})
-
-	t.Run("read with cancelled context", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		_, err := nfs.ReadWithContext(ctx, node, 0, 20)
-		if err == nil {
-			t.Log("Expected error for cancelled context")
-		}
-	})
-}
-
-// Tests for Readdir more entries
-
-// Tests for Readdir more entries
-func TestReaddirMoreCoverage(t *testing.T) {
-	nfs, mfs := createTestServer(t)
-	defer nfs.Close()
-
-	// Create a directory with many files
-	mfs.Mkdir("/manyfiles", 0755)
-	for i := 0; i < 20; i++ {
-		f, _ := mfs.Create("/manyfiles/file" + string(rune('a'+i)) + ".txt")
-		f.Write([]byte("content"))
-		f.Close()
-	}
-
-	dirNode, _ := nfs.Lookup("/manyfiles")
-
-	t.Run("read large directory", func(t *testing.T) {
-		entries, err := nfs.ReadDir(dirNode)
-		if err != nil {
-			t.Logf("ReadDir error: %v", err)
-		}
-		t.Logf("Found %d entries", len(entries))
 	})
 }
 
@@ -4959,5 +4769,3 @@ func (w *limitedWriter) Write(p []byte) (n int, err error) {
 	w.written += n
 	return n, nil
 }
-
-// Tests for batch DirRead success path

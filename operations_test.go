@@ -2489,35 +2489,3 @@ func TestValidateFilenameMoreCases(t *testing.T) {
 	}
 }
 
-// Tests for validateFilename comprehensive coverage - boost
-func TestValidateFilenameCoverageBoost(t *testing.T) {
-	testCases := []struct {
-		name     string
-		input    string
-		expected uint32
-	}{
-		{"empty", "", NFSERR_INVAL},
-		{"valid simple", "file.txt", NFS_OK},
-		{"valid with spaces", "file with spaces.txt", NFS_OK},
-		{"valid with unicode", "файл.txt", NFS_OK},
-		{"too long", string(make([]byte, 300)), NFSERR_NAMETOOLONG},
-		{"with null byte", "file\x00name", NFSERR_INVAL},
-		{"with forward slash", "path/file", NFSERR_INVAL},
-		{"with backslash", "path\\file", NFSERR_INVAL},
-		{"dot only", ".", NFSERR_INVAL},
-		{"dotdot", "..", NFSERR_INVAL},
-		{"valid dotfile", ".hidden", NFS_OK},
-		{"valid with numbers", "file123", NFS_OK},
-		{"valid with underscore", "file_name", NFS_OK},
-		{"valid with dash", "file-name", NFS_OK},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := validateFilename(tc.input)
-			if result != tc.expected {
-				t.Errorf("Expected %d, got %d for input %q", tc.expected, result, tc.input)
-			}
-		})
-	}
-}
