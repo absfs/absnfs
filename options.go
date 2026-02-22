@@ -195,6 +195,9 @@ func exportOptionsFromSnapshots(t *TuningOptions, p *PolicyOptions) ExportOption
 // The mutation is applied to a copy; the result is stored atomically.
 // No drain is needed -- stale tuning reads are harmless.
 func (n *AbsfsNFS) UpdateTuningOptions(fn func(*TuningOptions)) {
+	n.tuningMu.Lock()
+	defer n.tuningMu.Unlock()
+
 	old := n.tuning.Load()
 	updated := *old // shallow copy
 	// Deep copy pointer fields
@@ -223,13 +226,12 @@ func (n *AbsfsNFS) UpdatePolicyOptions(newPolicy PolicyOptions) error {
 		return fmt.Errorf("cannot change Squash mode at runtime")
 	}
 
-	// Phase 1: Stop accepting new requests
-	n.draining.Store(true)
+	// Drain in-flight requests: Lock() blocks until all RLock holders
+	// (in-flight requests) release. New requests using TryRLock will fail
+	// and return NFSERR_JUKEBOX so clients retry.
+	n.policyRWMu.Lock()
 
-	// Phase 2: Wait for in-flight requests to finish
-	n.inflight.Wait()
-
-	// Phase 3: Swap to new policy (deep copy slices/pointers)
+	// Swap to new policy (deep copy slices/pointers)
 	snapshot := newPolicy
 	if len(newPolicy.AllowedIPs) > 0 {
 		snapshot.AllowedIPs = make([]string, len(newPolicy.AllowedIPs))
@@ -244,17 +246,26 @@ func (n *AbsfsNFS) UpdatePolicyOptions(newPolicy PolicyOptions) error {
 	}
 	n.policy.Store(&snapshot)
 
-	// Phase 4: Resume accepting requests
-	n.draining.Store(false)
-
-	// Update rate limiter if config changed
+	// Update rate limiter while still holding the write lock (H2 fix)
 	if newPolicy.EnableRateLimiting && newPolicy.RateLimitConfig != nil {
 		n.rateLimiter = NewRateLimiter(*newPolicy.RateLimitConfig)
 	} else if !newPolicy.EnableRateLimiting {
 		n.rateLimiter = nil
 	}
 
+	// Resume accepting requests
+	n.policyRWMu.Unlock()
+
 	return nil
+}
+
+// getStructuredLogger returns the current structured logger safely.
+// The returned Logger is safe to use after the call returns.
+func (n *AbsfsNFS) getStructuredLogger() Logger {
+	n.loggerMu.RLock()
+	l := n.structuredLogger
+	n.loggerMu.RUnlock()
+	return l
 }
 
 // applyTuningSideEffects resizes caches, worker pools, etc.
@@ -314,11 +325,15 @@ func (n *AbsfsNFS) applyTuningSideEffects(old, updated *TuningOptions) {
 	// Update logging configuration
 	if updated.Log != nil && (old.Log == nil || *updated.Log != *old.Log) {
 		slogger, err := NewSlogLogger(updated.Log)
-		if err == nil {
+		if err != nil {
+			n.logger.Printf("failed to create structured logger: %v", err)
+		} else {
+			n.loggerMu.Lock()
 			if oldLogger, ok := n.structuredLogger.(*SlogLogger); ok {
 				oldLogger.Close()
 			}
 			n.structuredLogger = slogger
+			n.loggerMu.Unlock()
 		}
 	}
 }

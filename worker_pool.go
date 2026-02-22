@@ -217,11 +217,12 @@ func (p *WorkerPool) Resize(maxWorkers int) {
 		p.Stop()
 	}
 
-	// Drain remaining tasks from old queue and notify callers
+	// Drain remaining tasks from old queue and notify callers.
+	// Stop() already closed oldQueue. If wasRunning was false, the queue
+	// may still be closed from a prior Stop() call, so use recover().
 	var pendingTasks []Task
 	if oldQueue != nil {
 		if !wasRunning {
-			// R16: Wrap close in recover to handle already-closed channel
 			func() {
 				defer func() { recover() }()
 				close(oldQueue)

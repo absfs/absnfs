@@ -116,6 +116,11 @@ func (tc *TLSConfig) Validate() error {
 			tc.MinVersion, tc.MaxVersion)
 	}
 
+	// Reject TLS versions below 1.2
+	if tc.MinVersion != 0 && tc.MinVersion < tls.VersionTLS12 {
+		return fmt.Errorf("TLS version below 1.2 is not supported")
+	}
+
 	// Warn about insecure settings (but don't error)
 	if tc.InsecureSkipVerify {
 		// This will be logged by the server

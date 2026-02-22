@@ -125,11 +125,11 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 	defer cancel()
 
 	// Log operation if enabled
-	if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogOperations {
+	if slog := s.getStructuredLogger(); slog != nil && tuning.Log != nil && tuning.Log.LogOperations {
 		startTime := time.Now()
 		defer func() {
 			duration := time.Since(startTime)
-			s.structuredLogger.Debug("LOOKUP operation",
+			slog.Debug("LOOKUP operation",
 				LogField{Key: "path", Value: path},
 				LogField{Key: "duration_ms", Value: duration.Milliseconds()})
 		}()
@@ -233,11 +233,14 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 	node.mu.RUnlock()
 
 	modTime := info.ModTime()
+	h := fnv.New64a()
+	h.Write([]byte(node.path))
 	attrs := &NFSAttrs{
-		Mode: info.Mode(),
-		Size: info.Size(),
-		Uid:  uid,
-		Gid:  gid,
+		Mode:   info.Mode(),
+		Size:   info.Size(),
+		FileId: h.Sum64(),
+		Uid:    uid,
+		Gid:    gid,
 	}
 	attrs.SetMtime(modTime)
 	attrs.SetAtime(modTime)
@@ -327,11 +330,11 @@ func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset in
 	defer cancel()
 
 	// Log operation if enabled
-	if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogOperations {
+	if slog := s.getStructuredLogger(); slog != nil && tuning.Log != nil && tuning.Log.LogOperations {
 		startTime := time.Now()
 		defer func() {
 			duration := time.Since(startTime)
-			s.structuredLogger.Debug("READ operation",
+			slog.Debug("READ operation",
 				LogField{Key: "path", Value: node.path},
 				LogField{Key: "offset", Value: offset},
 				LogField{Key: "count", Value: count},
@@ -381,7 +384,7 @@ func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset in
 
 	// Use batch processing if we determined it's safe to do so
 	if useBatch {
-		data, status, err := s.batchProc.BatchRead(context.Background(), fileHandle, offset, int(count))
+		data, status, err := s.batchProc.BatchRead(ctx, fileHandle, offset, int(count))
 		if err == nil && status == NFS_OK {
 			return data, nil
 		}
@@ -469,8 +472,8 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 	policy := s.policy.Load()
 
 	if policy.ReadOnly {
-		if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogOperations {
-			s.structuredLogger.Warn("WRITE operation denied: read-only mode",
+		if slog := s.getStructuredLogger(); slog != nil && tuning.Log != nil && tuning.Log.LogOperations {
+			slog.Warn("WRITE operation denied: read-only mode",
 				LogField{Key: "path", Value: node.path})
 		}
 		return 0, os.ErrPermission
@@ -482,11 +485,11 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 	defer cancel()
 
 	// Log operation if enabled
-	if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogOperations {
+	if slog := s.getStructuredLogger(); slog != nil && tuning.Log != nil && tuning.Log.LogOperations {
 		startTime := time.Now()
 		defer func() {
 			duration := time.Since(startTime)
-			s.structuredLogger.Debug("WRITE operation",
+			slog.Debug("WRITE operation",
 				LogField{Key: "path", Value: node.path},
 				LogField{Key: "offset", Value: offset},
 				LogField{Key: "size", Value: len(data)},
@@ -532,7 +535,7 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 
 	// Use batch processing if we determined it's safe to do so
 	if useBatch {
-		status, err := s.batchProc.BatchWrite(context.Background(), fileHandle, offset, data)
+		status, err := s.batchProc.BatchWrite(ctx, fileHandle, offset, data)
 		if err == nil && status == NFS_OK {
 			// Invalidate cache after successful write
 			s.attrCache.Invalidate(node.path)
@@ -581,8 +584,8 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 		now := time.Now()
 		if chtimesErr := s.fs.Chtimes(node.path, now, now); chtimesErr != nil {
 			// Log but don't fail the write for timestamp update failure
-			if s.structuredLogger != nil {
-				s.structuredLogger.Warn("WRITE: Failed to update times",
+			if slog := s.getStructuredLogger(); slog != nil {
+				slog.Warn("WRITE: Failed to update times",
 					LogField{Key: "path", Value: node.path},
 					LogField{Key: "error", Value: chtimesErr})
 			}
@@ -622,8 +625,8 @@ func (s *AbsfsNFS) CreateWithContext(ctx context.Context, dir *NFSNode, name str
 	policy := s.policy.Load()
 
 	if policy.ReadOnly {
-		if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogFileAccess {
-			s.structuredLogger.Warn("CREATE operation denied: read-only mode",
+		if slog := s.getStructuredLogger(); slog != nil && tuning.Log != nil && tuning.Log.LogFileAccess {
+			slog.Warn("CREATE operation denied: read-only mode",
 				LogField{Key: "dir", Value: dir.path},
 				LogField{Key: "name", Value: name})
 		}
@@ -636,11 +639,11 @@ func (s *AbsfsNFS) CreateWithContext(ctx context.Context, dir *NFSNode, name str
 	defer cancel()
 
 	// Log operation if enabled
-	if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogFileAccess {
+	if slog := s.getStructuredLogger(); slog != nil && tuning.Log != nil && tuning.Log.LogFileAccess {
 		startTime := time.Now()
 		defer func() {
 			duration := time.Since(startTime)
-			s.structuredLogger.Info("CREATE operation",
+			slog.Info("CREATE operation",
 				LogField{Key: "dir", Value: dir.path},
 				LogField{Key: "name", Value: name},
 				LogField{Key: "duration_ms", Value: duration.Milliseconds()})
@@ -705,8 +708,8 @@ func (s *AbsfsNFS) RemoveWithContext(ctx context.Context, dir *NFSNode, name str
 	policy := s.policy.Load()
 
 	if policy.ReadOnly {
-		if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogFileAccess {
-			s.structuredLogger.Warn("REMOVE operation denied: read-only mode",
+		if slog := s.getStructuredLogger(); slog != nil && tuning.Log != nil && tuning.Log.LogFileAccess {
+			slog.Warn("REMOVE operation denied: read-only mode",
 				LogField{Key: "dir", Value: dir.path},
 				LogField{Key: "name", Value: name})
 		}
@@ -719,11 +722,11 @@ func (s *AbsfsNFS) RemoveWithContext(ctx context.Context, dir *NFSNode, name str
 	defer cancel()
 
 	// Log operation if enabled
-	if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.LogFileAccess {
+	if slog := s.getStructuredLogger(); slog != nil && tuning.Log != nil && tuning.Log.LogFileAccess {
 		startTime := time.Now()
 		defer func() {
 			duration := time.Since(startTime)
-			s.structuredLogger.Info("REMOVE operation",
+			slog.Info("REMOVE operation",
 				LogField{Key: "dir", Value: dir.path},
 				LogField{Key: "name", Value: name},
 				LogField{Key: "duration_ms", Value: duration.Milliseconds()})
@@ -865,8 +868,8 @@ func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFS
 			}
 
 			// Log cache hit if debug logging is enabled
-			if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.Level == "debug" {
-				s.structuredLogger.Debug("directory cache hit",
+			if slog := s.getStructuredLogger(); slog != nil && tuning.Log != nil && tuning.Log.Level == "debug" {
+				slog.Debug("directory cache hit",
 					LogField{Key: "path", Value: dir.path})
 			}
 
@@ -899,8 +902,8 @@ func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFS
 		}
 
 		// Log cache miss if debug logging is enabled
-		if s.structuredLogger != nil && tuning.Log != nil && tuning.Log.Level == "debug" {
-			s.structuredLogger.Debug("directory cache miss",
+		if slog := s.getStructuredLogger(); slog != nil && tuning.Log != nil && tuning.Log.Level == "debug" {
+			slog.Debug("directory cache miss",
 				LogField{Key: "path", Value: dir.path})
 		}
 	}
@@ -1097,5 +1100,8 @@ func (s *AbsfsNFS) Unexport() error {
 	// Clear caches
 	s.attrCache.Clear()
 	s.readBuf.Clear()
+	if s.dirCache != nil {
+		s.dirCache.Clear()
+	}
 	return nil
 }

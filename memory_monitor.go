@@ -33,6 +33,10 @@ type MemoryMonitor struct {
 	active int32
 	// Channel to signal monitor to stop
 	stopCh chan struct{}
+	// Mutex to protect Start/Stop from concurrent access
+	mu sync.Mutex
+	// WaitGroup to track the monitoring goroutine
+	wg sync.WaitGroup
 }
 
 // NewMemoryMonitor creates a new memory monitor for the given AbsfsNFS instance
@@ -45,6 +49,9 @@ func NewMemoryMonitor(nfs *AbsfsNFS) *MemoryMonitor {
 
 // Start begins monitoring system memory usage at the specified interval
 func (m *MemoryMonitor) Start(interval time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	// Use atomic CAS to ensure we only start once
 	if !atomic.CompareAndSwapInt32(&m.active, 0, 1) {
 		return // Monitor is already running
@@ -58,7 +65,9 @@ func (m *MemoryMonitor) Start(interval time.Duration) {
 	m.updateStats()
 
 	// Start background monitoring (capture stopCh locally to avoid race)
+	m.wg.Add(1)
 	go func() {
+		defer m.wg.Done()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -73,11 +82,14 @@ func (m *MemoryMonitor) Start(interval time.Duration) {
 	}()
 }
 
-// Stop ends the memory monitoring
+// Stop ends the memory monitoring and waits for the goroutine to exit
 func (m *MemoryMonitor) Stop() {
+	m.mu.Lock()
 	if atomic.CompareAndSwapInt32(&m.active, 1, 0) {
 		close(m.stopCh)
 	}
+	m.mu.Unlock()
+	m.wg.Wait()
 }
 
 // IsActive returns true if monitoring is active

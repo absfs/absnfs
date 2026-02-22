@@ -54,6 +54,7 @@ type Server struct {
 	connMutex   sync.Mutex
 	activeConns map[net.Conn]*connectionState // Map of active connections and their state
 	connCount   int                           // Current connection count
+	nextConnID  atomic.Uint64                 // Monotonic counter for connection IDs
 }
 
 // NewServer creates a new NFS server
@@ -80,7 +81,8 @@ func NewServer(options ServerOptions) (*Server, error) {
 	return s, nil
 }
 
-// SetHandler sets the filesystem handler for the server
+// SetHandler sets the AbsfsNFS handler for this server.
+// Must be called before Listen() and is not safe for concurrent use.
 func (s *Server) SetHandler(handler *AbsfsNFS) {
 	s.handler = handler
 }
@@ -103,6 +105,7 @@ func (s *Server) isIPAllowed(clientIP string) bool {
 		// Invalid IP, reject
 		return false
 	}
+	ip = normalizeIP(ip)
 
 	// Check against each allowed IP/subnet
 	for _, allowedIP := range policy.AllowedIPs {
@@ -122,7 +125,7 @@ func (s *Server) isIPAllowed(clientIP string) bool {
 		} else {
 			// Direct IP comparison
 			allowedIPParsed := net.ParseIP(allowedIP)
-			if allowedIPParsed != nil && ip.Equal(allowedIPParsed) {
+			if allowedIPParsed != nil && normalizeIP(allowedIPParsed).Equal(ip) {
 				return true
 			}
 		}
@@ -152,17 +155,17 @@ func (s *Server) registerConnection(conn net.Conn) bool {
 		}
 
 		// Log structured message
-		if s.handler.structuredLogger != nil {
+		if slog := s.handler.getStructuredLogger(); slog != nil {
 			if tuning.Log != nil && tuning.Log.LogClientIPs {
 				clientAddr := ""
 				if conn != nil && conn.RemoteAddr() != nil {
 					clientAddr = conn.RemoteAddr().String()
 				}
-				s.handler.structuredLogger.Warn("connection limit reached",
+				slog.Warn("connection limit reached",
 					LogField{Key: "limit", Value: tuning.MaxConnections},
 					LogField{Key: "client_addr", Value: clientAddr})
 			} else {
-				s.handler.structuredLogger.Warn("connection limit reached",
+				slog.Warn("connection limit reached",
 					LogField{Key: "limit", Value: tuning.MaxConnections})
 			}
 		}
@@ -181,17 +184,17 @@ func (s *Server) registerConnection(conn net.Conn) bool {
 	}
 
 	// Log structured message
-	if s.handler.structuredLogger != nil {
+	if slog := s.handler.getStructuredLogger(); slog != nil {
 		if tuning.Log != nil && tuning.Log.LogClientIPs {
 			clientAddr := ""
 			if conn != nil && conn.RemoteAddr() != nil {
 				clientAddr = conn.RemoteAddr().String()
 			}
-			s.handler.structuredLogger.Info("connection accepted",
+			slog.Info("connection accepted",
 				LogField{Key: "total_connections", Value: s.connCount},
 				LogField{Key: "client_addr", Value: clientAddr})
 		} else {
-			s.handler.structuredLogger.Info("connection accepted",
+			slog.Info("connection accepted",
 				LogField{Key: "total_connections", Value: s.connCount})
 		}
 	}
@@ -225,19 +228,21 @@ func (s *Server) unregisterConnection(conn net.Conn) {
 			}
 
 			// Log structured message
-			if s.handler != nil && s.handler.structuredLogger != nil {
-				tuning := s.handler.tuning.Load()
-				if tuning.Log != nil && tuning.Log.LogClientIPs {
-					clientAddr := ""
-					if conn != nil && conn.RemoteAddr() != nil {
-						clientAddr = conn.RemoteAddr().String()
+			if s.handler != nil {
+				if slog := s.handler.getStructuredLogger(); slog != nil {
+					tuning := s.handler.tuning.Load()
+					if tuning.Log != nil && tuning.Log.LogClientIPs {
+						clientAddr := ""
+						if conn != nil && conn.RemoteAddr() != nil {
+							clientAddr = conn.RemoteAddr().String()
+						}
+						slog.Info("connection closed",
+							LogField{Key: "total_connections", Value: s.connCount},
+							LogField{Key: "client_addr", Value: clientAddr})
+					} else {
+						slog.Info("connection closed",
+							LogField{Key: "total_connections", Value: s.connCount})
 					}
-					s.handler.structuredLogger.Info("connection closed",
-						LogField{Key: "total_connections", Value: s.connCount},
-						LogField{Key: "client_addr", Value: clientAddr})
-				} else {
-					s.handler.structuredLogger.Info("connection closed",
-						LogField{Key: "total_connections", Value: s.connCount})
 				}
 			}
 		}
@@ -314,6 +319,21 @@ func (s *Server) idleConnectionCleanupLoop() {
 		case <-s.ctx.Done():
 			return // Server is shutting down
 		case <-ticker.C:
+			// Re-read tuning options on each tick so the loop picks up
+			// dynamic configuration changes instead of using a stale snapshot.
+			if s.handler != nil {
+				tuning := s.handler.tuning.Load()
+				if tuning.IdleTimeout > 0 {
+					newInterval := tuning.IdleTimeout / 2
+					if newInterval < 1*time.Minute {
+						// Update ticker if interval changed
+						if newInterval != checkInterval {
+							checkInterval = newInterval
+							ticker.Reset(checkInterval)
+						}
+					}
+				}
+			}
 			s.cleanupIdleConnections()
 		}
 	}
@@ -532,13 +552,15 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 				}
 
 				// Log structured message
-				if s.handler != nil && s.handler.structuredLogger != nil {
-					tuning := s.handler.tuning.Load()
-					if tuning.Log != nil && tuning.Log.LogClientIPs {
-						s.handler.structuredLogger.Warn("connection rejected: IP not allowed",
-							LogField{Key: "client_ip", Value: clientIP})
-					} else {
-						s.handler.structuredLogger.Warn("connection rejected: IP not allowed")
+				if s.handler != nil {
+					if slog := s.handler.getStructuredLogger(); slog != nil {
+						tuning := s.handler.tuning.Load()
+						if tuning.Log != nil && tuning.Log.LogClientIPs {
+							slog.Warn("connection rejected: IP not allowed",
+								LogField{Key: "client_ip", Value: clientIP})
+						} else {
+							slog.Warn("connection rejected: IP not allowed")
+						}
 					}
 				}
 
@@ -600,6 +622,11 @@ func (s *Server) acceptLoop(procHandler *NFSProcedureHandler) {
 			go func() {
 				defer s.wg.Done()
 				defer s.unregisterConnection(conn) // Ensure connection is unregistered when done
+				defer func() {
+					if r := recover(); r != nil {
+						s.logger.Printf("recovered panic in connection handler: %v", r)
+					}
+				}()
 				if s.options.UseRecordMarking {
 					s.handleConnectionWithRecordMarking(conn, procHandler)
 				} else {
@@ -620,11 +647,17 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 	)
 
 	// Generate a unique connection ID for per-connection rate limiting
-	connID := fmt.Sprintf("%p", conn)
+	connID := fmt.Sprintf("conn-%d", s.nextConnID.Add(1))
+
+	// Snapshot rate limiter for this connection
+	var connRateLimiter *RateLimiter
+	if s.handler != nil {
+		connRateLimiter = s.handler.rateLimiter
+	}
 	defer func() {
 		// Clean up connection-specific rate limiter on exit
-		if s.handler != nil && s.handler.rateLimiter != nil {
-			s.handler.rateLimiter.CleanupConnection(connID)
+		if connRateLimiter != nil {
+			connRateLimiter.CleanupConnection(connID)
 		}
 	}()
 
@@ -674,9 +707,8 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 			}
 
 			// Check rate limit before processing request
-			policy := s.handler.policy.Load()
-			if s.handler != nil && s.handler.rateLimiter != nil && policy.EnableRateLimiting {
-				if !s.handler.rateLimiter.AllowRequest(authCtx.ClientIP, connID) {
+			if connRateLimiter != nil && s.handler != nil && s.handler.policy.Load().EnableRateLimiting {
+				if !connRateLimiter.AllowRequest(authCtx.ClientIP, connID) {
 					// Rate limit exceeded - send error reply
 					reply := &RPCReply{
 						Header: call.Header,
@@ -692,13 +724,13 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 					}
 
 					// Log structured message
-					if s.handler.structuredLogger != nil {
+					if slog := s.handler.getStructuredLogger(); slog != nil {
 						tuning := s.handler.tuning.Load()
 						if tuning.Log != nil && tuning.Log.LogClientIPs {
-							s.handler.structuredLogger.Warn("rate limit exceeded",
+							slog.Warn("rate limit exceeded",
 								LogField{Key: "client_ip", Value: authCtx.ClientIP})
 						} else {
-							s.handler.structuredLogger.Warn("rate limit exceeded")
+							slog.Warn("rate limit exceeded")
 						}
 					}
 
@@ -707,9 +739,11 @@ func (s *Server) handleConnection(conn net.Conn, procHandler *NFSProcedureHandle
 						s.handler.metrics.RecordRateLimitExceeded()
 					}
 
-					// Send rejection and continue to next request
+					// Send rejection and return on write error
 					if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err == nil {
-						s.writeRPCReply(conn, reply)
+						if writeErr := s.writeRPCReply(conn, reply); writeErr != nil {
+							return
+						}
 					}
 					continue
 				}
@@ -828,10 +862,16 @@ func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *N
 	rmConn := NewRecordMarkingConn(conn, conn)
 
 	// Generate a unique connection ID for per-connection rate limiting
-	connID := fmt.Sprintf("%p", conn)
+	connID := fmt.Sprintf("conn-%d", s.nextConnID.Add(1))
+
+	// Snapshot rate limiter for this connection
+	var connRateLimiter *RateLimiter
+	if s.handler != nil {
+		connRateLimiter = s.handler.rateLimiter
+	}
 	defer func() {
-		if s.handler != nil && s.handler.rateLimiter != nil {
-			s.handler.rateLimiter.CleanupConnection(connID)
+		if connRateLimiter != nil {
+			connRateLimiter.CleanupConnection(connID)
 		}
 	}()
 
@@ -883,9 +923,8 @@ func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *N
 			}
 
 			// Check rate limit
-			policy := s.handler.policy.Load()
-			if s.handler != nil && s.handler.rateLimiter != nil && policy.EnableRateLimiting {
-				if !s.handler.rateLimiter.AllowRequest(authCtx.ClientIP, connID) {
+			if connRateLimiter != nil && s.handler != nil && s.handler.policy.Load().EnableRateLimiting {
+				if !connRateLimiter.AllowRequest(authCtx.ClientIP, connID) {
 					reply := &RPCReply{
 						Header: call.Header,
 						Status: MSG_DENIED,
@@ -901,7 +940,9 @@ func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *N
 						s.handler.metrics.RecordRateLimitExceeded()
 					}
 					if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err == nil {
-						s.writeRPCReplyWithRecordMarking(rmConn, reply)
+						if writeErr := s.writeRPCReplyWithRecordMarking(rmConn, reply); writeErr != nil {
+							return
+						}
 					}
 					continue
 				}
@@ -922,10 +963,16 @@ func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *N
 						Err   error
 					}{r, e}
 				})
-				typedResult := result.(struct {
+				typedResult, ok := result.(struct {
 					Reply *RPCReply
 					Err   error
 				})
+				if !ok {
+					if s.options.Debug {
+						s.logger.Printf("worker pool returned unexpected result type")
+					}
+					continue
+				}
 				reply, handleErr = typedResult.Reply, typedResult.Err
 			} else {
 				reply, handleErr = procHandler.HandleCall(call, bodyReader, authCtx)
@@ -935,7 +982,7 @@ func (s *Server) handleConnectionWithRecordMarking(conn net.Conn, procHandler *N
 				if s.options.Debug {
 					s.logger.Printf("handle error: %v", handleErr)
 				}
-				continue
+				return
 			}
 
 			if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {

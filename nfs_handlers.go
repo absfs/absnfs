@@ -48,6 +48,7 @@ var nfsHandlers = map[uint32]nfsHandler{
 	NFSPROC3_RMDIR:       (*NFSProcedureHandler).handleRmdir,
 	NFSPROC3_RENAME:      (*NFSProcedureHandler).handleRename,
 	NFSPROC3_LINK:        (*NFSProcedureHandler).handleLink,
+	NFSPROC3_MKNOD:       (*NFSProcedureHandler).handleMknod,
 }
 
 // HandleCall processes an NFS RPC call and returns a reply.
@@ -66,22 +67,16 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 		},
 	}
 
-	// Reject during drain phase (policy swap in progress)
-	if handler.draining.Load() {
-		reply.AcceptStatus = SYSTEM_ERR
+	// Acquire policy read lock. TryRLock fails if a policy update (Lock)
+	// is in progress, causing us to return JUKEBOX so clients retry.
+	if !handler.policyRWMu.TryRLock() {
+		// Policy drain in progress -- return NFS3ERR_JUKEBOX
+		var buf bytes.Buffer
+		xdrEncodeUint32(&buf, NFSERR_JUKEBOX)
+		reply.Data = buf.Bytes()
 		return reply, nil
 	}
-
-	// Track in-flight request for drain-and-swap
-	handler.inflight.Add(1)
-	defer handler.inflight.Done()
-
-	// Double-check drain after Add (prevents race with drain start)
-	if handler.draining.Load() {
-		// Return NFSERR_DELAY so clients retry
-		reply.AcceptStatus = SYSTEM_ERR
-		return reply, nil
-	}
+	defer handler.policyRWMu.RUnlock()
 
 	// Snapshot options for this request
 	opts := handler.snapshotOptions()

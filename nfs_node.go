@@ -44,10 +44,13 @@ func (n *NFSNode) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	defer f.Close()
-	n.mu.Lock()
-	n.attrs.Invalidate() // Invalidate cache on write
-	n.mu.Unlock()
-	return f.Write(p)
+	written, writeErr := f.Write(p)
+	if writeErr == nil {
+		n.mu.Lock()
+		n.attrs.Invalidate()
+		n.mu.Unlock()
+	}
+	return written, writeErr
 }
 
 // WriteAt implements absfs.File
@@ -57,10 +60,13 @@ func (n *NFSNode) WriteAt(p []byte, off int64) (int, error) {
 		return 0, err
 	}
 	defer f.Close()
-	n.mu.Lock()
-	n.attrs.Invalidate() // Invalidate cache on write
-	n.mu.Unlock()
-	return f.WriteAt(p, off)
+	written, writeErr := f.WriteAt(p, off)
+	if writeErr == nil {
+		n.mu.Lock()
+		n.attrs.Invalidate()
+		n.mu.Unlock()
+	}
+	return written, writeErr
 }
 
 // Seek implements absfs.File

@@ -81,6 +81,9 @@ type NFSMetrics struct {
 }
 
 // MetricsCollector handles collecting and aggregating metrics
+//
+// Lock ordering invariant: mutex must always be acquired before latencyMutex.
+// Any code that needs both locks must lock mutex first, then latencyMutex.
 type MetricsCollector struct {
 	mutex               sync.RWMutex
 	metrics             NFSMetrics

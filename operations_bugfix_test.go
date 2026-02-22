@@ -148,8 +148,10 @@ func TestM4_RootSquashBothUIDAndGID(t *testing.T) {
 	if result2.UID != 1000 {
 		t.Errorf("Non-root UID should not be squashed, got %d", result2.UID)
 	}
-	if result2.GID != 0 {
-		t.Errorf("Non-root GID 0 should not be squashed with root_squash, got %d", result2.GID)
+	// Root squash should squash primary GID 0 even for non-root UID,
+	// matching standard NFS server behavior (group root is privileged).
+	if result2.GID != 65534 {
+		t.Errorf("Primary GID 0 should be squashed to 65534 under root_squash, got %d", result2.GID)
 	}
 }
 

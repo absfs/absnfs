@@ -24,6 +24,7 @@ const (
 	NFSERR_BADHANDLE   = 10001 // Invalid file handle
 	NFSERR_NOT_SYNC    = 10002 // Update synchronization mismatch (sattrguard3)
 	NFSERR_NOTSUPP     = 10004 // Operation not supported
+	NFSERR_JUKEBOX     = 10008 // Server busy, try again later (used during policy drain)
 	NFSERR_DELAY       = 10013 // Server is temporarily busy (rate limit exceeded)
 
 	// Alias for backward compatibility - use NFSERR_ACCES for NFS3 access denied errors

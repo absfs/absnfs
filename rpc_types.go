@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // RPC message types
@@ -206,7 +207,12 @@ func xdrDecodeString(r io.Reader) (string, error) {
 		}
 	}
 
-	return string(buf), nil
+	s := string(buf)
+	if strings.ContainsRune(s, 0) {
+		return "", fmt.Errorf("XDR string contains NUL byte")
+	}
+
+	return s, nil
 }
 
 // RPCCall represents an incoming RPC call
@@ -380,6 +386,17 @@ func EncodeRPCReply(w io.Writer, reply *RPCReply) error {
 		// Encode accept_stat (SUCCESS, PROG_UNAVAIL, etc.)
 		if err := xdrEncodeUint32(w, reply.AcceptStatus); err != nil {
 			return fmt.Errorf("failed to encode accept status: %w", err)
+		}
+
+		// RFC 1831: PROG_MISMATCH requires mismatch_info (low and high version)
+		if reply.AcceptStatus == PROG_MISMATCH {
+			if err := xdrEncodeUint32(w, 3); err != nil { // low version
+				return fmt.Errorf("failed to encode mismatch low: %w", err)
+			}
+			if err := xdrEncodeUint32(w, 3); err != nil { // high version
+				return fmt.Errorf("failed to encode mismatch high: %w", err)
+			}
+			return nil
 		}
 
 		// Only encode data if accept_stat is SUCCESS

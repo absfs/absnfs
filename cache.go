@@ -841,13 +841,13 @@ func (c *DirCache) Get(path string) ([]os.FileInfo, bool) {
 
 // Put adds or updates cached directory entries
 func (c *DirCache) Put(path string, entries []os.FileInfo) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	// Don't cache directories that exceed the maximum size
 	if len(entries) > c.maxDirSize {
 		return
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	// Check if entry already exists
 	existing, exists := c.entries[path]

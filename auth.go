@@ -98,6 +98,9 @@ func applySquashing(result *AuthResult, authSys *AuthSysCredential, squash strin
 		if authSys.UID == 0 {
 			result.UID = 65534
 			result.GID = 65534
+		} else if result.GID == 0 {
+			// Non-root user with primary GID 0 -- squash the GID only
+			result.GID = 65534
 		}
 		// Squash GID 0 in auxiliary GID list (copy first to avoid mutating shared slice)
 		if len(authSys.AuxGIDs) > 0 {
@@ -121,9 +124,20 @@ func applySquashing(result *AuthResult, authSys *AuthSysCredential, squash strin
 		// (already set in result)
 
 	default:
-		// Unknown squash mode - default to no squashing
-		// Could log a warning here in the future
+		// Unknown squash mode - fail closed by squashing all users
+		result.UID = 65534
+		result.GID = 65534
 	}
+}
+
+// normalizeIP returns the 4-byte form of an IPv4 or IPv4-mapped IPv6 address,
+// preventing bypass of AllowedIPs checks via IPv4-mapped IPv6 addresses
+// (e.g., "::ffff:192.168.1.1" matching "192.168.1.1").
+func normalizeIP(ip net.IP) net.IP {
+	if v4 := ip.To4(); v4 != nil {
+		return v4
+	}
+	return ip
 }
 
 // isIPAllowed checks if a client IP is in the allowed list
@@ -133,6 +147,7 @@ func isIPAllowed(clientIP string, allowedIPs []string) bool {
 	if ip == nil {
 		return false
 	}
+	ip = normalizeIP(ip)
 
 	// Check against each allowed IP/subnet
 	for _, allowed := range allowedIPs {
@@ -148,7 +163,7 @@ func isIPAllowed(clientIP string, allowedIPs []string) bool {
 		} else {
 			// Direct IP comparison
 			allowedIP := net.ParseIP(allowed)
-			if allowedIP != nil && allowedIP.Equal(ip) {
+			if allowedIP != nil && normalizeIP(allowedIP).Equal(ip) {
 				return true
 			}
 		}
