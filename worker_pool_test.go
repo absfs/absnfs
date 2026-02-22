@@ -583,3 +583,148 @@ func TestR3_WorkerPoolStatsConcurrentSafety(t *testing.T) {
 		t.Errorf("After Resize(8), maxWorkers = %d, want 8", max)
 	}
 }
+
+// Tests for worker pool
+func TestWorkerPoolOperations(t *testing.T) {
+	nfs, _ := createTestServer(t)
+	defer nfs.Close()
+
+	t.Run("submit task", func(t *testing.T) {
+		pool := NewWorkerPool(4, nfs)
+		pool.Start()
+		defer pool.Stop()
+
+		done := make(chan bool, 1)
+		pool.Submit(func() interface{} {
+			done <- true
+			return nil
+		})
+
+		select {
+		case <-done:
+			// Success
+		case <-time.After(time.Second):
+			t.Error("Task didn't execute in time")
+		}
+	})
+
+	t.Run("submit wait", func(t *testing.T) {
+		pool := NewWorkerPool(4, nfs)
+		pool.Start()
+		defer pool.Stop()
+
+		result, ok := pool.SubmitWait(func() interface{} {
+			return "done"
+		})
+
+		if !ok {
+			t.Error("Task was not executed")
+		}
+		if result != "done" {
+			t.Errorf("Expected 'done', got %v", result)
+		}
+	})
+
+	t.Run("pool stats", func(t *testing.T) {
+		pool := NewWorkerPool(4, nfs)
+		pool.Start()
+		defer pool.Stop()
+
+		maxWorkers, activeWorkers, queuedTasks := pool.Stats()
+		if maxWorkers != 4 {
+			t.Errorf("Expected maxWorkers 4, got %d", maxWorkers)
+		}
+		_ = activeWorkers
+		_ = queuedTasks
+	})
+
+	t.Run("pool resize", func(t *testing.T) {
+		pool := NewWorkerPool(4, nfs)
+		pool.Start()
+		defer pool.Stop()
+
+		pool.Resize(8)
+		// Just verify no panic
+	})
+}
+
+// Tests for ExecuteWithWorker
+func TestExecuteWithWorkerCoverage(t *testing.T) {
+	t.Run("with worker pool", func(t *testing.T) {
+		nfs, _ := createTestServer(t, func(o *ExportOptions) {
+			o.MaxWorkers = 2
+		})
+		defer nfs.Close()
+
+		result := nfs.ExecuteWithWorker(func() interface{} {
+			return 42
+		})
+		if result != 42 {
+			t.Errorf("Expected 42, got %v", result)
+		}
+	})
+
+	t.Run("without worker pool", func(t *testing.T) {
+		nfs, _ := createTestServer(t, func(o *ExportOptions) {
+			o.MaxWorkers = 0 // Disabled
+		})
+		defer nfs.Close()
+
+		result := nfs.ExecuteWithWorker(func() interface{} {
+			return "test"
+		})
+		if result != "test" {
+			t.Errorf("Expected 'test', got %v", result)
+		}
+	})
+}
+
+// Tests for worker pool Submit
+func TestWorkerPoolSubmitCoverage(t *testing.T) {
+	nfs, _ := createTestServer(t, func(o *ExportOptions) {
+		o.MaxWorkers = 1 // Small pool
+	})
+	defer nfs.Close()
+
+	if nfs.workerPool == nil {
+		t.Skip("Worker pool not initialized")
+	}
+
+	t.Run("submit multiple tasks", func(t *testing.T) {
+		results := make(chan int, 5)
+		for i := 0; i < 5; i++ {
+			val := i
+			nfs.workerPool.Submit(func() interface{} {
+				results <- val
+				return nil
+			})
+		}
+
+		// Wait for some results
+		time.Sleep(100 * time.Millisecond)
+	})
+}
+
+// Tests for worker pool Resize
+func TestWorkerPoolResizeCoverage(t *testing.T) {
+	nfs, _ := createTestServer(t, func(o *ExportOptions) {
+		o.MaxWorkers = 2
+	})
+	defer nfs.Close()
+
+	if nfs.workerPool == nil {
+		t.Skip("Worker pool not initialized")
+	}
+
+	t.Run("resize larger", func(t *testing.T) {
+		nfs.workerPool.Resize(5)
+	})
+
+	t.Run("resize smaller", func(t *testing.T) {
+		nfs.workerPool.Resize(1)
+	})
+
+	t.Run("resize to zero", func(t *testing.T) {
+		nfs.workerPool.Resize(0)
+	})
+}

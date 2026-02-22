@@ -417,3 +417,28 @@ func TestIsResourceErrorZeroCoverage(t *testing.T) {
 		}
 	})
 }
+
+// Tests for error type detection
+func TestErrorTypeDetection(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		isAuth     bool
+		isResource bool
+	}{
+		{"nil error", nil, false, false},
+		{"permission denied", os.ErrPermission, true, false}, // os.ErrPermission IS an auth error
+		{"not exist", os.ErrNotExist, false, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if isAuthError(tc.err) != tc.isAuth {
+				t.Errorf("isAuthError(%v) expected %v", tc.err, tc.isAuth)
+			}
+			if isResourceError(tc.err) != tc.isResource {
+				t.Errorf("isResourceError(%v) expected %v", tc.err, tc.isResource)
+			}
+		})
+	}
+}

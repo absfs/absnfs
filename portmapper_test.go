@@ -842,3 +842,276 @@ func TestCovBoost_PortmapperHandleCall_V4(t *testing.T) {
 		t.Fatal("expected non-nil result")
 	}
 }
+
+// Tests for portmapper functions
+func TestPortmapperBasics(t *testing.T) {
+	t.Run("create and configure portmapper", func(t *testing.T) {
+		pm := NewPortmapper()
+		pm.SetDebug(true)
+
+		// Register a service (returns void)
+		pm.RegisterService(100003, 3, 6, 2049) // NFS v3 TCP
+
+		// Get port
+		port := pm.GetPort(100003, 3, 6)
+		if port != 2049 {
+			t.Errorf("Expected port 2049, got %d", port)
+		}
+
+		// Get mappings
+		mappings := pm.GetMappings()
+		if len(mappings) == 0 {
+			t.Error("Expected at least one mapping")
+		}
+
+		// Unregister (takes 3 params: prog, vers, prot)
+		pm.UnregisterService(100003, 3, 6)
+	})
+}
+
+// Tests for portmapper internal handlers
+func TestPortmapperInternalHandlers(t *testing.T) {
+	pm := NewPortmapper()
+
+	t.Run("handleSet", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(100003)) // prog
+		binary.Write(&buf, binary.BigEndian, uint32(3))      // vers
+		binary.Write(&buf, binary.BigEndian, uint32(6))      // prot (TCP)
+		binary.Write(&buf, binary.BigEndian, uint32(2049))   // port
+
+		result := pm.handleSet(&buf, nil)
+		if len(result) != 4 {
+			t.Errorf("Expected 4 bytes result, got %d", len(result))
+		}
+
+		// Verify service was registered
+		port := pm.GetPort(100003, 3, 6)
+		if port != 2049 {
+			t.Errorf("Expected port 2049, got %d", port)
+		}
+	})
+
+	t.Run("handleUnset", func(t *testing.T) {
+		// First register a service
+		pm.RegisterService(100005, 1, 6, 2050)
+
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(100005)) // prog
+		binary.Write(&buf, binary.BigEndian, uint32(1))      // vers
+		binary.Write(&buf, binary.BigEndian, uint32(6))      // prot (TCP)
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // port (ignored)
+
+		result := pm.handleUnset(&buf, nil)
+		if len(result) != 4 {
+			t.Errorf("Expected 4 bytes result, got %d", len(result))
+		}
+
+		// Verify service was unregistered
+		port := pm.GetPort(100005, 1, 6)
+		if port != 0 {
+			t.Errorf("Expected port 0 after unset, got %d", port)
+		}
+	})
+
+	t.Run("handleRpcbSet", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(100010)) // prog
+		binary.Write(&buf, binary.BigEndian, uint32(2))      // vers
+		xdrEncodeString(&buf, "tcp")                         // netid
+		xdrEncodeString(&buf, "127.0.0.1.8.5")               // uaddr (port 2053)
+		xdrEncodeString(&buf, "superuser")                   // owner
+
+		result := pm.handleRpcbSet(&buf)
+		if len(result) != 4 {
+			t.Errorf("Expected 4 bytes result, got %d", len(result))
+		}
+
+		// Verify service was registered
+		port := pm.GetPort(100010, 2, IPPROTO_TCP)
+		if port != 2053 {
+			t.Errorf("Expected port 2053, got %d", port)
+		}
+	})
+
+	t.Run("handleRpcbSet with UDP", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(100011)) // prog
+		binary.Write(&buf, binary.BigEndian, uint32(1))      // vers
+		xdrEncodeString(&buf, "udp")                         // netid
+		xdrEncodeString(&buf, "127.0.0.1.8.6")               // uaddr (port 2054)
+		xdrEncodeString(&buf, "superuser")                   // owner
+
+		pm.handleRpcbSet(&buf)
+
+		// Verify service was registered with UDP protocol
+		port := pm.GetPort(100011, 1, IPPROTO_UDP)
+		if port != 2054 {
+			t.Errorf("Expected port 2054, got %d", port)
+		}
+	})
+
+	t.Run("handleRpcbUnset", func(t *testing.T) {
+		// First register a service
+		pm.RegisterService(100012, 1, IPPROTO_TCP, 2055)
+
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(100012)) // prog
+		binary.Write(&buf, binary.BigEndian, uint32(1))      // vers
+		xdrEncodeString(&buf, "tcp")                         // netid
+		xdrEncodeString(&buf, "")                            // r_addr (ignored)
+		xdrEncodeString(&buf, "")                            // r_owner (ignored)
+
+		result := pm.handleRpcbUnset(&buf)
+		if len(result) != 4 {
+			t.Errorf("Expected 4 bytes result, got %d", len(result))
+		}
+
+		// Verify service was unregistered
+		port := pm.GetPort(100012, 1, IPPROTO_TCP)
+		if port != 0 {
+			t.Errorf("Expected port 0 after unset, got %d", port)
+		}
+	})
+
+	t.Run("handleRpcbUnset with UDP", func(t *testing.T) {
+		pm.RegisterService(100013, 1, IPPROTO_UDP, 2056)
+
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(100013))
+		binary.Write(&buf, binary.BigEndian, uint32(1))
+		xdrEncodeString(&buf, "udp6") // udp6 uses UDP protocol
+		xdrEncodeString(&buf, "")
+		xdrEncodeString(&buf, "")
+
+		pm.handleRpcbUnset(&buf)
+
+		port := pm.GetPort(100013, 1, IPPROTO_UDP)
+		if port != 0 {
+			t.Errorf("Expected port 0, got %d", port)
+		}
+	})
+
+	t.Run("handleRpcbDump", func(t *testing.T) {
+		// Clear and register some services
+		pm2 := NewPortmapper()
+		pm2.RegisterService(100003, 3, IPPROTO_TCP, 2049)
+		pm2.RegisterService(100003, 3, IPPROTO_UDP, 2049)
+
+		result := pm2.handleRpcbDump()
+		if len(result) == 0 {
+			t.Error("Expected non-empty result from handleRpcbDump")
+		}
+	})
+
+	t.Run("handleGetAddr with tcp", func(t *testing.T) {
+		pm3 := NewPortmapper()
+		pm3.RegisterService(100003, 3, IPPROTO_TCP, 2049)
+
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(100003)) // prog
+		binary.Write(&buf, binary.BigEndian, uint32(3))      // vers
+		xdrEncodeString(&buf, "tcp")                         // netid
+		xdrEncodeString(&buf, "")                            // r_addr
+		xdrEncodeString(&buf, "")                            // r_owner
+
+		result := pm3.handleGetAddr(&buf)
+		if len(result) == 0 {
+			t.Error("Expected non-empty result from handleGetAddr")
+		}
+	})
+
+	t.Run("handleGetAddr with tcp6", func(t *testing.T) {
+		pm4 := NewPortmapper()
+		pm4.RegisterService(100003, 3, IPPROTO_TCP, 2049)
+
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(100003))
+		binary.Write(&buf, binary.BigEndian, uint32(3))
+		xdrEncodeString(&buf, "tcp6") // IPv6
+		xdrEncodeString(&buf, "")
+		xdrEncodeString(&buf, "")
+
+		result := pm4.handleGetAddr(&buf)
+		if len(result) == 0 {
+			t.Error("Expected non-empty result from handleGetAddr for tcp6")
+		}
+	})
+
+	t.Run("handleGetAddr not found", func(t *testing.T) {
+		pm5 := NewPortmapper()
+
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(999999)) // unknown prog
+		binary.Write(&buf, binary.BigEndian, uint32(1))
+		xdrEncodeString(&buf, "tcp")
+		xdrEncodeString(&buf, "")
+		xdrEncodeString(&buf, "")
+
+		result := pm5.handleGetAddr(&buf)
+		// Should return empty string (XDR encoded)
+		if len(result) < 4 {
+			t.Error("Expected result from handleGetAddr")
+		}
+	})
+}
+
+func TestPortmapperMakeReply(t *testing.T) {
+	pm := NewPortmapper()
+
+	t.Run("make success reply", func(t *testing.T) {
+		data := []byte{0x00, 0x00, 0x00, 0x01}
+		reply := pm.makeReply(12345, 0, data) // SUCCESS
+		if len(reply) == 0 {
+			t.Error("Expected non-empty reply")
+		}
+	})
+
+	t.Run("make error reply", func(t *testing.T) {
+		reply := pm.makeReply(12345, 1, nil) // PROG_UNAVAIL
+		if len(reply) == 0 {
+			t.Error("Expected non-empty reply")
+		}
+	})
+}
+
+// Tests for skipAuth
+func TestSkipAuth(t *testing.T) {
+	pm := NewPortmapper()
+
+	t.Run("skip valid auth", func(t *testing.T) {
+		var buf bytes.Buffer
+		// Write auth flavor (AUTH_NONE = 0)
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+		// Write auth length (0)
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+
+		err := pm.skipAuth(&buf)
+		if err != nil {
+			t.Errorf("skipAuth failed: %v", err)
+		}
+	})
+
+	t.Run("skip auth with body", func(t *testing.T) {
+		var buf bytes.Buffer
+		// Write auth flavor (AUTH_SYS = 1)
+		binary.Write(&buf, binary.BigEndian, uint32(1))
+		// Write auth length (8)
+		binary.Write(&buf, binary.BigEndian, uint32(8))
+		// Write 8 bytes of auth data
+		buf.Write(make([]byte, 8))
+
+		err := pm.skipAuth(&buf)
+		if err != nil {
+			t.Errorf("skipAuth failed: %v", err)
+		}
+	})
+
+	t.Run("skip auth empty buffer", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := pm.skipAuth(&buf)
+		if err == nil {
+			t.Error("Expected error for empty buffer")
+		}
+	})
+}

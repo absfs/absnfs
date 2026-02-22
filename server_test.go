@@ -1143,3 +1143,79 @@ func generateTestCert(t *testing.T) (string, string, func()) {
 		os.Remove(keyFile)
 	}
 }
+
+type testError struct {
+	msg string
+}
+
+func (e *testError) Error() string {
+	return e.msg
+}
+
+func TestIsAddrInUse(t *testing.T) {
+	t.Run("nil error", func(t *testing.T) {
+		if isAddrInUse(nil) {
+			t.Error("Expected false for nil error")
+		}
+	})
+
+	t.Run("address in use error", func(t *testing.T) {
+		err := &testError{msg: "address already in use"}
+		if !isAddrInUse(err) {
+			t.Error("Expected true for address in use error")
+		}
+	})
+
+	t.Run("other error", func(t *testing.T) {
+		err := &testError{msg: "some other error"}
+		if isAddrInUse(err) {
+			t.Error("Expected false for other error")
+		}
+	})
+}
+
+// Tests for GetAttrCacheSize
+func TestGetAttrCacheSizeCoverage(t *testing.T) {
+	nfs, _ := createTestServer(t)
+	defer nfs.Close()
+
+	size := nfs.GetAttrCacheSize()
+	if size < 0 {
+		t.Error("Cache size should not be negative")
+	}
+}
+
+// Tests for UpdateExportOptions
+func TestUpdateExportOptionsCoverage(t *testing.T) {
+	nfs, _ := createTestServer(t)
+	defer nfs.Close()
+
+	t.Run("update readonly", func(t *testing.T) {
+		newOpts := nfs.GetExportOptions()
+		newOpts.ReadOnly = true
+		err := nfs.UpdateExportOptions(newOpts)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+	})
+
+	t.Run("update cache settings", func(t *testing.T) {
+		newOpts := nfs.GetExportOptions()
+		newOpts.AttrCacheTimeout = 10 * time.Second
+		newOpts.AttrCacheSize = 500
+		err := nfs.UpdateExportOptions(newOpts)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+	})
+}
+
+// Tests for SetLogger
+func TestSetLoggerCoverage(t *testing.T) {
+	nfs, _ := createTestServer(t)
+	defer nfs.Close()
+
+	t.Run("set nil logger", func(t *testing.T) {
+		_ = nfs.SetLogger(nil)
+	})
+}

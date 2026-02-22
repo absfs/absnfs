@@ -1508,3 +1508,514 @@ func TestR28_PortmapperConditionalLogging(t *testing.T) {
 		}
 	})
 }
+
+// failingReader is a reader that fails after n bytes
+type failingReader struct {
+	data      []byte
+	pos       int
+	failAfter int
+}
+
+func (r *failingReader) Read(p []byte) (n int, err error) {
+	if r.pos >= r.failAfter {
+		return 0, io.ErrUnexpectedEOF
+	}
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n = copy(p, r.data[r.pos:])
+	if r.pos+n > r.failAfter {
+		n = r.failAfter - r.pos
+		r.pos = r.failAfter
+		return n, io.ErrUnexpectedEOF
+	}
+	r.pos += n
+	return n, nil
+}
+
+func TestXdrDecodeFileHandle(t *testing.T) {
+	t.Run("decode valid handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		// Write length (8 bytes for uint64)
+		binary.Write(&buf, binary.BigEndian, uint32(8))
+		// Write handle value
+		binary.Write(&buf, binary.BigEndian, uint64(12345))
+
+		handle, err := xdrDecodeFileHandle(&buf)
+		if err != nil {
+			t.Errorf("Failed to decode valid handle: %v", err)
+		}
+		if handle != 12345 {
+			t.Errorf("Expected handle 12345, got %d", handle)
+		}
+	})
+
+	t.Run("decode empty reader", func(t *testing.T) {
+		var buf bytes.Buffer
+		_, err := xdrDecodeFileHandle(&buf)
+		if err == nil {
+			t.Error("Expected error for empty reader")
+		}
+	})
+
+	t.Run("decode truncated handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		// Write length indicating 8 bytes, but only provide 4
+		binary.Write(&buf, binary.BigEndian, uint32(8))
+		binary.Write(&buf, binary.BigEndian, uint32(123)) // Only 4 bytes
+
+		_, err := xdrDecodeFileHandle(&buf)
+		if err == nil {
+			t.Error("Expected error for truncated handle")
+		}
+	})
+
+	t.Run("decode zero length handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+
+		_, err := xdrDecodeFileHandle(&buf)
+		if err == nil {
+			t.Error("Expected error for zero length handle")
+		}
+	})
+
+	t.Run("decode oversized handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(100)) // Too large
+
+		_, err := xdrDecodeFileHandle(&buf)
+		if err == nil {
+			t.Error("Expected error for oversized handle")
+		}
+	})
+}
+
+// Tests for xdrEncodeFileHandle
+func TestXdrEncodeFileHandle(t *testing.T) {
+	t.Run("encode valid handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := xdrEncodeFileHandle(&buf, 12345)
+		if err != nil {
+			t.Errorf("Failed to encode handle: %v", err)
+		}
+
+		// Verify encoded data
+		data := buf.Bytes()
+		if len(data) != 12 { // 4 bytes length + 8 bytes handle
+			t.Errorf("Expected 12 bytes, got %d", len(data))
+		}
+	})
+}
+
+func TestEncodeRPCReply(t *testing.T) {
+	t.Run("encode success reply", func(t *testing.T) {
+		reply := &RPCReply{
+			Header: RPCMsgHeader{
+				Xid:     12345,
+				MsgType: 1,
+			},
+			Status:       0, // MSG_ACCEPTED
+			AcceptStatus: SUCCESS,
+			Data:         []byte("test data"),
+		}
+
+		var buf bytes.Buffer
+		err := EncodeRPCReply(&buf, reply)
+		if err != nil {
+			t.Errorf("Failed to encode reply: %v", err)
+		}
+	})
+
+	t.Run("encode prog mismatch", func(t *testing.T) {
+		reply := &RPCReply{
+			Header: RPCMsgHeader{
+				Xid:     12345,
+				MsgType: 1,
+			},
+			Status:       0,
+			AcceptStatus: PROG_MISMATCH,
+		}
+
+		var buf bytes.Buffer
+		err := EncodeRPCReply(&buf, reply)
+		if err != nil {
+			t.Errorf("Failed to encode prog mismatch: %v", err)
+		}
+	})
+
+	t.Run("encode proc unavail", func(t *testing.T) {
+		reply := &RPCReply{
+			Header: RPCMsgHeader{
+				Xid:     12345,
+				MsgType: 1,
+			},
+			Status:       0,
+			AcceptStatus: PROC_UNAVAIL,
+		}
+
+		var buf bytes.Buffer
+		err := EncodeRPCReply(&buf, reply)
+		if err != nil {
+			t.Errorf("Failed to encode proc unavail: %v", err)
+		}
+	})
+
+	t.Run("encode garbage args", func(t *testing.T) {
+		reply := &RPCReply{
+			Header: RPCMsgHeader{
+				Xid:     12345,
+				MsgType: 1,
+			},
+			Status:       0,
+			AcceptStatus: GARBAGE_ARGS,
+		}
+
+		var buf bytes.Buffer
+		err := EncodeRPCReply(&buf, reply)
+		if err != nil {
+			t.Errorf("Failed to encode garbage args: %v", err)
+		}
+	})
+
+	t.Run("encode auth error", func(t *testing.T) {
+		reply := &RPCReply{
+			Header: RPCMsgHeader{
+				Xid:     12345,
+				MsgType: 1,
+			},
+			Status: 1, // MSG_DENIED
+		}
+
+		var buf bytes.Buffer
+		err := EncodeRPCReply(&buf, reply)
+		if err != nil {
+			t.Errorf("Failed to encode auth error: %v", err)
+		}
+	})
+}
+
+// Tests for xdrDecodeUint32 and xdrDecodeString
+func TestXdrDecodeHelpers(t *testing.T) {
+	t.Run("xdrDecodeUint32 success", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(12345))
+		val, err := xdrDecodeUint32(&buf)
+		if err != nil {
+			t.Errorf("xdrDecodeUint32 failed: %v", err)
+		}
+		if val != 12345 {
+			t.Errorf("Expected 12345, got %d", val)
+		}
+	})
+
+	t.Run("xdrDecodeUint32 empty", func(t *testing.T) {
+		var buf bytes.Buffer
+		_, err := xdrDecodeUint32(&buf)
+		if err == nil {
+			t.Error("Expected error for empty buffer")
+		}
+	})
+
+	t.Run("xdrDecodeString success", func(t *testing.T) {
+		var buf bytes.Buffer
+		str := "hello"
+		binary.Write(&buf, binary.BigEndian, uint32(len(str)))
+		buf.WriteString(str)
+		// Add padding
+		padding := (4 - len(str)%4) % 4
+		buf.Write(make([]byte, padding))
+
+		result, err := xdrDecodeString(&buf)
+		if err != nil {
+			t.Errorf("xdrDecodeString failed: %v", err)
+		}
+		if result != str {
+			t.Errorf("Expected %q, got %q", str, result)
+		}
+	})
+
+	t.Run("xdrDecodeString empty", func(t *testing.T) {
+		var buf bytes.Buffer
+		_, err := xdrDecodeString(&buf)
+		if err == nil {
+			t.Error("Expected error for empty buffer")
+		}
+	})
+}
+
+func TestRPCEncodingEdgeCases(t *testing.T) {
+	t.Run("encode file handle with padding", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := xdrEncodeFileHandle(&buf, 12345)
+		if err != nil {
+			t.Errorf("xdrEncodeFileHandle failed: %v", err)
+		}
+		// Should encode length + handle value + padding
+		if buf.Len() < 12 {
+			t.Errorf("Expected at least 12 bytes, got %d", buf.Len())
+		}
+	})
+
+	t.Run("encode string with padding", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := xdrEncodeString(&buf, "test") // 4 chars, no padding needed
+		if err != nil {
+			t.Errorf("xdrEncodeString failed: %v", err)
+		}
+
+		var buf2 bytes.Buffer
+		err = xdrEncodeString(&buf2, "hello") // 5 chars, needs 3 bytes padding
+		if err != nil {
+			t.Errorf("xdrEncodeString failed: %v", err)
+		}
+	})
+}
+
+// Tests for xdrDecodeFileHandle edge cases
+func TestXdrDecodeFileHandleEdgeCases(t *testing.T) {
+	t.Run("decode with exact size", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(8)) // length
+		binary.Write(&buf, binary.BigEndian, uint64(12345))
+		handle, err := xdrDecodeFileHandle(&buf)
+		if err != nil {
+			t.Errorf("xdrDecodeFileHandle failed: %v", err)
+		}
+		if handle != 12345 {
+			t.Errorf("Expected handle 12345, got %d", handle)
+		}
+	})
+
+	t.Run("decode with large length", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(64)) // Too large
+		_, err := xdrDecodeFileHandle(&buf)
+		if err == nil {
+			t.Error("Expected error for oversized handle")
+		}
+	})
+
+	t.Run("decode with short data", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(8)) // length = 8
+		binary.Write(&buf, binary.BigEndian, uint32(1)) // Only 4 bytes
+		_, err := xdrDecodeFileHandle(&buf)
+		if err == nil {
+			t.Error("Expected error for short data")
+		}
+	})
+}
+
+// Tests for xdrEncodeFileHandle edge cases
+func TestXdrEncodeFileHandleEdgeCases(t *testing.T) {
+	t.Run("encode zero handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := xdrEncodeFileHandle(&buf, 0)
+		if err != nil {
+			t.Errorf("xdrEncodeFileHandle failed: %v", err)
+		}
+	})
+
+	t.Run("encode max handle", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := xdrEncodeFileHandle(&buf, 0xFFFFFFFFFFFFFFFF)
+		if err != nil {
+			t.Errorf("xdrEncodeFileHandle failed: %v", err)
+		}
+	})
+}
+
+// Tests for EncodeRPCReply edge cases
+func TestEncodeRPCReplyEdgeCases(t *testing.T) {
+	t.Run("encode with nil data", func(t *testing.T) {
+		reply := &RPCReply{
+			Header: RPCMsgHeader{
+				Xid:     12345,
+				MsgType: 1,
+			},
+			Status:       0,
+			AcceptStatus: SUCCESS,
+			Data:         nil,
+		}
+
+		var buf bytes.Buffer
+		err := EncodeRPCReply(&buf, reply)
+		if err != nil {
+			t.Errorf("EncodeRPCReply failed: %v", err)
+		}
+	})
+
+	t.Run("encode with byte slice data", func(t *testing.T) {
+		reply := &RPCReply{
+			Header: RPCMsgHeader{
+				Xid:     12345,
+				MsgType: 1,
+			},
+			Status:       0,
+			AcceptStatus: SUCCESS,
+			Data:         []byte("response data"),
+		}
+
+		var buf bytes.Buffer
+		err := EncodeRPCReply(&buf, reply)
+		if err != nil {
+			t.Errorf("EncodeRPCReply failed: %v", err)
+		}
+	})
+
+	t.Run("encode SYSTEM_ERR status", func(t *testing.T) {
+		reply := &RPCReply{
+			Header: RPCMsgHeader{
+				Xid:     12345,
+				MsgType: 1,
+			},
+			Status:       0,
+			AcceptStatus: SYSTEM_ERR,
+		}
+
+		var buf bytes.Buffer
+		err := EncodeRPCReply(&buf, reply)
+		if err != nil {
+			t.Errorf("EncodeRPCReply failed: %v", err)
+		}
+	})
+}
+
+// Tests for xdrDecodeString edge cases
+func TestXdrDecodeStringEdgeCases(t *testing.T) {
+	t.Run("decode string with padding", func(t *testing.T) {
+		var buf bytes.Buffer
+		str := "hi" // 2 chars needs 2 bytes padding
+		binary.Write(&buf, binary.BigEndian, uint32(len(str)))
+		buf.WriteString(str)
+		buf.Write(make([]byte, 2)) // Padding
+
+		result, err := xdrDecodeString(&buf)
+		if err != nil {
+			t.Errorf("xdrDecodeString failed: %v", err)
+		}
+		if result != str {
+			t.Errorf("Expected %q, got %q", str, result)
+		}
+	})
+
+	t.Run("decode string truncated", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(10)) // Claim 10 bytes
+		buf.WriteString("short")                         // Only 5 bytes
+
+		_, err := xdrDecodeString(&buf)
+		if err == nil {
+			t.Error("Expected error for truncated string")
+		}
+	})
+
+	t.Run("decode empty string", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // Length 0
+
+		result, err := xdrDecodeString(&buf)
+		if err != nil {
+			t.Errorf("xdrDecodeString failed: %v", err)
+		}
+		if result != "" {
+			t.Errorf("Expected empty string, got %q", result)
+		}
+	})
+
+	t.Run("decode exact 4-byte string", func(t *testing.T) {
+		var buf bytes.Buffer
+		str := "test" // Exactly 4 chars, no padding needed
+		binary.Write(&buf, binary.BigEndian, uint32(len(str)))
+		buf.WriteString(str)
+
+		result, err := xdrDecodeString(&buf)
+		if err != nil {
+			t.Errorf("xdrDecodeString failed: %v", err)
+		}
+		if result != str {
+			t.Errorf("Expected %q, got %q", str, result)
+		}
+	})
+}
+
+// Tests for xdrDecodeUint32 edge cases
+func TestXdrDecodeUint32EdgeCases(t *testing.T) {
+	t.Run("decode max value", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(0xFFFFFFFF))
+
+		val, err := xdrDecodeUint32(&buf)
+		if err != nil {
+			t.Errorf("xdrDecodeUint32 failed: %v", err)
+		}
+		if val != 0xFFFFFFFF {
+			t.Errorf("Expected max uint32, got %d", val)
+		}
+	})
+
+	t.Run("decode zero", func(t *testing.T) {
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, uint32(0))
+
+		val, err := xdrDecodeUint32(&buf)
+		if err != nil {
+			t.Errorf("xdrDecodeUint32 failed: %v", err)
+		}
+		if val != 0 {
+			t.Errorf("Expected 0, got %d", val)
+		}
+	})
+
+	t.Run("decode short buffer", func(t *testing.T) {
+		var buf bytes.Buffer
+		buf.WriteByte(0x12)
+		buf.WriteByte(0x34)
+		// Only 2 bytes, need 4
+
+		_, err := xdrDecodeUint32(&buf)
+		if err == nil {
+			t.Error("Expected error for short buffer")
+		}
+	})
+}
+
+// Tests for xdrEncodeFileHandle
+func TestXdrEncodeFileHandleCoverage(t *testing.T) {
+	var buf bytes.Buffer
+
+	t.Run("encode small handle", func(t *testing.T) {
+		err := xdrEncodeFileHandle(&buf, 12345)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+	})
+
+	t.Run("encode max handle", func(t *testing.T) {
+		buf.Reset()
+		err := xdrEncodeFileHandle(&buf, 0xFFFFFFFFFFFFFFFF)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+	})
+}
+
+func TestEncodeRPCReplyCoverage(t *testing.T) {
+	t.Run("encode success reply", func(t *testing.T) {
+		var buf bytes.Buffer
+		reply := &RPCReply{
+			Header: RPCMsgHeader{
+				Xid:     12345,
+				MsgType: 1, // REPLY
+			},
+			Status:       0, // MSG_ACCEPTED
+			AcceptStatus: 0, // SUCCESS
+			Data:         []byte("test payload"),
+		}
+		err := EncodeRPCReply(&buf, reply)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+	})
+}

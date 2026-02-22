@@ -2446,3 +2446,119 @@ func TestR20_LookupSetsFileId(t *testing.T) {
 		t.Errorf("Cached FileId = %d, expected %d", node2.attrs.FileId, expectedId)
 	}
 }
+
+func TestValidateFilename(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+		wantOK   bool // true if NFS_OK expected
+	}{
+		{"valid simple", "file.txt", true},
+		{"valid with numbers", "file123.txt", true},
+		{"empty string", "", false},
+		{"dot only", ".", false},
+		{"double dot", "..", false},
+		{"with slash", "foo/bar", false},
+		{"with null", "foo\x00bar", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			status := validateFilename(tc.filename)
+			isOK := status == NFS_OK
+			if isOK != tc.wantOK {
+				t.Errorf("validateFilename(%q) = %d, wantOK %v", tc.filename, status, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestSanitizePath(t *testing.T) {
+	tests := []struct {
+		basePath string
+		name     string
+		wantErr  bool
+	}{
+		{"/foo", "bar", false},
+		{"/foo/bar", "file.txt", false},
+		{"/", "test", false},
+		{"/parent", "../sibling", true},  // Directory traversal should error
+		{"/parent", "/absolute", true},   // Absolute path in name should error
+		{"/parent", "", true},            // Empty name should error
+		{"/parent", ".", true},           // Current dir reference should error
+		{"/parent", "..", true},          // Parent dir should error
+		{"/parent", "valid.name", false}, // Valid name
+		{"/parent", ".hidden", false},    // Hidden files are OK
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.basePath+"_"+tc.name, func(t *testing.T) {
+			_, err := sanitizePath(tc.basePath, tc.name)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("sanitizePath(%q, %q) error = %v, wantErr %v", tc.basePath, tc.name, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// Tests for validateFilename with more cases
+func TestValidateFilenameMoreCases(t *testing.T) {
+	tests := []struct {
+		name   string
+		wantOK bool
+	}{
+		{"normalfile.txt", true},
+		{"UPPERCASE.TXT", true},
+		{"with-dash.txt", true},
+		{"with_underscore.txt", true},
+		{"123numeric", true},
+		{".gitignore", true},
+		{"..hidden", true}, // Starts with .. but is not ".." itself - valid filename
+		{"../escape", false},
+		{"foo/bar", false},
+		{"foo\x00bar", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			status := validateFilename(tc.name)
+			isOK := status == NFS_OK
+			if isOK != tc.wantOK {
+				t.Errorf("validateFilename(%q) = %d, wantOK %v", tc.name, status, tc.wantOK)
+			}
+		})
+	}
+}
+
+// Tests for validateFilename comprehensive coverage - boost
+func TestValidateFilenameCoverageBoost(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected uint32
+	}{
+		{"empty", "", NFSERR_INVAL},
+		{"valid simple", "file.txt", NFS_OK},
+		{"valid with spaces", "file with spaces.txt", NFS_OK},
+		{"valid with unicode", "файл.txt", NFS_OK},
+		{"too long", string(make([]byte, 300)), NFSERR_NAMETOOLONG},
+		{"with null byte", "file\x00name", NFSERR_INVAL},
+		{"with forward slash", "path/file", NFSERR_INVAL},
+		{"with backslash", "path\\file", NFSERR_INVAL},
+		{"dot only", ".", NFSERR_INVAL},
+		{"dotdot", "..", NFSERR_INVAL},
+		{"valid dotfile", ".hidden", NFS_OK},
+		{"valid with numbers", "file123", NFS_OK},
+		{"valid with underscore", "file_name", NFS_OK},
+		{"valid with dash", "file-name", NFS_OK},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := validateFilename(tc.input)
+			if result != tc.expected {
+				t.Errorf("Expected %d, got %d for input %q", tc.expected, result, tc.input)
+			}
+		})
+	}
+}

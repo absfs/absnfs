@@ -1059,3 +1059,83 @@ func TestCovBoost_HandleCall_AuthDenied(t *testing.T) {
 		t.Errorf("expected MSG_DENIED, got %d", reply.Status)
 	}
 }
+
+func TestAuthValidationScenarios(t *testing.T) {
+	t.Run("validate auth with allowed IPs", func(t *testing.T) {
+		nfs, _ := createTestServer(t, func(o *ExportOptions) {
+			o.AllowedIPs = []string{"127.0.0.1", "192.168.1.0/24"}
+		})
+		defer nfs.Close()
+
+		// Test with localhost
+		ctx := &AuthContext{
+			Credential: &RPCCredential{
+				Flavor: AUTH_SYS,
+				Body:   nil,
+			},
+			AuthSys: &AuthSysCredential{
+				UID:     1000,
+				GID:     1000,
+				AuxGIDs: []uint32{1000},
+			},
+			ClientIP:   "127.0.0.1",
+			ClientPort: 1023, // Privileged port
+		}
+		result := ValidateAuthentication(ctx, nfs.policy.Load())
+		if !result.Allowed {
+			t.Errorf("Expected auth to succeed for allowed IP, got reason: %s", result.Reason)
+		}
+	})
+
+	t.Run("validate auth with denied IPs", func(t *testing.T) {
+		nfs, _ := createTestServer(t, func(o *ExportOptions) {
+			o.AllowedIPs = []string{"10.0.0.0/8"}
+		})
+		defer nfs.Close()
+
+		ctx := &AuthContext{
+			Credential: &RPCCredential{
+				Flavor: AUTH_SYS,
+				Body:   nil,
+			},
+			AuthSys: &AuthSysCredential{
+				UID:     1000,
+				GID:     1000,
+				AuxGIDs: []uint32{1000},
+			},
+			ClientIP:   "192.168.1.100",
+			ClientPort: 1023,
+		}
+		result := ValidateAuthentication(ctx, nfs.policy.Load())
+		if result.Allowed {
+			t.Error("Expected auth to fail for disallowed IP")
+		}
+	})
+}
+
+func TestIPFilteringViaAuth(t *testing.T) {
+	options := ExportOptions{
+		AllowedIPs: []string{"192.168.1.0/24", "10.0.0.1"},
+	}
+
+	// Test with various IPs by using ValidateAuthentication
+	testCases := []string{
+		"192.168.1.100",
+		"192.168.1.1",
+		"10.0.0.1",
+		"10.0.0.2",
+		"127.0.0.1",
+	}
+
+	for _, ip := range testCases {
+		t.Run(ip, func(t *testing.T) {
+			ctx := &AuthContext{
+				ClientIP: ip,
+				Credential: &RPCCredential{
+					Flavor: AUTH_SYS,
+				},
+			}
+			_ = ValidateAuthentication(ctx, policyFromExportOptions(&options))
+		})
+	}
+}

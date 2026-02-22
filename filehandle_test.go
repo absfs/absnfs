@@ -349,3 +349,96 @@ func TestFileHandleMapGetOrErrorZeroCoverage(t *testing.T) {
 		}
 	})
 }
+
+// Tests for file handle map operations
+func TestFileHandleMapCoverage(t *testing.T) {
+	nfs, mfs := createTestServer(t)
+	defer nfs.Close()
+
+	// Create test file
+	f, _ := mfs.Create("/fhtest.txt")
+	f.Write([]byte("test"))
+	f.Close()
+
+	t.Run("allocate and release handles", func(t *testing.T) {
+		node, _ := nfs.Lookup("/fhtest.txt")
+
+		// Allocate handle
+		handle := nfs.fileMap.Allocate(node)
+		if handle == 0 {
+			t.Error("Expected non-zero handle")
+		}
+
+		// Get handle
+		retrieved, ok := nfs.fileMap.Get(handle)
+		if !ok {
+			t.Error("Expected to retrieve file")
+		}
+		_ = retrieved
+
+		// Release handle
+		nfs.fileMap.Release(handle)
+
+		// After release, Get should return false
+		_, ok = nfs.fileMap.Get(handle)
+		if ok {
+			t.Error("Expected handle to be released")
+		}
+	})
+
+	t.Run("count handles", func(t *testing.T) {
+		node, _ := nfs.Lookup("/fhtest.txt")
+		initialCount := nfs.fileMap.Count()
+
+		handle := nfs.fileMap.Allocate(node)
+		newCount := nfs.fileMap.Count()
+
+		if newCount <= initialCount {
+			t.Error("Count should increase after allocate")
+		}
+
+		nfs.fileMap.Release(handle)
+	})
+
+	t.Run("release all", func(t *testing.T) {
+		node, _ := nfs.Lookup("/fhtest.txt")
+		nfs.fileMap.Allocate(node)
+		nfs.fileMap.Allocate(node)
+		nfs.fileMap.Allocate(node)
+
+		nfs.fileMap.ReleaseAll()
+
+		if nfs.fileMap.Count() != 0 {
+			t.Error("Count should be 0 after ReleaseAll")
+		}
+	})
+}
+
+// Tests for GetOrError in FileHandleMap - additional coverage
+func TestFileHandleMapGetOrErrorCoverage(t *testing.T) {
+	nfs, mfs := createTestServer(t)
+	defer nfs.Close()
+
+	f, _ := mfs.Create("/getortest.txt")
+	f.Write([]byte("test"))
+	f.Close()
+
+	t.Run("valid handle", func(t *testing.T) {
+		node, _ := nfs.Lookup("/getortest.txt")
+		handle := nfs.fileMap.Allocate(node)
+
+		_, err := nfs.fileMap.GetOrError(handle)
+		if err != nil {
+			t.Errorf("Expected no error for valid handle: %v", err)
+		}
+
+		nfs.fileMap.Release(handle)
+	})
+
+	t.Run("invalid handle", func(t *testing.T) {
+		_, err := nfs.fileMap.GetOrError(999999)
+		if err == nil {
+			t.Error("Expected error for invalid handle")
+		}
+	})
+}

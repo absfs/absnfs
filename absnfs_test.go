@@ -764,3 +764,36 @@ func TestAbsfsNFSClose(t *testing.T) {
 		}
 	})
 }
+
+// createTestServer creates a test NFS server with common settings
+func createTestServer(t *testing.T, opts ...func(*ExportOptions)) (*AbsfsNFS, *memfs.FileSystem) {
+	t.Helper()
+	mfs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatalf("Failed to create memfs: %v", err)
+	}
+
+	config := DefaultRateLimiterConfig()
+	options := ExportOptions{
+		EnableRateLimiting: false,
+		RateLimitConfig:    &config,
+	}
+
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	nfs, err := New(mfs, options)
+	if err != nil {
+		t.Fatalf("Failed to create NFS server: %v", err)
+	}
+
+	return nfs, mfs
+}
+
+// createTestNFS creates a minimal AbsfsNFS for testing
+func createTestNFS(t *testing.T) *AbsfsNFS {
+	t.Helper()
+	nfs, _ := createTestServer(t)
+	return nfs
+}

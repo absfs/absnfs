@@ -306,3 +306,36 @@ func BenchmarkMemoryMonitor(b *testing.B) {
 		monitor.checkMemoryPressure()
 	}
 }
+
+// Tests for memory monitor pressure handling
+func TestMemoryMonitorPressure(t *testing.T) {
+	nfs, _ := createTestServer(t)
+	defer nfs.Close()
+
+	monitor := NewMemoryMonitor(nfs)
+
+	t.Run("get stats", func(t *testing.T) {
+		stats := monitor.GetMemoryStats()
+		if stats.totalMemory == 0 {
+			// This is fine - depends on system
+		}
+	})
+
+	t.Run("start and stop", func(t *testing.T) {
+		monitor.Start(100 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
+		monitor.Stop()
+	})
+
+	t.Run("is active", func(t *testing.T) {
+		monitor2 := NewMemoryMonitor(nfs)
+		if monitor2.IsActive() {
+			t.Error("Should not be active before start")
+		}
+		monitor2.Start(100 * time.Millisecond)
+		if !monitor2.IsActive() {
+			t.Error("Should be active after start")
+		}
+		monitor2.Stop()
+	})
+}

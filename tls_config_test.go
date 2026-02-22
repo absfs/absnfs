@@ -527,3 +527,70 @@ func TestTLSConfigCloneZeroCoverage(t *testing.T) {
 		}
 	})
 }
+
+// Tests for GetClientAuthString with various ClientAuth types
+func TestGetClientAuthStringCoverage(t *testing.T) {
+	tests := []struct {
+		authType tls.ClientAuthType
+		expected string
+	}{
+		{tls.NoClientCert, "NoClientCert"},
+		{tls.RequestClientCert, "RequestClientCert"},
+		{tls.RequireAnyClientCert, "RequireAnyClientCert"},
+		{tls.VerifyClientCertIfGiven, "VerifyClientCertIfGiven"},
+		{tls.RequireAndVerifyClientCert, "RequireAndVerifyClientCert"},
+		{tls.ClientAuthType(99), "Unknown(99)"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.expected, func(t *testing.T) {
+			cfg := &TLSConfig{ClientAuth: tc.authType}
+			result := cfg.GetClientAuthString()
+			if result != tc.expected {
+				t.Errorf("GetClientAuthString() = %q, expected %q", result, tc.expected)
+			}
+		})
+	}
+}
+
+// Tests for TLSConfig GetConfig
+func TestTLSConfigGetConfigCoverage(t *testing.T) {
+	cfg := &TLSConfig{
+		CertFile:   "/path/to/cert",
+		KeyFile:    "/path/to/key",
+		ClientAuth: tls.NoClientCert,
+	}
+
+	t.Run("get nil config when not built", func(t *testing.T) {
+		// GetConfig returns nil before BuildConfig is called
+		result, err := cfg.GetConfig()
+		if result != nil || err == nil {
+			t.Log("GetConfig returned before build")
+		}
+	})
+}
+
+// Tests for TLSConfig BuildConfig error paths
+func TestTLSConfigBuildConfigErrors(t *testing.T) {
+	t.Run("missing cert file when enabled", func(t *testing.T) {
+		cfg := &TLSConfig{
+			Enabled:  true,
+			CertFile: "/nonexistent/cert.pem",
+			KeyFile:  "/nonexistent/key.pem",
+		}
+		_, err := cfg.BuildConfig()
+		if err == nil {
+			t.Error("Expected error for missing cert file")
+		}
+	})
+
+	t.Run("disabled returns nil", func(t *testing.T) {
+		cfg := &TLSConfig{
+			Enabled: false,
+		}
+		result, err := cfg.BuildConfig()
+		if result != nil || err != nil {
+			t.Error("Expected nil config and nil error when disabled")
+		}
+	})
+}

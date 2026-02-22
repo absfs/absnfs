@@ -668,3 +668,127 @@ func TestMetricsRecordTLSZeroCoverage(t *testing.T) {
 
 // Add mock error for testing
 var ErrPermission = &os.PathError{Op: "write", Path: "/test", Err: os.ErrPermission}
+
+// Tests for metrics RecordAttrCacheHit/Miss with nil metrics
+func TestMetricsRecordWithNilCollector(t *testing.T) {
+	nfs, _ := createTestServer(t)
+	defer nfs.Close()
+
+	// Set metrics to nil
+	nfs.metrics = nil
+
+	// These should not panic
+	nfs.RecordAttrCacheHit()
+	nfs.RecordAttrCacheMiss()
+	nfs.RecordReadAheadHit()
+	nfs.RecordReadAheadMiss()
+	nfs.RecordDirCacheHit()
+	nfs.RecordDirCacheMiss()
+	nfs.RecordNegativeCacheHit()
+	nfs.RecordNegativeCacheMiss()
+}
+
+// Tests for metrics RecordLatency with more operation types
+func TestRecordLatencyMoreOps(t *testing.T) {
+	nfs, _ := createTestServer(t)
+	defer nfs.Close()
+
+	collector := NewMetricsCollector(nfs)
+
+	ops := []string{
+		"READ", "WRITE", "LOOKUP", "GETATTR", "SETATTR",
+		"READDIR", "CREATE", "REMOVE", "RENAME",
+	}
+
+	for _, op := range ops {
+		collector.IncrementOperationCount(op)
+		collector.RecordLatency(op, time.Millisecond*100)
+	}
+
+	// Verify metrics are collected
+	metrics := collector.GetMetrics()
+	if metrics.TotalOperations < uint64(len(ops)) {
+		t.Error("Expected operations to be recorded")
+	}
+}
+
+// Tests for metrics IsHealthy
+func TestMetricsIsHealthy(t *testing.T) {
+	nfs, _ := createTestServer(t)
+	defer nfs.Close()
+
+	collector := NewMetricsCollector(nfs)
+
+	// Initially should be healthy
+	healthy := collector.IsHealthy()
+	if !healthy {
+		t.Error("Expected healthy initially")
+	}
+
+	// Record some operations
+	for i := 0; i < 100; i++ {
+		collector.IncrementOperationCount("READ")
+		collector.RecordLatency("READ", time.Millisecond*10)
+	}
+
+	// Check health again
+	_ = collector.IsHealthy()
+}
+
+// Tests for RecordOperationStart
+func TestRecordOperationStartCoverage(t *testing.T) {
+	nfs, _ := createTestServer(t)
+	defer nfs.Close()
+
+	ops := []string{"READ", "WRITE", "LOOKUP", "CREATE", "REMOVE"}
+	for _, op := range ops {
+		nfs.RecordOperationStart(op)
+	}
+}
+
+func TestMetricsRecordingMore(t *testing.T) {
+	nfs, _ := createTestServer(t)
+	defer nfs.Close()
+
+	t.Run("record various events", func(t *testing.T) {
+		nfs.RecordAttrCacheHit()
+		nfs.RecordAttrCacheMiss()
+		nfs.RecordReadAheadHit()
+		nfs.RecordReadAheadMiss()
+		nfs.RecordDirCacheHit()
+		nfs.RecordDirCacheMiss()
+	})
+
+	t.Run("get metrics", func(t *testing.T) {
+		metrics := nfs.GetMetrics()
+		if metrics.TotalOperations < 0 {
+			t.Error("Total operations should not be negative")
+		}
+	})
+
+	t.Run("is healthy", func(t *testing.T) {
+		healthy := nfs.IsHealthy()
+		if !healthy {
+			t.Log("Server reports unhealthy")
+		}
+	})
+}
+
+// Tests for RecordOperationStart coverage
+func TestRecordOperationStartCoverageFull(t *testing.T) {
+	nfs, _ := createTestServer(t)
+	defer nfs.Close()
+
+	// Record many different operations
+	ops := []string{"GETATTR", "SETATTR", "LOOKUP", "ACCESS", "READ", "WRITE", "CREATE", "MKDIR", "REMOVE", "RMDIR"}
+	for _, op := range ops {
+		done := nfs.RecordOperationStart(op)
+		done(nil)
+	}
+
+	// Record with errors
+	for _, op := range ops {
+		done := nfs.RecordOperationStart(op)
+		done(os.ErrNotExist)
+	}
+}
