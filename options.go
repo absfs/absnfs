@@ -346,3 +346,280 @@ func (n *AbsfsNFS) initAtomicOptions(opts *ExportOptions) {
 	n.tuning.Store(tuningFromExportOptions(opts))
 	n.policy.Store(policyFromExportOptions(opts))
 }
+
+// ExportOptions defines the configuration for an NFS export
+type ExportOptions struct {
+	ReadOnly    bool     // Export as read-only
+	Secure      bool     // Require secure ports (<1024)
+	AllowedIPs  []string // List of allowed client IPs/subnets
+	Squash      string   // User mapping (root/all/none)
+	Async       bool     // Allow async writes
+	MaxFileSize int64    // Maximum file size
+
+	// TransferSize controls the maximum size in bytes of read/write transfers
+	// Larger values may improve performance but require more memory
+	// Default: 65536 (64KB)
+	TransferSize int
+
+	// EnableReadAhead enables read-ahead buffering for improved sequential read performance
+	// When a client reads a file sequentially, the server prefetches additional data
+	// Default: true
+	EnableReadAhead bool
+
+	// ReadAheadSize controls the size in bytes of the read-ahead buffer
+	// Only applicable when EnableReadAhead is true
+	// Default: 262144 (256KB)
+	ReadAheadSize int
+
+	// ReadAheadMaxFiles controls the maximum number of files that can have active read-ahead buffers
+	// Helps limit memory usage by read-ahead buffering
+	// Default: 100 files
+	ReadAheadMaxFiles int
+
+	// ReadAheadMaxMemory controls the maximum amount of memory in bytes that can be used for read-ahead buffers
+	// Once this limit is reached, least recently used buffers will be evicted
+	// Default: 104857600 (100MB)
+	ReadAheadMaxMemory int64
+
+	// AttrCacheTimeout controls how long file attributes are cached
+	// Longer timeouts improve performance but may cause clients to see stale data
+	// Default: 5 * time.Second
+	AttrCacheTimeout time.Duration
+
+	// AttrCacheSize controls the maximum number of entries in the attribute cache
+	// Larger values improve performance but consume more memory
+	// Default: 10000 entries
+	AttrCacheSize int
+
+	// CacheNegativeLookups enables caching of failed lookups (file not found)
+	// This can significantly reduce filesystem load for repeated lookups of non-existent files
+	// Negative cache entries use a shorter TTL than positive entries
+	// Default: false (disabled)
+	CacheNegativeLookups bool
+
+	// NegativeCacheTimeout controls how long negative cache entries are kept
+	// Shorter timeouts reduce the chance of stale negative cache entries
+	// Only applicable when CacheNegativeLookups is true
+	// Default: 5 * time.Second
+	NegativeCacheTimeout time.Duration
+
+	// EnableDirCache enables caching of directory entries for improved performance
+	// When enabled, directory listings are cached to reduce filesystem calls
+	// Default: false (disabled)
+	EnableDirCache bool
+
+	// DirCacheTimeout controls how long directory entries are cached
+	// Longer timeouts improve performance but may cause clients to see stale directory listings
+	// Only applicable when EnableDirCache is true
+	// Default: 10 * time.Second
+	DirCacheTimeout time.Duration
+
+	// DirCacheMaxEntries controls the maximum number of directories that can be cached
+	// Helps limit memory usage by directory entry caching
+	// Only applicable when EnableDirCache is true
+	// Default: 1000 directories
+	DirCacheMaxEntries int
+
+	// DirCacheMaxDirSize controls the maximum number of entries in a single directory that will be cached
+	// Directories with more entries than this will not be cached to prevent memory issues
+	// Only applicable when EnableDirCache is true
+	// Default: 10000 entries per directory
+	DirCacheMaxDirSize int
+
+	// AdaptToMemoryPressure enables automatic cache reduction when system memory is under pressure
+	// When enabled, the server will periodically check system memory usage and reduce cache sizes
+	// when memory usage exceeds MemoryHighWatermark, until usage falls below MemoryLowWatermark
+	// Default: false (disabled)
+	AdaptToMemoryPressure bool
+
+	// MemoryHighWatermark defines the threshold (as a fraction of total memory) at which
+	// memory pressure reduction actions will be triggered
+	// Only applicable when AdaptToMemoryPressure is true
+	// Valid range: 0.0 to 1.0 (0% to 100% of total memory)
+	// Default: 0.8 (80% of total memory)
+	MemoryHighWatermark float64
+
+	// MemoryLowWatermark defines the target memory usage (as a fraction of total memory)
+	// that the server will try to achieve when reducing cache sizes in response to memory pressure
+	// Only applicable when AdaptToMemoryPressure is true
+	// Valid range: 0.0 to MemoryHighWatermark
+	// Default: 0.6 (60% of total memory)
+	MemoryLowWatermark float64
+
+	// MemoryCheckInterval defines how frequently memory usage is checked for pressure detection
+	// Only applicable when AdaptToMemoryPressure is true
+	// Default: 30 * time.Second
+	MemoryCheckInterval time.Duration
+
+	// MaxWorkers controls the maximum number of goroutines used for handling concurrent operations
+	// More workers can improve performance for concurrent workloads but consume more CPU resources
+	// Default: runtime.NumCPU() * 4 (number of logical CPUs multiplied by 4)
+	MaxWorkers int
+
+	// BatchOperations enables grouping of similar operations for improved performance
+	// When enabled, the server will attempt to process multiple read/write operations
+	// together to reduce context switching and improve throughput
+	// Default: true
+	BatchOperations bool
+
+	// MaxBatchSize controls the maximum number of operations that can be included in a single batch
+	// Larger batches can improve performance but may increase latency for individual operations
+	// Only applicable when BatchOperations is true
+	// Default: 10 operations
+	MaxBatchSize int
+
+	// MaxConnections limits the number of simultaneous client connections
+	// Setting to 0 means unlimited connections (limited only by system resources)
+	// Default: 100
+	MaxConnections int
+
+	// IdleTimeout defines how long to keep inactive connections before closing them
+	// This helps reclaim resources from abandoned connections
+	// Default: 5 * time.Minute
+	IdleTimeout time.Duration
+
+	// TCPKeepAlive enables TCP keep-alive probes on NFS connections
+	// Keep-alive helps detect dead connections when clients disconnect improperly
+	// Default: true
+	TCPKeepAlive bool
+
+	// TCPNoDelay disables Nagle's algorithm on TCP connections to reduce latency
+	// This may improve performance for small requests at the cost of increased bandwidth usage
+	// Default: true
+	TCPNoDelay bool
+
+	// internal field to track if TCP settings have been explicitly set
+	hasExplicitTCPSettings bool
+
+	// SendBufferSize controls the size of the TCP send buffer in bytes
+	// Larger buffers can improve throughput but consume more memory
+	// Default: 262144 (256KB)
+	SendBufferSize int
+
+	// ReceiveBufferSize controls the size of the TCP receive buffer in bytes
+	// Larger buffers can improve throughput but consume more memory
+	// Default: 262144 (256KB)
+	ReceiveBufferSize int
+
+	// EnableRateLimiting enables rate limiting and DoS protection
+	// When enabled, the server will limit requests per IP, per connection, and per operation type
+	// Default: true
+	EnableRateLimiting bool
+
+	// RateLimitConfig provides detailed rate limiting configuration
+	// Only applicable when EnableRateLimiting is true
+	// If nil, default configuration will be used
+	RateLimitConfig *RateLimiterConfig
+
+	// TLS holds the TLS/SSL configuration for encrypted connections
+	// When TLS.Enabled is true, all NFS connections will be encrypted using TLS
+	// Provides confidentiality, integrity, and optional mutual authentication
+	// If nil, TLS is disabled and connections are unencrypted (default NFSv3 behavior)
+	TLS *TLSConfig
+
+	// Log holds the logging configuration for the NFS server
+	// When nil, logging is disabled (no-op logger is used)
+	// When provided, enables structured logging with configurable level, format, and output
+	Log *LogConfig
+
+	// Timeouts controls operation-specific timeout durations
+	// When nil, default timeouts are used for all operations
+	// Allows fine-grained control over how long each operation type can take
+	Timeouts *TimeoutConfig
+}
+
+// TimeoutConfig defines timeout durations for various NFS operations
+type TimeoutConfig struct {
+	// ReadTimeout is the maximum time allowed for read operations
+	// Default: 30 seconds
+	ReadTimeout time.Duration
+
+	// WriteTimeout is the maximum time allowed for write operations
+	// Default: 60 seconds
+	WriteTimeout time.Duration
+
+	// LookupTimeout is the maximum time allowed for lookup operations
+	// Default: 10 seconds
+	LookupTimeout time.Duration
+
+	// ReaddirTimeout is the maximum time allowed for readdir operations
+	// Default: 30 seconds
+	ReaddirTimeout time.Duration
+
+	// CreateTimeout is the maximum time allowed for create operations
+	// Default: 15 seconds
+	CreateTimeout time.Duration
+
+	// RemoveTimeout is the maximum time allowed for remove operations
+	// Default: 15 seconds
+	RemoveTimeout time.Duration
+
+	// RenameTimeout is the maximum time allowed for rename operations
+	// Default: 20 seconds
+	RenameTimeout time.Duration
+
+	// HandleTimeout is the maximum time allowed for file handle operations
+	// Default: 5 seconds
+	HandleTimeout time.Duration
+
+	// DefaultTimeout is the fallback timeout for operations without a specific timeout
+	// Default: 30 seconds
+	DefaultTimeout time.Duration
+}
+
+// LogConfig defines the logging configuration for the NFS server
+type LogConfig struct {
+	// Level sets the minimum log level to output
+	// Valid values: "debug", "info", "warn", "error"
+	// Default: "info"
+	Level string
+
+	// Format sets the log output format
+	// Valid values: "json", "text"
+	// Default: "text"
+	Format string
+
+	// Output sets the log destination
+	// Valid values: "stdout", "stderr", or a file path
+	// Default: "stderr"
+	Output string
+
+	// LogClientIPs enables logging of client IP addresses
+	// When true, client IPs are included in connection and authentication logs
+	// Default: false (for privacy)
+	LogClientIPs bool
+
+	// LogOperations enables detailed logging of NFS operations
+	// When true, logs each NFS operation (LOOKUP, READ, WRITE, etc.) with timing
+	// Default: false (reduces log volume)
+	LogOperations bool
+
+	// LogFileAccess enables logging of file access patterns
+	// When true, logs file opens, closes, and access patterns
+	// Default: false (reduces log volume)
+	LogFileAccess bool
+
+	// MaxSize defines the maximum size of log file in megabytes before rotation
+	// NOTE: File rotation is not yet implemented. This field is reserved for future enhancement.
+	// Only applicable when Output is a file path
+	// Default: 100 MB
+	MaxSize int
+
+	// MaxBackups defines the maximum number of old log files to retain
+	// NOTE: File rotation is not yet implemented. This field is reserved for future enhancement.
+	// Only applicable when Output is a file path
+	// Default: 3
+	MaxBackups int
+
+	// MaxAge defines the maximum number of days to retain old log files
+	// NOTE: File rotation is not yet implemented. This field is reserved for future enhancement.
+	// Only applicable when Output is a file path
+	// Default: 28 days
+	MaxAge int
+
+	// Compress enables gzip compression of rotated log files
+	// NOTE: File rotation is not yet implemented. This field is reserved for future enhancement.
+	// Only applicable when Output is a file path
+	// Default: false
+	Compress bool
+}
