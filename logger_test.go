@@ -606,3 +606,29 @@ func TestSlogLogger_CloseWhileLogging(t *testing.T) {
 		t.Logf("second close returned error (expected to be idempotent): %v", err)
 	}
 }
+
+// TestR3_SetLoggerConcurrentSafety verifies that concurrent calls to
+// SetLogger do not race. Run with -race to detect data races.
+func TestR3_SetLoggerConcurrentSafety(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nfs, err := New(fs, ExportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nfs.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// SetLogger uses n.mu.Lock() for thread safety
+			_ = nfs.SetLogger(nil)
+		}()
+	}
+	wg.Wait()
+}

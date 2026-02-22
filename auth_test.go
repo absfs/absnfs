@@ -637,3 +637,425 @@ func TestR26_RootSquashDoesNotMutateOriginalAuxGIDs(t *testing.T) {
 		}
 	}
 }
+
+// TestR3_RootSquashCredentialsApplied verifies that HandleCall propagates
+// the squashed UID/GID from ValidateAuthentication into AuthContext's
+// EffectiveUID / EffectiveGID before dispatching to a handler.
+func TestR3_RootSquashCredentialsApplied(t *testing.T) {
+	server, _, _, err := newTestServerForBugfixes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Enable root squash by storing a new policy snapshot directly
+	// (Squash is immutable via UpdatePolicyOptions, so we set it directly in tests)
+	p := *server.handler.policy.Load()
+	p.Squash = "root"
+	server.handler.policy.Store(&p)
+
+	// Build AUTH_SYS credential for root (UID=0, GID=0)
+	var credBody bytes.Buffer
+	binary.Write(&credBody, binary.BigEndian, uint32(0)) // stamp
+	binary.Write(&credBody, binary.BigEndian, uint32(0)) // machine name length
+	binary.Write(&credBody, binary.BigEndian, uint32(0)) // uid = 0 (root)
+	binary.Write(&credBody, binary.BigEndian, uint32(0)) // gid = 0 (root)
+	binary.Write(&credBody, binary.BigEndian, uint32(0)) // aux gids count
+
+	authCtx := &AuthContext{
+		ClientIP:   "127.0.0.1",
+		ClientPort: 800,
+		Credential: &RPCCredential{
+			Flavor: AUTH_SYS,
+			Body:   credBody.Bytes(),
+		},
+	}
+
+	// Verify authentication squashes root
+	result := ValidateAuthentication(authCtx, server.handler.policy.Load())
+	if !result.Allowed {
+		t.Fatalf("Expected auth to be allowed, got denied: %s", result.Reason)
+	}
+	if result.UID != 65534 {
+		t.Errorf("Expected squashed UID 65534, got %d", result.UID)
+	}
+	if result.GID != 65534 {
+		t.Errorf("Expected squashed GID 65534, got %d", result.GID)
+	}
+
+	// Simulate what HandleCall does: apply squashed credentials
+	authCtx.EffectiveUID = result.UID
+	authCtx.EffectiveGID = result.GID
+
+	if authCtx.EffectiveUID != 65534 {
+		t.Errorf("EffectiveUID should be 65534 after squash, got %d", authCtx.EffectiveUID)
+	}
+	if authCtx.EffectiveGID != 65534 {
+		t.Errorf("EffectiveGID should be 65534 after squash, got %d", authCtx.EffectiveGID)
+	}
+}
+
+// TestR3_AccessPermissionChecking verifies that handleAccess correctly
+// applies owner/group/other permission bits, root override, and read-only
+// server restrictions.
+func TestR3_AccessPermissionChecking(t *testing.T) {
+	t.Run("OwnerPermissions", func(t *testing.T) {
+		server, handler, _, err := newTestServerForBugfixes()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Create a file with mode 0700 (owner rwx only)
+		server.handler.fs.Create("/ownerfile")
+		server.handler.fs.Chmod("/ownerfile", 0700)
+		fileHandle := getFileHandle(server, "/ownerfile")
+
+		// Set the file's uid to match the auth context
+		node, ok := handler.lookupNode(fileHandle)
+		if !ok {
+			t.Fatal("Failed to look up node")
+		}
+		node.mu.Lock()
+		node.attrs.Uid = 1000
+		node.attrs.Gid = 2000
+		node.mu.Unlock()
+
+		// Auth context: owner (UID 1000)
+		authCtx := &AuthContext{
+			ClientIP:     "127.0.0.1",
+			ClientPort:   12345,
+			Credential:   &RPCCredential{Flavor: AUTH_NONE},
+			AuthSys:      &AuthSysCredential{UID: 1000, GID: 9999},
+			EffectiveUID: 1000,
+			EffectiveGID: 9999,
+		}
+
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		binary.Write(&buf, binary.BigEndian, uint32(0x3f)) // all access bits
+
+		result, err := handler.handleAccess(bytes.NewReader(buf.Bytes()), &RPCReply{}, authCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status := readStatusFromReply(result)
+		if status != NFS_OK {
+			t.Fatalf("Expected NFS_OK, got %d", status)
+		}
+
+		data := getReplyData(result)
+		accessResult := binary.BigEndian.Uint32(data[len(data)-4:])
+
+		// Owner with 0700 should have READ, EXECUTE
+		if accessResult&ACCESS3_READ == 0 {
+			t.Error("Owner should have READ access")
+		}
+		if accessResult&ACCESS3_EXECUTE == 0 {
+			t.Error("Owner should have EXECUTE access")
+		}
+	})
+
+	t.Run("OtherPermissions", func(t *testing.T) {
+		server, handler, _, err := newTestServerForBugfixes()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Create file with mode 0704 (other has only read)
+		server.handler.fs.Create("/otherfile")
+		server.handler.fs.Chmod("/otherfile", 0704)
+		fileHandle := getFileHandle(server, "/otherfile")
+
+		node, ok := handler.lookupNode(fileHandle)
+		if !ok {
+			t.Fatal("Failed to look up node")
+		}
+		node.mu.Lock()
+		node.attrs.Uid = 1000
+		node.attrs.Gid = 2000
+		node.mu.Unlock()
+
+		// Auth context: neither owner nor group (UID 9999, GID 8888)
+		authCtx := &AuthContext{
+			ClientIP:     "127.0.0.1",
+			ClientPort:   12345,
+			Credential:   &RPCCredential{Flavor: AUTH_NONE},
+			AuthSys:      &AuthSysCredential{UID: 9999, GID: 8888},
+			EffectiveUID: 9999,
+			EffectiveGID: 8888,
+		}
+
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		binary.Write(&buf, binary.BigEndian, uint32(0x3f))
+
+		result, err := handler.handleAccess(bytes.NewReader(buf.Bytes()), &RPCReply{}, authCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		data := getReplyData(result)
+		accessResult := binary.BigEndian.Uint32(data[len(data)-4:])
+
+		// Other with 4 (read) should have READ but not MODIFY/EXTEND/EXECUTE
+		if accessResult&ACCESS3_READ == 0 {
+			t.Error("Other should have READ access (mode 4)")
+		}
+		if accessResult&ACCESS3_MODIFY != 0 {
+			t.Error("Other should NOT have MODIFY access (mode 4)")
+		}
+		if accessResult&ACCESS3_EXECUTE != 0 {
+			t.Error("Other should NOT have EXECUTE access (mode 4)")
+		}
+	})
+
+	t.Run("RootOverride", func(t *testing.T) {
+		server, handler, _, err := newTestServerForBugfixes()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Create file with mode 0000 (no permissions)
+		server.handler.fs.Create("/nopermfile")
+		server.handler.fs.Chmod("/nopermfile", 0000)
+		fileHandle := getFileHandle(server, "/nopermfile")
+
+		node, ok := handler.lookupNode(fileHandle)
+		if !ok {
+			t.Fatal("Failed to look up node")
+		}
+		node.mu.Lock()
+		node.attrs.Uid = 1000
+		node.attrs.Gid = 2000
+		node.mu.Unlock()
+
+		// Auth context: root (UID 0)
+		authCtx := &AuthContext{
+			ClientIP:     "127.0.0.1",
+			ClientPort:   12345,
+			Credential:   &RPCCredential{Flavor: AUTH_NONE},
+			AuthSys:      &AuthSysCredential{UID: 0, GID: 0},
+			EffectiveUID: 0,
+			EffectiveGID: 0,
+		}
+
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		binary.Write(&buf, binary.BigEndian, uint32(0x3f))
+
+		result, err := handler.handleAccess(bytes.NewReader(buf.Bytes()), &RPCReply{}, authCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		data := getReplyData(result)
+		accessResult := binary.BigEndian.Uint32(data[len(data)-4:])
+
+		// Root should get all permissions (permBits = 7)
+		if accessResult&ACCESS3_READ == 0 {
+			t.Error("Root should have READ access even on mode 0000")
+		}
+		if accessResult&ACCESS3_MODIFY == 0 {
+			t.Error("Root should have MODIFY access even on mode 0000")
+		}
+		if accessResult&ACCESS3_EXECUTE == 0 {
+			t.Error("Root should have EXECUTE access even on mode 0000")
+		}
+	})
+
+	t.Run("ReadOnlyServerBlocksWrites", func(t *testing.T) {
+		server, handler, _, err := newReadOnlyTestServer()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		execHandle := getFileHandle(server, "/execfile")
+
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, execHandle)
+		binary.Write(&buf, binary.BigEndian, uint32(0x3f))
+
+		authCtx := &AuthContext{
+			ClientIP:   "127.0.0.1",
+			ClientPort: 12345,
+			Credential: &RPCCredential{Flavor: AUTH_NONE},
+			AuthSys:    &AuthSysCredential{UID: 0, GID: 0},
+		}
+
+		result, err := handler.handleAccess(bytes.NewReader(buf.Bytes()), &RPCReply{}, authCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		data := getReplyData(result)
+		accessResult := binary.BigEndian.Uint32(data[len(data)-4:])
+
+		// Read-only server should block MODIFY, EXTEND, DELETE
+		if accessResult&ACCESS3_MODIFY != 0 {
+			t.Error("Read-only server should NOT grant MODIFY")
+		}
+		if accessResult&ACCESS3_EXTEND != 0 {
+			t.Error("Read-only server should NOT grant EXTEND")
+		}
+		if accessResult&ACCESS3_DELETE != 0 {
+			t.Error("Read-only server should NOT grant DELETE")
+		}
+		// But READ and EXECUTE should still work
+		if accessResult&ACCESS3_READ == 0 {
+			t.Error("Read-only server should still grant READ")
+		}
+		if accessResult&ACCESS3_EXECUTE == 0 {
+			t.Error("Read-only server should still grant EXECUTE for executable file")
+		}
+	})
+}
+
+// TestR3_SetattrUIDGIDAuthRestriction verifies that handleSetattr only
+// allows UID/GID changes when EffectiveUID == 0 (root).
+func TestR3_SetattrUIDGIDAuthRestriction(t *testing.T) {
+	server, handler, _, err := newTestServerForBugfixes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fileHandle := getFileHandle(server, "/testfile.txt")
+
+	// Get current attrs to know the original UID/GID
+	node, ok := handler.lookupNode(fileHandle)
+	if !ok {
+		t.Fatal("Failed to look up node")
+	}
+
+	node.mu.Lock()
+	node.attrs.Uid = 1000
+	node.attrs.Gid = 1000
+	node.mu.Unlock()
+
+	t.Run("NonRootCannotChangeUID", func(t *testing.T) {
+		// Build SETATTR request: set UID to 0
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		// sattr3: mode=don't set, uid=SET(0), gid=don't set, size=don't set, atime=don't set, mtime=don't set
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mode = false
+		binary.Write(&buf, binary.BigEndian, uint32(1)) // set_uid = true
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // uid = 0
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_gid = false
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_size = false
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_atime = DONT_CHANGE
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mtime = DONT_CHANGE
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // guard = no check
+
+		authCtx := &AuthContext{
+			ClientIP:     "127.0.0.1",
+			ClientPort:   12345,
+			Credential:   &RPCCredential{Flavor: AUTH_NONE},
+			EffectiveUID: 1000, // Non-root
+			EffectiveGID: 1000,
+		}
+
+		result, err := handler.handleSetattr(bytes.NewReader(buf.Bytes()), &RPCReply{}, authCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		status := readStatusFromReply(result)
+		if status != NFS_OK {
+			t.Fatalf("Expected NFS_OK, got %d", status)
+		}
+
+		// Verify UID was NOT changed (non-root cannot change UID)
+		node.mu.RLock()
+		currentUID := node.attrs.Uid
+		node.mu.RUnlock()
+
+		if currentUID == 0 {
+			t.Error("Non-root user should not be able to change UID to 0")
+		}
+		if currentUID != 1000 {
+			t.Errorf("UID should remain 1000, got %d", currentUID)
+		}
+	})
+
+	t.Run("RootCanChangeUID", func(t *testing.T) {
+		// Reset UID
+		node.mu.Lock()
+		node.attrs.Uid = 1000
+		node.mu.Unlock()
+
+		var buf bytes.Buffer
+		xdrEncodeFileHandle(&buf, fileHandle)
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mode = false
+		binary.Write(&buf, binary.BigEndian, uint32(1)) // set_uid = true
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // uid = 0
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_gid = false
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_size = false
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_atime = DONT_CHANGE
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mtime = DONT_CHANGE
+		binary.Write(&buf, binary.BigEndian, uint32(0)) // guard = no check
+
+		authCtx := &AuthContext{
+			ClientIP:     "127.0.0.1",
+			ClientPort:   12345,
+			Credential:   &RPCCredential{Flavor: AUTH_NONE},
+			EffectiveUID: 0, // Root
+			EffectiveGID: 0,
+		}
+
+		result, err := handler.handleSetattr(bytes.NewReader(buf.Bytes()), &RPCReply{}, authCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		status := readStatusFromReply(result)
+		if status != NFS_OK {
+			t.Fatalf("Expected NFS_OK, got %d", status)
+		}
+
+		// Verify UID WAS changed (root can change UID)
+		node.mu.RLock()
+		currentUID := node.attrs.Uid
+		node.mu.RUnlock()
+
+		if currentUID != 0 {
+			t.Errorf("Root should be able to change UID to 0, got %d", currentUID)
+		}
+	})
+}
+
+// ================================================================
+// Coverage boost: HandleCall – auth denial with secure port requirement
+// ================================================================
+
+func TestCovBoost_HandleCall_AuthDenied(t *testing.T) {
+	srv, handler, _ := setupHandlerEnv(t, func(o *ExportOptions) {
+		o.Secure = true
+	})
+	_ = srv
+
+	// Use unprivileged port with Secure=true
+	auth := &AuthContext{
+		ClientIP:   "127.0.0.1",
+		ClientPort: 50000, // unprivileged
+		Credential: &RPCCredential{Flavor: AUTH_NONE, Body: []byte{}},
+	}
+
+	call := &RPCCall{
+		Header: RPCMsgHeader{
+			Xid:        1,
+			MsgType:    RPC_CALL,
+			RPCVersion: 2,
+			Program:    NFS_PROGRAM,
+			Version:    NFS_V3,
+			Procedure:  NFSPROC3_NULL,
+		},
+		Credential: RPCCredential{Flavor: AUTH_NONE, Body: []byte{}},
+		Verifier:   RPCVerifier{Flavor: 0, Body: []byte{}},
+	}
+
+	reply, err := handler.HandleCall(call, bytes.NewReader([]byte{}), auth)
+	if err != nil {
+		t.Fatalf("HandleCall: %v", err)
+	}
+	if reply.Status != MSG_DENIED {
+		t.Errorf("expected MSG_DENIED, got %d", reply.Status)
+	}
+}

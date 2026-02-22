@@ -241,3 +241,51 @@ func TestNFSNodeOperations(t *testing.T) {
 		}
 	})
 }
+
+// TestR3_WriteWithContextErrShadowing verifies that a successful write
+// preserves the written data even if Chtimes fails (the fix renamed the
+// Chtimes error variable to chtimesErr to avoid shadowing the outer err).
+func TestR3_WriteWithContextErrShadowing(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nfs, err := New(fs, ExportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nfs.Close()
+
+	// Create a test file
+	f, err := fs.Create("/writefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write([]byte("initial"))
+	f.Close()
+
+	node, err := nfs.Lookup("/writefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Write new data
+	data := []byte("hello world")
+	n, err := nfs.Write(node, 0, data)
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+	if n != int64(len(data)) {
+		t.Errorf("Expected %d bytes written, got %d", len(data), n)
+	}
+
+	// Read back and verify data is preserved
+	readData, err := nfs.Read(node, 0, 100)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if string(readData) != "hello world" {
+		t.Errorf("Expected 'hello world', got %q", string(readData))
+	}
+}

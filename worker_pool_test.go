@@ -532,3 +532,54 @@ func BenchmarkWorkerPoolParallel(b *testing.B) {
 		}
 	})
 }
+
+// TestR3_WorkerPoolStatsConcurrentSafety verifies that concurrent calls
+// to Stats() use resizeMu to safely read maxWorkers. The resizeMu serializes
+// access to maxWorkers between Stats() and Resize(). Run with -race.
+func TestR3_WorkerPoolStatsConcurrentSafety(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nfs, err := New(fs, ExportOptions{
+		MaxWorkers: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nfs.Close()
+
+	pool := nfs.workerPool
+	if pool == nil {
+		t.Skip("Worker pool not initialized")
+	}
+	pool.Start()
+	defer pool.Stop()
+
+	// Concurrent Stats() calls should not race with each other.
+	// Stats() uses resizeMu.Lock to read maxWorkers safely.
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				max, active, queued := pool.Stats()
+				if max <= 0 {
+					t.Errorf("maxWorkers should be > 0, got %d", max)
+				}
+				_ = active
+				_ = queued
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Verify Resize serializes through resizeMu
+	pool.Resize(8)
+	max, _, _ := pool.Stats()
+	if max != 8 {
+		t.Errorf("After Resize(8), maxWorkers = %d, want 8", max)
+	}
+}

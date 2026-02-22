@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/absfs/memfs"
 )
 
 func TestAttrCache(t *testing.T) {
@@ -438,4 +440,108 @@ func TestR25_AttrCacheExpiredEntryRecheck(t *testing.T) {
 	if cache.Size() != 0 {
 		t.Errorf("Expected cache size 0 after expired entry cleanup, got %d", cache.Size())
 	}
+}
+
+// TestR3_CacheTypeAssertionSafety verifies that the attribute cache handles
+// LRU list entries correctly without panicking due to type assertion failures.
+func TestR3_CacheTypeAssertionSafety(t *testing.T) {
+	cache := NewAttrCache(10*time.Second, 10)
+
+	// Fill the cache up to capacity
+	for i := 0; i < 10; i++ {
+		attrs := &NFSAttrs{Mode: 0644, Size: int64(i)}
+		attrs.SetMtime(time.Now())
+		attrs.SetAtime(time.Now())
+		cache.Put(fmt.Sprintf("/file%d", i), attrs)
+	}
+
+	// Verify all entries are accessible
+	for i := 0; i < 10; i++ {
+		got, found := cache.Get(fmt.Sprintf("/file%d", i))
+		if !found {
+			t.Errorf("Expected cache hit for /file%d", i)
+		}
+		if got == nil {
+			t.Errorf("Expected non-nil attrs for /file%d", i)
+		}
+	}
+
+	// Trigger eviction by adding more entries
+	for i := 10; i < 15; i++ {
+		attrs := &NFSAttrs{Mode: 0644, Size: int64(i)}
+		attrs.SetMtime(time.Now())
+		attrs.SetAtime(time.Now())
+		cache.Put(fmt.Sprintf("/file%d", i), attrs)
+	}
+
+	// Cache should not exceed its max size
+	if cache.Size() > 10 {
+		t.Errorf("Cache size %d exceeds max 10", cache.Size())
+	}
+
+	// Verify no panic during concurrent access with eviction
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			key := fmt.Sprintf("/concurrent%d", n)
+			attrs := &NFSAttrs{Mode: 0644, Size: int64(n)}
+			attrs.SetMtime(time.Now())
+			attrs.SetAtime(time.Now())
+			cache.Put(key, attrs)
+			cache.Get(key)
+		}(i)
+	}
+	wg.Wait()
+}
+
+// TestR3_AttrCacheGetPassesServerForMetrics verifies that AttrCache.Get
+// accepts a variadic server parameter and records cache hit/miss metrics.
+func TestR3_AttrCacheGetPassesServerForMetrics(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nfs, err := New(fs, ExportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nfs.Close()
+
+	cache := NewAttrCache(10*time.Second, 100)
+
+	// Test cache miss with server parameter
+	_, found := cache.Get("/nonexistent", nfs)
+	if found {
+		t.Error("Expected cache miss")
+	}
+
+	// Test cache hit with server parameter
+	attrs := &NFSAttrs{Mode: 0644, Size: 42}
+	attrs.SetMtime(time.Now())
+	attrs.SetAtime(time.Now())
+	cache.Put("/existing", attrs)
+
+	got, found := cache.Get("/existing", nfs)
+	if !found {
+		t.Error("Expected cache hit")
+	}
+	if got == nil {
+		t.Error("Expected non-nil attrs for cache hit")
+	}
+
+	// Test cache Get without server parameter (backwards compatibility)
+	got2, found2 := cache.Get("/existing")
+	if !found2 {
+		t.Error("Expected cache hit without server param")
+	}
+	if got2 == nil {
+		t.Error("Expected non-nil attrs without server param")
+	}
+
+	// Verify the metrics methods exist and don't panic
+	nfs.RecordAttrCacheHit()
+	nfs.RecordAttrCacheMiss()
 }

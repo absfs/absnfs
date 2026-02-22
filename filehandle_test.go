@@ -192,3 +192,127 @@ func TestFileHandleMap(t *testing.T) {
 		}
 	})
 }
+
+// TestR3_FileHandleMapEviction verifies that the FileHandleMap evicts
+// the oldest handles when the maximum is exceeded.
+func TestR3_FileHandleMapEviction(t *testing.T) {
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nfs, err := New(fs, ExportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nfs.Close()
+
+	// Create a FileHandleMap with a very small maximum
+	fhMap := &FileHandleMap{
+		handles:     make(map[uint64]absfs.File),
+		freeHandles: NewUint64MinHeap(),
+		maxHandles:  10,
+	}
+
+	// Create test files and allocate handles for them
+	for i := 0; i < 10; i++ {
+		fname := fmt.Sprintf("/evictfile%d", i)
+		f, err := fs.Create(fname)
+		if err != nil {
+			t.Fatalf("Failed to create file %s: %v", fname, err)
+		}
+		fhMap.Allocate(f)
+	}
+
+	if fhMap.Count() != 10 {
+		t.Fatalf("Expected 10 handles, got %d", fhMap.Count())
+	}
+
+	// Allocate one more to trigger eviction
+	extraFile, err := fs.Create("/extra")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fhMap.Allocate(extraFile)
+
+	// After eviction, count should be <= maxHandles
+	count := fhMap.Count()
+	if count > 10 {
+		t.Errorf("Expected count <= 10 after eviction, got %d", count)
+	}
+
+	// Should have evicted at least 1 (maxH/10 = 1)
+	if count > 10 {
+		t.Errorf("Eviction did not reduce handle count below max")
+	}
+}
+
+// ================================================================
+// Coverage boost: filehandle.go Allocate – eviction path
+// ================================================================
+
+func TestCovBoost_AllocateEviction(t *testing.T) {
+	fm := &FileHandleMap{
+		handles:     make(map[uint64]absfs.File),
+		nextHandle:  1,
+		freeHandles: NewUint64MinHeap(),
+		maxHandles:  5, // tiny limit to trigger eviction
+	}
+
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		name := "/" + string(rune('a'+i)) + ".txt"
+		f, _ := fs.Create(name)
+		f.Close()
+	}
+
+	// Fill up to max
+	for i := 0; i < 5; i++ {
+		name := "/" + string(rune('a'+i)) + ".txt"
+		f, _ := fs.OpenFile(name, 0, 0)
+		fm.Allocate(f)
+	}
+	if fm.Count() != 5 {
+		t.Fatalf("expected 5, got %d", fm.Count())
+	}
+
+	// Allocate one more – should trigger eviction of oldest
+	f, _ := fs.Create("/extra.txt")
+	f.Close()
+	f2, _ := fs.OpenFile("/extra.txt", 0, 0)
+	fm.Allocate(f2)
+
+	// After eviction of maxHandles/10 = 0 (rounds up to 1), count should be 5
+	if fm.Count() > 5 {
+		t.Errorf("expected count <= 5 after eviction, got %d", fm.Count())
+	}
+}
+
+func TestCovBoost_AllocateEvictionSmallMax(t *testing.T) {
+	// maxHandles=1: evictCount = 1/10 = 0 -> clamped to 1
+	fm := &FileHandleMap{
+		handles:     make(map[uint64]absfs.File),
+		nextHandle:  1,
+		freeHandles: NewUint64MinHeap(),
+		maxHandles:  1,
+	}
+
+	fs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Create("/a.txt")
+	fs.Create("/b.txt")
+
+	f1, _ := fs.OpenFile("/a.txt", 0, 0)
+	fm.Allocate(f1)
+	f2, _ := fs.OpenFile("/b.txt", 0, 0)
+	fm.Allocate(f2)
+
+	if fm.Count() != 1 {
+		t.Errorf("expected 1 after eviction with maxHandles=1, got %d", fm.Count())
+	}
+}

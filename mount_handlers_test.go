@@ -527,3 +527,271 @@ func TestHandleMountCall(t *testing.T) {
 		// UMNT returns an empty response, so no data to check
 	})
 }
+
+// ================================================================
+// Coverage boost: handleMountCall – path validation, export, version checks
+// ================================================================
+
+func TestCovBoost_HandleMountCall_MNT(t *testing.T) {
+	srv, handler, auth := setupHandlerEnv(t)
+	_ = srv
+
+	var buf bytes.Buffer
+	xdrEncodeString(&buf, "/")
+
+	call := &RPCCall{
+		Header: RPCMsgHeader{
+			Program:   MOUNT_PROGRAM,
+			Version:   MOUNT_V3,
+			Procedure: 1, // MNT
+		},
+	}
+
+	reply := &RPCReply{}
+	result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply, auth)
+	if err != nil {
+		t.Fatalf("handleMountCall: %v", err)
+	}
+	data := result.Data.([]byte)
+	status := binary.BigEndian.Uint32(data[0:4])
+	if status != 0 {
+		t.Errorf("expected MNT3_OK (0), got %d", status)
+	}
+}
+
+func TestCovBoost_HandleMountCall_MNTNonexistent(t *testing.T) {
+	srv, handler, auth := setupHandlerEnv(t)
+	_ = srv
+
+	var buf bytes.Buffer
+	xdrEncodeString(&buf, "/nonexistent/deep/path")
+
+	call := &RPCCall{
+		Header: RPCMsgHeader{
+			Program:   MOUNT_PROGRAM,
+			Version:   MOUNT_V3,
+			Procedure: 1,
+		},
+	}
+
+	reply := &RPCReply{}
+	result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply, auth)
+	if err != nil {
+		t.Fatalf("handleMountCall: %v", err)
+	}
+	data := result.Data.([]byte)
+	status := binary.BigEndian.Uint32(data[0:4])
+	if status != 2 { // MNT3ERR_NOENT
+		t.Errorf("expected MNT3ERR_NOENT (2), got %d", status)
+	}
+}
+
+func TestCovBoost_HandleMountCall_EXPORT(t *testing.T) {
+	srv, handler, auth := setupHandlerEnv(t)
+	_ = srv
+
+	call := &RPCCall{
+		Header: RPCMsgHeader{
+			Program:   MOUNT_PROGRAM,
+			Version:   MOUNT_V3,
+			Procedure: 5, // EXPORT
+		},
+	}
+
+	reply := &RPCReply{}
+	result, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply, auth)
+	if err != nil {
+		t.Fatalf("handleMountCall: %v", err)
+	}
+	if result.Data == nil {
+		t.Error("expected data for EXPORT")
+	}
+}
+
+func TestCovBoost_HandleMountCall_DUMP(t *testing.T) {
+	srv, handler, auth := setupHandlerEnv(t)
+	_ = srv
+
+	call := &RPCCall{
+		Header: RPCMsgHeader{
+			Program:   MOUNT_PROGRAM,
+			Version:   MOUNT_V3,
+			Procedure: 2, // DUMP
+		},
+	}
+
+	reply := &RPCReply{}
+	result, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply, auth)
+	if err != nil {
+		t.Fatalf("handleMountCall: %v", err)
+	}
+	if result.Data == nil {
+		t.Error("expected data for DUMP")
+	}
+}
+
+func TestCovBoost_HandleMountCall_UMNTALL(t *testing.T) {
+	srv, handler, auth := setupHandlerEnv(t)
+	_ = srv
+
+	call := &RPCCall{
+		Header: RPCMsgHeader{
+			Program:   MOUNT_PROGRAM,
+			Version:   MOUNT_V3,
+			Procedure: 4, // UMNTALL
+		},
+	}
+
+	reply := &RPCReply{}
+	_, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply, auth)
+	if err != nil {
+		t.Fatalf("handleMountCall UMNTALL: %v", err)
+	}
+}
+
+func TestCovBoost_HandleMountCall_VersionMismatch(t *testing.T) {
+	srv, handler, auth := setupHandlerEnv(t)
+	_ = srv
+
+	call := &RPCCall{
+		Header: RPCMsgHeader{
+			Program:   MOUNT_PROGRAM,
+			Version:   99, // bad version
+			Procedure: 0,
+		},
+	}
+
+	reply := &RPCReply{}
+	result, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply, auth)
+	if err != nil {
+		t.Fatalf("handleMountCall: %v", err)
+	}
+	if result.AcceptStatus != PROG_MISMATCH {
+		t.Errorf("expected PROG_MISMATCH, got %d", result.AcceptStatus)
+	}
+}
+
+func TestCovBoost_HandleMountCall_UnknownProc(t *testing.T) {
+	srv, handler, auth := setupHandlerEnv(t)
+	_ = srv
+
+	call := &RPCCall{
+		Header: RPCMsgHeader{
+			Program:   MOUNT_PROGRAM,
+			Version:   MOUNT_V3,
+			Procedure: 99,
+		},
+	}
+
+	reply := &RPCReply{}
+	result, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply, auth)
+	if err != nil {
+		t.Fatalf("handleMountCall: %v", err)
+	}
+	if result.AcceptStatus != PROC_UNAVAIL {
+		t.Errorf("expected PROC_UNAVAIL, got %d", result.AcceptStatus)
+	}
+}
+
+func TestCovBoost_HandleMountCall_V1(t *testing.T) {
+	srv, handler, auth := setupHandlerEnv(t)
+	_ = srv
+
+	call := &RPCCall{
+		Header: RPCMsgHeader{
+			Program:   MOUNT_PROGRAM,
+			Version:   1, // v1
+			Procedure: 0,
+		},
+	}
+
+	reply := &RPCReply{}
+	_, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply, auth)
+	if err != nil {
+		t.Fatalf("handleMountCall v1 NULL: %v", err)
+	}
+}
+
+// ================================================================
+// Coverage boost: handleMountCall - UMNT procedure
+// ================================================================
+
+func TestCovBoost_HandleMountCall_UMNT(t *testing.T) {
+	srv, handler, auth := setupHandlerEnv(t)
+	_ = srv
+
+	var buf bytes.Buffer
+	xdrEncodeString(&buf, "/")
+
+	call := &RPCCall{
+		Header: RPCMsgHeader{
+			Program:   MOUNT_PROGRAM,
+			Version:   MOUNT_V3,
+			Procedure: 3, // UMNT
+		},
+	}
+
+	reply := &RPCReply{}
+	_, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply, auth)
+	if err != nil {
+		t.Fatalf("handleMountCall UMNT: %v", err)
+	}
+}
+
+// ================================================================
+// Coverage boost: handleMountCall - MNT with a subdirectory path
+// ================================================================
+
+func TestCovBoost_HandleMountCall_MNTSubdir(t *testing.T) {
+	srv, handler, auth := setupHandlerEnv(t)
+	_ = srv
+
+	var buf bytes.Buffer
+	xdrEncodeString(&buf, "/dir")
+
+	call := &RPCCall{
+		Header: RPCMsgHeader{
+			Program:   MOUNT_PROGRAM,
+			Version:   MOUNT_V3,
+			Procedure: 1, // MNT
+		},
+	}
+
+	reply := &RPCReply{}
+	result, err := handler.handleMountCall(call, bytes.NewReader(buf.Bytes()), reply, auth)
+	if err != nil {
+		t.Fatalf("handleMountCall: %v", err)
+	}
+	data := result.Data.([]byte)
+	status := binary.BigEndian.Uint32(data[0:4])
+	if status != 0 {
+		t.Errorf("expected MNT3_OK (0), got %d", status)
+	}
+}
+
+// ================================================================
+// Coverage boost: handleMountCall - MNT with truncated body (GARBAGE_ARGS)
+// ================================================================
+
+func TestCovBoost_HandleMountCall_MNTGarbageArgs(t *testing.T) {
+	srv, handler, auth := setupHandlerEnv(t)
+	_ = srv
+
+	call := &RPCCall{
+		Header: RPCMsgHeader{
+			Program:   MOUNT_PROGRAM,
+			Version:   MOUNT_V3,
+			Procedure: 1, // MNT
+		},
+	}
+
+	// Empty body - can't decode mount path
+	reply := &RPCReply{}
+	result, err := handler.handleMountCall(call, bytes.NewReader([]byte{}), reply, auth)
+	if err != nil {
+		t.Fatalf("handleMountCall: %v", err)
+	}
+	if result.AcceptStatus != GARBAGE_ARGS {
+		t.Errorf("expected GARBAGE_ARGS, got %d", result.AcceptStatus)
+	}
+}
