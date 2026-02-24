@@ -1,8 +1,8 @@
 # ABSFS NFS Server v1.0.4
 
-> **Note:** This is the v1.x maintenance branch. No new features will be added.
-> Active development has moved to [v2.0](https://github.com/absfs/absnfs).
-> v1.0.4 is a security and protocol correctness release for users who cannot yet migrate to v2.
+> **Note:** This is the v1.0.x maintenance branch. No new features will be added.
+> Active development continues on [main](https://github.com/absfs/absnfs) (v1.1.0+).
+> v1.0.4 is a security and protocol correctness release for users who cannot yet migrate.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/absfs/absnfs.svg)](https://pkg.go.dev/github.com/absfs/absnfs)
 [![Go Report Card](https://goreportcard.com/badge/github.com/absfs/absnfs)](https://goreportcard.com/report/github.com/absfs/absnfs)
@@ -104,15 +104,15 @@ server.Export("/export/test", 8049)
 go test -short -race ./...
 ```
 
-## Migrating to v2
+## Migrating to v1.1.0
 
-The v2 branch at [github.com/absfs/absnfs](https://github.com/absfs/absnfs) is where active development continues. Key differences:
+The [main branch](https://github.com/absfs/absnfs) (v1.1.0+) is where active development continues. Key differences:
 
 - Simplified configuration surface
 - Removed speculative subsystems (BatchProcessor, MemoryMonitor, ReadAheadBuffer)
 - Improved protocol correctness and error mapping
 
-See the v2 README and CHANGELOG for migration details.
+See the v1.1.0 release notes for migration details.
 
 ## License
 
