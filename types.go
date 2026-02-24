@@ -11,7 +11,6 @@
 //   - Symlink support (SYMLINK and READLINK operations)
 //   - Rate limiting and DoS protection
 //   - Attribute caching for improved performance
-//   - Batch operation processing
 //   - Worker pool for concurrent request handling
 //   - Comprehensive metrics and monitoring
 //
@@ -42,7 +41,7 @@ import (
 )
 
 // Version represents the current version of the absnfs package
-const Version = "1.0.3"
+const Version = "2.0.0"
 
 // AbsfsNFS represents an NFS server that exports an absfs filesystem
 type AbsfsNFS struct {
