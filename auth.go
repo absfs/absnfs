@@ -9,12 +9,14 @@ import (
 
 // AuthContext contains information about the client making a request
 type AuthContext struct {
-	ClientIP   string             // Client IP address
-	ClientPort int                // Client port number
-	Credential *RPCCredential     // RPC credential
-	AuthSys    *AuthSysCredential // Parsed AUTH_SYS credential (if applicable)
-	ClientCert *x509.Certificate  // Client certificate (if TLS with client auth)
-	TLSEnabled bool               // Whether this connection is using TLS
+	ClientIP     string             // Client IP address
+	ClientPort   int                // Client port number
+	Credential   *RPCCredential     // RPC credential
+	AuthSys      *AuthSysCredential // Parsed AUTH_SYS credential (if applicable)
+	ClientCert   *x509.Certificate  // Client certificate (if TLS with client auth)
+	TLSEnabled   bool               // Whether this connection is using TLS
+	EffectiveUID uint32             // Effective UID after squashing
+	EffectiveGID uint32             // Effective GID after squashing
 }
 
 // AuthResult contains the result of authentication validation

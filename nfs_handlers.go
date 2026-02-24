@@ -83,6 +83,10 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 		return reply, nil
 	}
 
+	// Propagate effective UID/GID from auth result to auth context
+	authCtx.EffectiveUID = authResult.UID
+	authCtx.EffectiveGID = authResult.GID
+
 	// Handle the call with timeout
 	errChan := make(chan error, 1)
 	replyChan := make(chan *RPCReply, 1)

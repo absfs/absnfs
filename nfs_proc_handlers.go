@@ -1198,33 +1198,59 @@ func (h *NFSProcedureHandler) handleAccess(body io.Reader, reply *RPCReply, auth
 		return nil, err
 	}
 
+	// Determine permission bits based on caller's relationship to the file
+	uid := authCtx.EffectiveUID
+	gid := authCtx.EffectiveGID
+	mode := uint32(attrs.Mode & 0777)
+
+	var permBits uint32
+	if uid == 0 {
+		// Root has all permissions (except execute requires at least one x bit)
+		permBits = 0777
+	} else if uid == attrs.Uid {
+		permBits = (mode >> 6) & 7
+	} else if gid == attrs.Gid {
+		permBits = (mode >> 3) & 7
+	} else {
+		permBits = mode & 7
+	}
+
 	var accessAllowed uint32 = 0
 
-	// ACCESS3_READ
-	if access&1 != 0 {
+	// ACCESS3_READ (0x01)
+	if access&1 != 0 && (permBits&4 != 0) {
 		accessAllowed |= 1
 	}
 
-	// ACCESS3_LOOKUP (only for directories)
-	if access&2 != 0 && attrs.Mode&os.ModeDir != 0 {
+	// ACCESS3_LOOKUP (0x02) - only for directories
+	if access&2 != 0 && attrs.Mode&os.ModeDir != 0 && (permBits&1 != 0) {
 		accessAllowed |= 2
 	}
 
+	// Write permissions require non-ReadOnly export
 	if !h.server.handler.options.ReadOnly {
-		// ACCESS3_MODIFY
-		if access&4 != 0 {
+		// ACCESS3_MODIFY (0x04)
+		if access&4 != 0 && (permBits&2 != 0) {
 			accessAllowed |= 4
 		}
-		// ACCESS3_EXTEND
-		if access&8 != 0 {
+		// ACCESS3_EXTEND (0x08)
+		if access&8 != 0 && (permBits&2 != 0) {
 			accessAllowed |= 8
 		}
-		// ACCESS3_DELETE
-		if access&16 != 0 {
+		// ACCESS3_DELETE (0x10) - approximate with file's own write permission
+		if access&16 != 0 && (permBits&2 != 0) {
 			accessAllowed |= 16
 		}
-		// ACCESS3_EXECUTE
-		if access&32 != 0 && (attrs.Mode&0111 != 0) {
+	}
+
+	// ACCESS3_EXECUTE (0x20)
+	if access&32 != 0 {
+		if uid == 0 {
+			// Root can execute if any execute bit is set
+			if mode&0111 != 0 {
+				accessAllowed |= 32
+			}
+		} else if permBits&1 != 0 {
 			accessAllowed |= 32
 		}
 	}
