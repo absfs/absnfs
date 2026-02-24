@@ -89,16 +89,12 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		options.ReceiveBufferSize = 262144 // Default: 256KB
 	}
 
-	// Rate limiting is enabled by default for security
-	// This can be explicitly disabled by setting EnableRateLimiting to false
-	// Note: In Go, bool fields default to false, so we can't distinguish between
-	// "explicitly set to false" and "not set". We treat not setting EnableRateLimiting
-	// as opting in to rate limiting (secure by default).
+	// Provide default rate limit config if none specified.
+	// EnableRateLimiting controls whether rate limiting is active;
+	// it defaults to false (Go zero value) and is never overridden here.
 	if options.RateLimitConfig == nil {
 		config := DefaultRateLimiterConfig()
 		options.RateLimitConfig = &config
-		// Enable rate limiting by default (secure by default)
-		options.EnableRateLimiting = true
 	}
 
 	// Set timeout defaults if not specified
