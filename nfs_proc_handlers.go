@@ -420,7 +420,7 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 	}
 	xdrEncodeUint32(&buf, uint32(n))
 	xdrEncodeUint32(&buf, stable)
-	buf.Write(make([]byte, 8)) // writeverf
+	buf.Write(h.server.writeVerf[:]) // writeverf
 
 	reply.Data = buf.Bytes()
 	return reply, nil
@@ -1173,7 +1173,7 @@ func (h *NFSProcedureHandler) handleCommit(body io.Reader, reply *RPCReply, auth
 	if err := encodeFileAttributes(&buf, attrs); err != nil {
 		return nil, err
 	}
-	buf.Write(make([]byte, 8)) // writeverf
+	buf.Write(h.server.writeVerf[:]) // writeverf
 
 	reply.Data = buf.Bytes()
 	return reply, nil

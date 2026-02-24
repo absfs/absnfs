@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -48,6 +49,9 @@ type Server struct {
 	wg            sync.WaitGroup
 	acceptErrs    atomic.Int32 // Counter for accept errors to prevent excessive logging
 
+	// Write verifier (changes on each server boot, per RFC 1813)
+	writeVerf [8]byte
+
 	// Connection management
 	connMutex   sync.Mutex
 	activeConns map[net.Conn]*connectionState // Map of active connections and their state
@@ -66,13 +70,15 @@ func NewServer(options ServerOptions) (*Server, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Server{
+	s := &Server{
 		options:     options,
 		logger:      log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
 		ctx:         ctx,
 		cancel:      cancel,
 		activeConns: make(map[net.Conn]*connectionState),
-	}, nil
+	}
+	binary.BigEndian.PutUint64(s.writeVerf[:], uint64(time.Now().UnixNano()))
+	return s, nil
 }
 
 // SetHandler sets the filesystem handler for the server
