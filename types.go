@@ -41,7 +41,7 @@ import (
 )
 
 // Version represents the current version of the absnfs package
-const Version = "2.0.0"
+const Version = "1.1.0"
 
 // AbsfsNFS represents an NFS server that exports an absfs filesystem
 type AbsfsNFS struct {

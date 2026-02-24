@@ -57,7 +57,7 @@ import (
 	"time"
 
 	"github.com/absfs/absfs"
-	"github.com/absfs/absnfs/v2"
+	"github.com/absfs/absnfs"
 	"github.com/absfs/cachefs"
 	"github.com/absfs/lockfs"
 	"github.com/absfs/memfs"

@@ -1,8 +1,8 @@
 # absnfs
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/absfs/absnfs/v2.svg)](https://pkg.go.dev/github.com/absfs/absnfs/v2)
-[![Go Report Card](https://goreportcard.com/badge/github.com/absfs/absnfs/v2)](https://goreportcard.com/report/github.com/absfs/absnfs/v2)
-[![CI](https://github.com/absfs/absnfs/v2/actions/workflows/ci.yml/badge.svg)](https://github.com/absfs/absnfs/v2/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/absfs/absnfs.svg)](https://pkg.go.dev/github.com/absfs/absnfs)
+[![Go Report Card](https://goreportcard.com/badge/github.com/absfs/absnfs)](https://goreportcard.com/report/github.com/absfs/absnfs)
+[![CI](https://github.com/absfs/absnfs/actions/workflows/ci.yml/badge.svg)](https://github.com/absfs/absnfs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 NFSv3 server adapter for [absfs](https://github.com/absfs/absfs) filesystems. Any filesystem implementing `absfs.SymlinkFileSystem` can be exported as a network-accessible NFS share.
@@ -10,7 +10,7 @@ NFSv3 server adapter for [absfs](https://github.com/absfs/absfs) filesystems. An
 ## Installation
 
 ```bash
-go get github.com/absfs/absnfs/v2
+go get github.com/absfs/absnfs
 ```
 
 Requires Go 1.23 or later.
@@ -23,7 +23,7 @@ package main
 import (
     "log"
 
-    "github.com/absfs/absnfs/v2"
+    "github.com/absfs/absnfs"
     "github.com/absfs/memfs"
 )
 

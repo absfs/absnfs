@@ -12,7 +12,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/absfs/absnfs/v2"
+	"github.com/absfs/absnfs"
 	"github.com/absfs/memfs"
 )
 
