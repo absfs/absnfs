@@ -725,16 +725,6 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 
 // handleReaddir handles NFSPROC3_READDIR - read directory entries
 func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
-	// Rate limiting
-	if h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
-		if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeReaddir) {
-			if h.server.handler.metrics != nil {
-				h.server.handler.metrics.RecordRateLimitExceeded()
-			}
-			return nfsErrorReply(reply, NFSERR_DELAY), nil
-		}
-	}
-
 	handleVal, err := xdrDecodeFileHandle(body)
 	if err != nil {
 		return nfsErrorReply(reply, GARBAGE_ARGS), nil
@@ -752,6 +742,16 @@ func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, aut
 	var count uint32
 	if err := binary.Read(body, binary.BigEndian, &count); err != nil {
 		return nfsErrorReply(reply, GARBAGE_ARGS), nil
+	}
+
+	// Rate limiting (after body consumption to prevent TCP stream desync)
+	if h.server.handler.rateLimiter != nil && h.server.handler.options.EnableRateLimiting {
+		if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeReaddir) {
+			if h.server.handler.metrics != nil {
+				h.server.handler.metrics.RecordRateLimitExceeded()
+			}
+			return nfsErrorReply(reply, NFSERR_DELAY), nil
+		}
 	}
 
 	dir, ok := h.lookupNode(handleVal)
