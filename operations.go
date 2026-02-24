@@ -976,7 +976,11 @@ func (s *AbsfsNFS) Export(mountPath string, port int) error {
 	}
 
 	server.SetHandler(s)
-	return server.Listen()
+	if err := server.Listen(); err != nil {
+		return err
+	}
+	s.exportServer = server
+	return nil
 }
 
 // Symlink implements the SYMLINK operation

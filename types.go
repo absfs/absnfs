@@ -75,6 +75,7 @@ type AbsfsNFS struct {
 	batchProc        *BatchProcessor         // Processor for batched operations
 	metrics          *MetricsCollector       // Metrics collection and reporting
 	rateLimiter      *RateLimiter            // Rate limiter for DoS protection
+	exportServer     *Server                 // Server created by Export(), stopped on Close()
 }
 
 // ExportOptions defines the configuration for an NFS export
@@ -729,6 +730,12 @@ func (n *AbsfsNFS) GetAttrCacheSize() int {
 
 // Close releases resources and stops any background processes
 func (n *AbsfsNFS) Close() error {
+	// Stop export server if running
+	if n.exportServer != nil {
+		n.exportServer.Stop()
+		n.exportServer = nil
+	}
+
 	// Stop memory monitoring if active
 	n.stopMemoryMonitoring()
 
