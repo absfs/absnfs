@@ -110,12 +110,20 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				func() *bytes.Buffer {
 					var buf bytes.Buffer
 					xdrEncodeFileHandle(&buf, invalidHandle) // Properly encode handle
-					// Add setmode flag
+					// sattr3: set_mode=true, mode=0644
 					binary.Write(&buf, binary.BigEndian, uint32(1))
 					binary.Write(&buf, binary.BigEndian, uint32(0644))
-					// Add setuid flag
+					// sattr3: set_uid=false
 					binary.Write(&buf, binary.BigEndian, uint32(0))
-					// Add setgid flag
+					// sattr3: set_gid=false
+					binary.Write(&buf, binary.BigEndian, uint32(0))
+					// sattr3: set_size=false
+					binary.Write(&buf, binary.BigEndian, uint32(0))
+					// sattr3: set_atime=DONT_CHANGE(0)
+					binary.Write(&buf, binary.BigEndian, uint32(0))
+					// sattr3: set_mtime=DONT_CHANGE(0)
+					binary.Write(&buf, binary.BigEndian, uint32(0))
+					// sattrguard3: check=false
 					binary.Write(&buf, binary.BigEndian, uint32(0))
 					return &buf
 				},
@@ -258,8 +266,8 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 			}
 		})
 
-		// Test SETATTR with invalid mode
-		t.Run("SETATTR with invalid mode", func(t *testing.T) {
+		// Test SETATTR with high mode bits (should be masked to permission bits only)
+		t.Run("SETATTR with high mode bits masked", func(t *testing.T) {
 			call := &RPCCall{
 				Header: RPCMsgHeader{
 					Version:   NFS_V3,
@@ -269,13 +277,20 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 
 			var buf bytes.Buffer
 			xdrEncodeFileHandle(&buf, fileHandle) // Properly encode handle
-			// Set mode flag
+			// sattr3: set_mode=true, mode has high bits (masked to 0xFFF)
 			binary.Write(&buf, binary.BigEndian, uint32(1))
-			// Set invalid mode (S_IFMT bit set)
 			binary.Write(&buf, binary.BigEndian, uint32(0x8000))
-			// Don't set uid
+			// sattr3: set_uid=false
 			binary.Write(&buf, binary.BigEndian, uint32(0))
-			// Don't set gid
+			// sattr3: set_gid=false
+			binary.Write(&buf, binary.BigEndian, uint32(0))
+			// sattr3: set_size=false
+			binary.Write(&buf, binary.BigEndian, uint32(0))
+			// sattr3: set_atime=DONT_CHANGE(0)
+			binary.Write(&buf, binary.BigEndian, uint32(0))
+			// sattr3: set_mtime=DONT_CHANGE(0)
+			binary.Write(&buf, binary.BigEndian, uint32(0))
+			// sattrguard3: check=false
 			binary.Write(&buf, binary.BigEndian, uint32(0))
 
 			reply := &RPCReply{}
@@ -285,13 +300,13 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 				t.Fatalf("handleNFSCall failed: %v", err)
 			}
 
-			// Should get NFSERR_INVAL in the reply
+			// High bits are now masked to permission bits, so SETATTR should succeed
 			if data, ok := result.Data.([]byte); ok {
 				var status uint32
 				resBuf := bytes.NewBuffer(data)
 				binary.Read(resBuf, binary.BigEndian, &status)
-				if status != NFSERR_INVAL {
-					t.Errorf("Expected NFSERR_INVAL, got %d", status)
+				if status != NFS_OK {
+					t.Errorf("Expected NFS_OK (high bits masked), got %d", status)
 				}
 			} else {
 				t.Errorf("Expected []byte data in reply, got %T", result.Data)

@@ -397,7 +397,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 			Status: MSG_ACCEPTED,
 		}
 
-		// Test setattr operation
+		// Test setattr operation - must send complete sattr3 + sattrguard3
 		var buf bytes.Buffer
 		xdrEncodeFileHandle(&buf, handle)                  // Properly encode handle with length prefix
 		binary.Write(&buf, binary.BigEndian, uint32(1))    // Set mode
@@ -406,6 +406,10 @@ func TestNFSOperationsErrors(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, uint32(1000)) // New uid
 		binary.Write(&buf, binary.BigEndian, uint32(1))    // Set gid
 		binary.Write(&buf, binary.BigEndian, uint32(1000)) // New gid
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set size
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set atime
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // Don't set mtime
+		binary.Write(&buf, binary.BigEndian, uint32(0))    // sattrguard3: no guard
 
 		authCtx := &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err := handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
@@ -427,11 +431,17 @@ func TestNFSOperationsErrors(t *testing.T) {
 			}
 		}
 
-		// Test invalid mode
+		// Test high mode bits (0x8000 is now masked to permission bits by decodeSattr3)
 		buf.Reset()
 		xdrEncodeFileHandle(&buf, handle)                    // Properly encode handle with length prefix
 		binary.Write(&buf, binary.BigEndian, uint32(1))      // Set mode
-		binary.Write(&buf, binary.BigEndian, uint32(0x8000)) // Invalid mode
+		binary.Write(&buf, binary.BigEndian, uint32(0x8000)) // High bits masked to 0x800 (setuid)
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set uid
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set gid
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set size
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set atime
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // Don't set mtime
+		binary.Write(&buf, binary.BigEndian, uint32(0))      // sattrguard3: no guard
 
 		authCtx = &AuthContext{ClientIP: "127.0.0.1", ClientPort: 12345}
 		result, err = handler.handleNFSCall(call, bytes.NewReader(buf.Bytes()), reply, authCtx)
@@ -448,8 +458,9 @@ func TestNFSOperationsErrors(t *testing.T) {
 			if err := binary.Read(r, binary.BigEndian, &status); err != nil {
 				t.Fatalf("Failed to read status from reply data: %v", err)
 			}
-			if status != NFSERR_INVAL {
-				t.Errorf("Expected NFSERR_INVAL in reply data, got %v", status)
+			// High mode bits are now masked to permission bits, so SETATTR succeeds
+			if status != NFS_OK {
+				t.Errorf("Expected NFS_OK in reply data (high bits masked), got %v", status)
 			}
 		}
 	})
