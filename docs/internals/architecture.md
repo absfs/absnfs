@@ -47,7 +47,7 @@ Components:
 The bottom layer is the ABSFS interface itself, which is implemented by various filesystem implementations.
 
 Components:
-- `absfs.FileSystem` interface
+- `absfs.SymlinkFileSystem` interface
 - `absfs.File` interface
 - Concrete filesystem implementations (e.g., memfs, osfs)
 

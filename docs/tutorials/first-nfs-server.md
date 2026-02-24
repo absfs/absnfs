@@ -91,7 +91,7 @@ func main() {
 }
 
 // setupFilesystem creates some example content in the filesystem
-func setupFilesystem(fs absfs.FileSystem) error {
+func setupFilesystem(fs absfs.SymlinkFileSystem) error {
     // Create directories
     dirs := []string{
         "/docs",

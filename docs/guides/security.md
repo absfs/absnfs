@@ -62,17 +62,27 @@ The options are:
 - `"root"`: Root (UID 0) is mapped to the anonymous user, other users are unchanged
 - `"all"`: All users are mapped to the anonymous user
 
-Root squashing (`"root"`) is the default and prevents remote root users from having root privileges on your server.
+No squashing (`"none"`) is the default. To prevent remote root users from having root privileges on your server, set `Squash` to `"root"`:
 
-### Path Validation
+```go
+options := absnfs.ExportOptions{
+    Squash: "root",
+}
+```
 
-When `Secure` is enabled (the default), ABSNFS performs path validation to prevent directory traversal attacks:
+### Secure Ports
+
+When `Secure` is enabled (disabled by default), ABSNFS requires clients to connect from privileged ports (below 1024):
 
 ```go
 options := absnfs.ExportOptions{
     Secure: true,
 }
 ```
+
+### TLS Encryption
+
+For environments where NFS traffic crosses untrusted networks, ABSNFS supports TLS encryption to provide confidentiality, integrity, and optional mutual authentication. See the [TLS Encryption Guide](./tls-encryption.md) for configuration details.
 
 ## Best Practices
 

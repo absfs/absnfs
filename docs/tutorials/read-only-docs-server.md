@@ -198,7 +198,7 @@ To help users navigate the documentation, let's add a function that creates an i
 
 ```go
 // Ensure documentation has an index
-func ensureDocumentationIndex(fs absfs.FileSystem) error {
+func ensureDocumentationIndex(fs absfs.SymlinkFileSystem) error {
 	// Check if index.html exists
 	_, err := fs.Stat("/index.html")
 	if err == nil {
@@ -440,7 +440,7 @@ To make the documentation even more accessible, let's add an HTTP server that se
 
 ```go
 // Start HTTP preview server
-func startHTTPServer(fs absfs.FileSystem, httpPort int) {
+func startHTTPServer(fs absfs.SymlinkFileSystem, httpPort int) {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Get the path
 		path := r.URL.Path
@@ -646,7 +646,7 @@ type SearchResult struct {
 }
 
 // Search documentation for a query
-func searchDocumentation(fs absfs.FileSystem, query string) ([]SearchResult, error) {
+func searchDocumentation(fs absfs.SymlinkFileSystem, query string) ([]SearchResult, error) {
     query = strings.ToLower(query)
     var results []SearchResult
     
@@ -715,7 +715,7 @@ func searchDocumentation(fs absfs.FileSystem, query string) ([]SearchResult, err
 }
 
 // Walk filesystem recursively
-func walkFilesystem(fs absfs.FileSystem, path string, fn func(path string, info os.FileInfo) error) error {
+func walkFilesystem(fs absfs.SymlinkFileSystem, path string, fn func(path string, info os.FileInfo) error) error {
     dir, err := fs.Open(path)
     if err != nil {
         return err
@@ -1014,7 +1014,7 @@ func printMountInstructions(mountPath string, port int) {
 }
 
 // Ensure documentation has an index
-func ensureDocumentationIndex(fs absfs.FileSystem) error {
+func ensureDocumentationIndex(fs absfs.SymlinkFileSystem) error {
 	// Check if index.html exists
 	_, err := fs.Stat("/index.html")
 	if err == nil {
@@ -1153,7 +1153,7 @@ func runStatsReporter(logger *DocumentationLogger) {
 }
 
 // Start HTTP preview server
-func startHTTPServer(fs absfs.FileSystem, httpPort int) {
+func startHTTPServer(fs absfs.SymlinkFileSystem, httpPort int) {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Get the path
 		path := r.URL.Path
@@ -1323,7 +1323,7 @@ func startHTTPServer(fs absfs.FileSystem, httpPort int) {
 }
 
 // Search documentation for a query
-func searchDocumentation(fs absfs.FileSystem, query string) ([]SearchResult, error) {
+func searchDocumentation(fs absfs.SymlinkFileSystem, query string) ([]SearchResult, error) {
 	query = strings.ToLower(query)
 	var results []SearchResult
 	
@@ -1392,7 +1392,7 @@ func searchDocumentation(fs absfs.FileSystem, query string) ([]SearchResult, err
 }
 
 // Walk filesystem recursively
-func walkFilesystem(fs absfs.FileSystem, path string, fn func(path string, info os.FileInfo) error) error {
+func walkFilesystem(fs absfs.SymlinkFileSystem, path string, fn func(path string, info os.FileInfo) error) error {
 	dir, err := fs.Open(path)
 	if err != nil {
 		return err

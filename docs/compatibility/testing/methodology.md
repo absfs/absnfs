@@ -71,7 +71,7 @@ func main() {
 }
 
 // Create standard test content for all client tests
-func createTestContent(fs absfs.FileSystem) {
+func createTestContent(fs absfs.SymlinkFileSystem) {
     // Standard directory structure
     directories := []string{
         "/simple",

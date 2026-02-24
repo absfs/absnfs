@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/absfs/absfs"
 	"github.com/absfs/absnfs"
 	"github.com/absfs/memfs"
 )
@@ -38,12 +39,12 @@ func main() {
 	options := absnfs.ExportOptions{
 		// Security options
 		ReadOnly: false,                          // Allow writes (default)
-		Secure: true,                             // Enable security features
+		Secure: true,                             // Require privileged ports
 		AllowedIPs: []string{                     // Restrict access by IP
 			"127.0.0.1",                           // Local access
 			"192.168.1.0/24",                      // Local network
 		},
-		Squash: "root",                           // Map root users to anonymous (default)
+		Squash: "root",                           // Map root users to anonymous
 		
 		// Performance options
 		EnableReadAhead: true,                    // Enable read-ahead buffering
@@ -110,7 +111,7 @@ func main() {
 }
 
 // Helper function to create test content
-func createTestContent(fs absfs.FileSystem) {
+func createTestContent(fs absfs.SymlinkFileSystem) {
 	// Create directories
 	dirs := []string{
 		"/docs",
@@ -221,13 +222,13 @@ AllowedIPs: []string{                     // Restrict access by IP
     "127.0.0.1",                           // Local access
     "192.168.1.0/24",                      // Local network
 },
-Squash: "root",                           // Map root users to anonymous (default)
+Squash: "root",                           // Map root users to anonymous
 ```
 
 These options control the security of your NFS server:
 
 - **ReadOnly**: When `true`, clients can't modify files
-- **Secure**: Enables path validation and other security checks
+- **Secure**: Requires clients to connect from privileged ports (below 1024)
 - **AllowedIPs**: Restricts access to specific IP addresses or ranges
 - **Squash**: Controls how client user identities are mapped to server users
 

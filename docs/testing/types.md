@@ -411,7 +411,7 @@ type mockErrorFS struct {
     readErr error
 }
 
-// Implement necessary methods of absfs.FileSystem interface
+// Implement necessary methods of absfs.SymlinkFileSystem interface
 func (m *mockErrorFS) Open(name string) (absfs.File, error) {
     return &mockErrorFile{readErr: m.readErr}, nil
 }

@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/absfs/absfs"
 	"github.com/absfs/absnfs"
 	"github.com/absfs/memfs"
 )
@@ -80,7 +81,7 @@ func main() {
 }
 
 // Helper function to create test content
-func createTestContent(fs absfs.FileSystem) {
+func createTestContent(fs absfs.SymlinkFileSystem) {
 	// Create directories
 	dirs := []string{
 		"/docs",

@@ -77,7 +77,7 @@ func main() {
 }
 
 // Helper function to create test content
-func createTestContent(fs absfs.FileSystem) error {
+func createTestContent(fs absfs.SymlinkFileSystem) error {
     // Create a directory
     if err := fs.Mkdir("/testdir", 0755); err != nil {
         return err
@@ -136,7 +136,7 @@ You can also create custom filesystems by implementing the ABSFS interface:
 ```go
 import "github.com/absfs/absfs"
 
-// MyFS implements absfs.FileSystem
+// MyFS implements absfs.SymlinkFileSystem
 type MyFS struct {
     // implementation details
 }

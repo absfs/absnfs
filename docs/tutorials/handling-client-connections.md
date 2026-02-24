@@ -98,7 +98,7 @@ func main() {
 	fmt.Println("Server stopped")
 }
 
-func populateFilesystem(fs absfs.FileSystem) {
+func populateFilesystem(fs absfs.SymlinkFileSystem) {
 	// Create some test content
 	// (Implementation details omitted for brevity)
 }
@@ -873,7 +873,7 @@ func main() {
 	fmt.Println("Server stopped")
 }
 
-func createExampleContent(fs absfs.FileSystem) {
+func createExampleContent(fs absfs.SymlinkFileSystem) {
 	// Create directories
 	dirs := []string{"/docs", "/data", "/images", "/tmp"}
 	for _, dir := range dirs {

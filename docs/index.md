@@ -7,7 +7,7 @@ title: ABSNFS - NFS Server for Abstract Filesystems
 
 ## NFS Server Adapter for the ABSFS Ecosystem
 
-ABSNFS is a Go package that implements an NFS (Network File System) server adapter for the [ABSFS](https://github.com/absfs/absfs) abstract filesystem interface. It allows any filesystem that implements the absfs.FileSystem interface to be exported as an NFS share over a network.
+ABSNFS is a Go package that implements an NFS (Network File System) server adapter for the [ABSFS](https://github.com/absfs/absfs) abstract filesystem interface. It allows any filesystem that implements the absfs.SymlinkFileSystem interface to be exported as an NFS share over a network.
 
 ## What is ABSNFS?
 

@@ -577,7 +577,7 @@ Handles NFS operations:
 ```go
 type NFSHandler struct {
     server *Server
-    fs     absfs.FileSystem
+    fs     absfs.SymlinkFileSystem
 }
 
 func (h *NFSHandler) HandleCall(proc uint32, params []byte) ([]byte, error) {

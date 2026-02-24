@@ -246,4 +246,4 @@ The `NFSNode` type is optimized for performance in several ways:
 - **AbsfsNFS**: Coordinates overall NFS operations and manages the node lifecycle
 - **FileHandleMap**: Maps between file handles and nodes
 - **AttrCache**: Caches file attributes for performance
-- **absfs.FileSystem**: Provides the underlying filesystem operations
+- **absfs.SymlinkFileSystem**: Provides the underlying filesystem operations

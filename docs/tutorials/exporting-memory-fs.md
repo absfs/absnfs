@@ -151,7 +151,7 @@ func main() {
 }
 
 // setupFilesystem creates initial content in the filesystem
-func setupFilesystem(fs absfs.FileSystem) error {
+func setupFilesystem(fs absfs.SymlinkFileSystem) error {
 	// Create some directories
 	directories := []string{
 		"/docs",
@@ -347,7 +347,7 @@ go monitorServer(fs)
 // ...
 
 // monitorServer periodically prints statistics about the filesystem
-func monitorServer(fs absfs.FileSystem) {
+func monitorServer(fs absfs.SymlinkFileSystem) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -363,7 +363,7 @@ func monitorServer(fs absfs.FileSystem) {
 	}
 }
 
-func countFilesAndDirs(fs absfs.FileSystem, path string) (files int, dirs int) {
+func countFilesAndDirs(fs absfs.SymlinkFileSystem, path string) (files int, dirs int) {
 	// This is a simplified implementation
 	// A real implementation would recursively walk the filesystem
 	
@@ -499,7 +499,7 @@ func main() {
 }
 
 // setupFilesystem creates initial content in the filesystem
-func setupFilesystem(fs absfs.FileSystem) error {
+func setupFilesystem(fs absfs.SymlinkFileSystem) error {
 	// Create some directories
 	directories := []string{
 		"/docs",
@@ -587,7 +587,7 @@ Note that all data is lost when the server stops!`
 }
 
 // monitorServer periodically prints statistics about the filesystem
-func monitorServer(fs absfs.FileSystem) {
+func monitorServer(fs absfs.SymlinkFileSystem) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -603,7 +603,7 @@ func monitorServer(fs absfs.FileSystem) {
 	}
 }
 
-func countFilesAndDirs(fs absfs.FileSystem, path string) (files int, dirs int) {
+func countFilesAndDirs(fs absfs.SymlinkFileSystem, path string) (files int, dirs int) {
 	// Open the directory
 	dir, err := fs.Open(path)
 	if err != nil {
