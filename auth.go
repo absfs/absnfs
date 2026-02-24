@@ -89,18 +89,38 @@ func ValidateAuthentication(ctx *AuthContext, options ExportOptions) *AuthResult
 func applySquashing(result *AuthResult, authSys *AuthSysCredential, squash string) {
 	switch strings.ToLower(squash) {
 	case "root":
-		// Map root (UID 0) to nobody
+		// Map root (UID 0) to nobody - squash both UID and GID when UID is root
 		if authSys.UID == 0 {
 			result.UID = 65534
-		}
-		if authSys.GID == 0 {
 			result.GID = 65534
+		} else if result.GID == 0 {
+			// Non-root user with primary GID 0 -- squash the GID only
+			result.GID = 65534
+		}
+		// Squash GID 0 in auxiliary GID list (copy first to avoid mutating shared slice)
+		if len(authSys.AuxGIDs) > 0 {
+			auxCopy := make([]uint32, len(authSys.AuxGIDs))
+			copy(auxCopy, authSys.AuxGIDs)
+			authSys.AuxGIDs = auxCopy
+			for i, gid := range authSys.AuxGIDs {
+				if gid == 0 {
+					authSys.AuxGIDs[i] = 65534
+				}
+			}
 		}
 
 	case "all":
 		// Map all users to nobody
 		result.UID = 65534
 		result.GID = 65534
+		// Squash all auxiliary GIDs (copy first to avoid mutating shared slice)
+		if len(authSys.AuxGIDs) > 0 {
+			auxCopy := make([]uint32, len(authSys.AuxGIDs))
+			for i := range auxCopy {
+				auxCopy[i] = 65534
+			}
+			authSys.AuxGIDs = auxCopy
+		}
 
 	case "none", "":
 		// No squashing - use the credentials as provided
