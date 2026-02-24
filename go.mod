@@ -1,4 +1,4 @@
-module github.com/absfs/absnfs
+module github.com/absfs/absnfs/v2
 
 go 1.23
 

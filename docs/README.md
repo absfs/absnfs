@@ -7,7 +7,7 @@ Any filesystem implementing `absfs.SymlinkFileSystem` can be exported as a netwo
 ## Installation
 
 ```bash
-go get github.com/absfs/absnfs
+go get github.com/absfs/absnfs/v2
 ```
 
 Requires Go 1.23 or later.
@@ -20,7 +20,7 @@ package main
 import (
     "log"
 
-    "github.com/absfs/absnfs"
+    "github.com/absfs/absnfs/v2"
     "github.com/absfs/memfs"
 )
 
