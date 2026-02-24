@@ -1,618 +1,207 @@
----
-layout: default
-title: ExportOptions
----
-
 # ExportOptions
 
-The `ExportOptions` type provides configuration settings for an NFS export. These options control security, performance, and behavior of the NFS server.
-
-## Type Definition
+Defined in `options.go`. The user-facing configuration struct passed to `New()`. Internally split into `TuningOptions` (performance) and `PolicyOptions` (security) for runtime updates.
 
 ```go
 type ExportOptions struct {
-    // ReadOnly specifies whether the export is read-only
-    ReadOnly bool
-
-    // Secure enables additional security checks
-    Secure bool
-
-    // AllowedIPs restricts access to specific IP addresses or ranges
-    AllowedIPs []string
-
-    // Squash controls how user identities are mapped
-    // Valid values: "none", "root", "all"
-    Squash string
-
-    // Async allows asynchronous write operations
-    Async bool
-
-    // MaxFileSize limits the maximum file size
-    MaxFileSize int64
-
-    // TransferSize controls the maximum size of read/write transfers
-    TransferSize int
-
-    // EnableReadAhead enables read-ahead buffering for improved performance
-    EnableReadAhead bool
-
-    // ReadAheadSize controls the size of the read-ahead buffer
-    ReadAheadSize int
-
-    // ReadAheadMaxFiles controls the maximum number of files with active read-ahead buffers
-    ReadAheadMaxFiles int
-
-    // ReadAheadMaxMemory controls the maximum memory for read-ahead buffers
-    ReadAheadMaxMemory int64
-
-    // AttrCacheTimeout controls how long file attributes are cached
-    AttrCacheTimeout time.Duration
-
-    // AttrCacheSize controls the maximum number of entries in the attribute cache
-    AttrCacheSize int
-
-    // CacheNegativeLookups enables caching of failed lookups (file not found)
-    CacheNegativeLookups bool
-
-    // NegativeCacheTimeout controls how long negative cache entries are kept
-    NegativeCacheTimeout time.Duration
-
-    // EnableDirCache enables caching of directory entries for improved performance
-    EnableDirCache bool
-
-    // DirCacheTimeout controls how long directory entries are cached
-    DirCacheTimeout time.Duration
-
-    // DirCacheMaxEntries controls the maximum number of directories that can be cached
-    DirCacheMaxEntries int
-
-    // DirCacheMaxDirSize controls the maximum number of entries in a single directory that will be cached
-    DirCacheMaxDirSize int
-
-    // AdaptToMemoryPressure enables automatic cache reduction under memory pressure
-    AdaptToMemoryPressure bool
-
-    // MemoryHighWatermark defines the memory threshold for triggering pressure reduction
-    MemoryHighWatermark float64
-
-    // MemoryLowWatermark defines the target memory usage when reducing cache sizes
-    MemoryLowWatermark float64
-
-    // MemoryCheckInterval defines how frequently memory usage is checked
-    MemoryCheckInterval time.Duration
-
-    // MaxWorkers controls the maximum number of goroutines for concurrent operations
-    MaxWorkers int
-
-    // BatchOperations enables grouping of similar operations
-    BatchOperations bool
-
-    // MaxBatchSize controls the maximum number of operations in a single batch
-    MaxBatchSize int
-
-    // MaxConnections limits the number of simultaneous client connections
-    MaxConnections int
-
-    // IdleTimeout defines how long to keep inactive connections
-    IdleTimeout time.Duration
-
-    // TCPKeepAlive enables TCP keep-alive probes on NFS connections
-    TCPKeepAlive bool
-
-    // TCPNoDelay disables Nagle's algorithm to reduce latency
-    TCPNoDelay bool
-
-    // SendBufferSize controls the size of the TCP send buffer
-    SendBufferSize int
-
-    // ReceiveBufferSize controls the size of the TCP receive buffer
-    ReceiveBufferSize int
-
-    // EnableRateLimiting enables rate limiting and DoS protection
+    // Security / Policy
+    ReadOnly           bool
+    Secure             bool
+    AllowedIPs         []string
+    Squash             string
+    MaxFileSize        int64
     EnableRateLimiting bool
+    RateLimitConfig    *RateLimiterConfig
+    TLS                *TLSConfig
 
-    // RateLimitConfig provides detailed rate limiting configuration
-    RateLimitConfig *RateLimiterConfig
+    // Performance / Tuning
+    Async                bool
+    TransferSize         int
+    AttrCacheTimeout     time.Duration
+    AttrCacheSize        int
+    CacheNegativeLookups bool
+    NegativeCacheTimeout time.Duration
+    EnableDirCache       bool
+    DirCacheTimeout      time.Duration
+    DirCacheMaxEntries   int
+    DirCacheMaxDirSize   int
+    MaxWorkers           int
+    MaxConnections       int
+    IdleTimeout          time.Duration
+    TCPKeepAlive         bool
+    TCPNoDelay           bool
+    SendBufferSize       int
+    ReceiveBufferSize    int
 
-    // TLS holds the TLS/SSL configuration for encrypted connections
-    TLS *TLSConfig
-
-    // Log holds the logging configuration for the NFS server
-    Log *LogConfig
-
-    // Timeouts controls operation-specific timeout durations
+    // Logging and Timeouts
+    Log      *LogConfig
     Timeouts *TimeoutConfig
 }
 ```
 
-## Field Descriptions
-
-### ReadOnly
-
-```go
-ReadOnly bool
-```
-
-When set to `true`, the NFS server will reject all write operations. This provides a simple way to ensure that the exported filesystem cannot be modified by clients.
-
-**Default:** `false`
-
-### Secure
-
-```go
-Secure bool
-```
-
-When set to `true`, the NFS server performs additional security checks:
-
-- Enforces IP restrictions defined in `AllowedIPs`
-- Validates file paths to prevent directory traversal attacks
-- Performs stricter permission checking
-
-**Default:** `true`
-
-### AllowedIPs
-
-```go
-AllowedIPs []string
-```
-
-Restricts access to the NFS server to specific IP addresses or ranges. IP ranges can be specified in CIDR notation (e.g., "192.168.1.0/24"). When empty, access is unrestricted.
-
-**Default:** `[]` (empty, unrestricted)
-
-### Squash
-
-```go
-Squash string
-```
-
-Controls how user identities are mapped between NFS clients and the server:
-
-- `"none"`: No identity mapping, client UIDs/GIDs are used as-is
-- `"root"`: Root (UID 0) is mapped to the anonymous user, other users are unchanged
-- `"all"`: All users are mapped to the anonymous user
-
-**Default:** `"root"`
-
-### TransferSize
-
-```go
-TransferSize int
-```
-
-Controls the maximum size in bytes of read/write transfers. Larger values may improve performance but require more memory.
-
-**Default:** `65536` (64KB)
-
-### EnableReadAhead
-
-```go
-EnableReadAhead bool
-```
-
-Enables read-ahead buffering for improved sequential read performance. When a client reads a file sequentially, the server will prefetch additional data to reduce latency.
-
-**Default:** `true`
-
-### ReadAheadSize
-
-```go
-ReadAheadSize int
-```
-
-Controls the size in bytes of the read-ahead buffer when `EnableReadAhead` is `true`.
-
-**Default:** `262144` (256KB)
-
-### AttrCacheTimeout
-
-```go
-AttrCacheTimeout time.Duration
-```
-
-Controls how long file attributes are cached by the server. Longer timeouts improve performance but may cause clients to see stale data if files are modified outside of the NFS server.
-
-**Default:** `5 * time.Second`
-
-### Async
-
-```go
-Async bool
-```
-
-Allows asynchronous write operations. When enabled, write operations can return before data is fully committed to storage, improving performance at a potential cost to data safety in case of server failure.
-
-**Default:** `false`
-
-### MaxFileSize
-
-```go
-MaxFileSize int64
-```
-
-Maximum file size in bytes that can be stored or accessed through the NFS export. Files exceeding this size will be rejected. Setting to 0 means no limit.
-
-**Default:** `0` (no limit)
-
-### ReadAheadMaxFiles
-
-```go
-ReadAheadMaxFiles int
-```
-
-Controls the maximum number of files that can have active read-ahead buffers. Helps limit memory usage by read-ahead buffering.
-
-**Default:** `100`
-
-### ReadAheadMaxMemory
-
-```go
-ReadAheadMaxMemory int64
-```
-
-Controls the maximum amount of memory in bytes that can be used for read-ahead buffers. Once this limit is reached, least recently used buffers will be evicted.
-
-**Default:** `104857600` (100MB)
-
-### AttrCacheSize
-
-```go
-AttrCacheSize int
-```
-
-Controls the maximum number of entries in the attribute cache. Larger values improve performance but consume more memory.
-
-**Default:** `10000`
-
-### CacheNegativeLookups
-
-```go
-CacheNegativeLookups bool
-```
-
-Enables caching of failed lookups (file not found). This can significantly reduce filesystem load for repeated lookups of non-existent files. Negative cache entries use a shorter TTL than positive entries.
-
-**Default:** `false`
-
-### NegativeCacheTimeout
-
-```go
-NegativeCacheTimeout time.Duration
-```
-
-Controls how long negative cache entries are kept. Shorter timeouts reduce the chance of stale negative cache entries. Only applicable when `CacheNegativeLookups` is `true`.
-
-**Default:** `5 * time.Second`
-
-### EnableDirCache
-
-```go
-EnableDirCache bool
-```
-
-Enables caching of directory entries for improved performance. When enabled, directory listings are cached to reduce filesystem calls.
-
-**Default:** `false`
-
-### DirCacheTimeout
-
-```go
-DirCacheTimeout time.Duration
-```
-
-Controls how long directory entries are cached. Longer timeouts improve performance but may cause clients to see stale directory listings. Only applicable when `EnableDirCache` is `true`.
-
-**Default:** `10 * time.Second`
-
-### DirCacheMaxEntries
-
-```go
-DirCacheMaxEntries int
-```
-
-Controls the maximum number of directories that can be cached. Helps limit memory usage by directory entry caching. Only applicable when `EnableDirCache` is `true`.
-
-**Default:** `1000`
-
-### DirCacheMaxDirSize
-
-```go
-DirCacheMaxDirSize int
-```
-
-Controls the maximum number of entries in a single directory that will be cached. Directories with more entries than this will not be cached to prevent memory issues. Only applicable when `EnableDirCache` is `true`.
-
-**Default:** `10000`
-
-### AdaptToMemoryPressure
-
-```go
-AdaptToMemoryPressure bool
-```
-
-Enables automatic cache reduction when system memory is under pressure. When enabled, the server will periodically check system memory usage and reduce cache sizes when memory usage exceeds `MemoryHighWatermark`, until usage falls below `MemoryLowWatermark`.
-
-**Default:** `false`
-
-### MemoryHighWatermark
-
-```go
-MemoryHighWatermark float64
-```
-
-Defines the threshold (as a fraction of total memory) at which memory pressure reduction actions will be triggered. Only applicable when `AdaptToMemoryPressure` is true. Valid range: 0.0 to 1.0 (0% to 100% of total memory).
-
-**Default:** `0.8` (80% of total memory)
-
-### MemoryLowWatermark
-
-```go
-MemoryLowWatermark float64
-```
-
-Defines the target memory usage (as a fraction of total memory) that the server will try to achieve when reducing cache sizes in response to memory pressure. Only applicable when `AdaptToMemoryPressure` is true. Valid range: 0.0 to `MemoryHighWatermark`.
-
-**Default:** `0.6` (60% of total memory)
-
-### MemoryCheckInterval
-
-```go
-MemoryCheckInterval time.Duration
-```
-
-Defines how frequently memory usage is checked for pressure detection. Only applicable when `AdaptToMemoryPressure` is true.
-
-**Default:** `30 * time.Second`
-
-### MaxWorkers
-
-```go
-MaxWorkers int
-```
-
-Controls the maximum number of goroutines used for handling concurrent operations. More workers can improve performance for concurrent workloads but consume more CPU resources.
-
-**Default:** `runtime.NumCPU() * 4` (number of logical CPUs multiplied by 4)
-
-### BatchOperations
-
-```go
-BatchOperations bool
-```
-
-Enables grouping of similar operations for improved performance. When enabled, the server will attempt to process multiple read/write operations together to reduce context switching and improve throughput.
-
-**Default:** `true`
-
-### MaxBatchSize
-
-```go
-MaxBatchSize int
-```
-
-Controls the maximum number of operations that can be included in a single batch. Larger batches can improve performance but may increase latency for individual operations. Only applicable when `BatchOperations` is true.
-
-**Default:** `10`
-
-### MaxConnections
-
-```go
-MaxConnections int
-```
-
-Limits the number of simultaneous client connections. Setting to 0 means unlimited connections (limited only by system resources).
-
-**Default:** `100`
-
-### IdleTimeout
-
-```go
-IdleTimeout time.Duration
-```
-
-Defines how long to keep inactive connections before closing them. This helps reclaim resources from abandoned connections.
-
-**Default:** `5 * time.Minute`
-
-### TCPKeepAlive
-
-```go
-TCPKeepAlive bool
-```
-
-Enables TCP keep-alive probes on NFS connections. Keep-alive helps detect dead connections when clients disconnect improperly.
-
-**Default:** `true`
-
-### TCPNoDelay
-
-```go
-TCPNoDelay bool
-```
-
-Disables Nagle's algorithm on TCP connections to reduce latency. This may improve performance for small requests at the cost of increased bandwidth usage.
-
-**Default:** `true`
-
-### SendBufferSize
-
-```go
-SendBufferSize int
-```
-
-Controls the size of the TCP send buffer in bytes. Larger buffers can improve throughput but consume more memory.
-
-**Default:** `262144` (256KB)
-
-### ReceiveBufferSize
-
-```go
-ReceiveBufferSize int
-```
-
-Controls the size of the TCP receive buffer in bytes. Larger buffers can improve throughput but consume more memory.
-
-**Default:** `262144` (256KB)
-
-### EnableRateLimiting
-
-```go
-EnableRateLimiting bool
-```
-
-Enables rate limiting and DoS protection. When enabled, the server will limit requests per IP, per connection, and per operation type.
-
-**Default:** `true`
-
-### RateLimitConfig
-
-```go
-RateLimitConfig *RateLimiterConfig
-```
-
-Provides detailed rate limiting configuration. Only applicable when `EnableRateLimiting` is true. If nil, default configuration will be used.
-
-**Default:** `nil` (uses default configuration)
-
-### TLS
-
-```go
-TLS *TLSConfig
-```
-
-Holds the TLS/SSL configuration for encrypted connections. When `TLS.Enabled` is true, all NFS connections will be encrypted using TLS. Provides confidentiality, integrity, and optional mutual authentication. If nil, TLS is disabled and connections are unencrypted (default NFSv3 behavior).
-
-**Default:** `nil` (TLS disabled)
-
-### Log
-
-```go
-Log *LogConfig
-```
-
-Holds the logging configuration for the NFS server. When `nil`, logging is disabled (no-op logger is used). When provided, enables structured logging with configurable level, format, and output.
-
-**Default:** `nil` (logging disabled)
-
-### Timeouts
-
-```go
-Timeouts *TimeoutConfig
-```
-
-Controls operation-specific timeout durations. When nil, default timeouts are used for all operations. Allows fine-grained control over how long each operation type can take before returning a timeout error.
-
-When an operation times out, the NFS server returns `NFSERR_DELAY` to the client, indicating that the server is temporarily busy and the client should retry the operation.
-
-**Default:** `nil` (uses default configuration)
-
-The `TimeoutConfig` type provides the following fields:
+## Security Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `ReadOnly` | `bool` | `false` | Reject all write operations |
+| `Secure` | `bool` | `false` | Require privileged source ports (< 1024) |
+| `AllowedIPs` | `[]string` | `nil` (allow all) | IP addresses or CIDR subnets permitted to connect |
+| `Squash` | `string` | `""` (none) | UID/GID mapping: `"root"`, `"all"`, or `"none"` |
+| `MaxFileSize` | `int64` | `0` | Maximum file size in bytes (0 = unlimited) |
+| `EnableRateLimiting` | `bool` | `false` | Enable per-IP and global rate limiting |
+| `RateLimitConfig` | `*RateLimiterConfig` | default config | Detailed rate limiting parameters |
+| `TLS` | `*TLSConfig` | `nil` (disabled) | TLS/mTLS configuration |
+
+**Note on RateLimitConfig:** When `RateLimitConfig` is nil, `New()` creates a default config so that rate limiting is ready if enabled later at runtime. Rate limiting itself is off unless `EnableRateLimiting` is explicitly set to `true`.
+
+### Squash Modes
+
+| Value | Behavior |
+|-------|----------|
+| `"none"` or `""` | No mapping. Client UIDs/GIDs used as-is. |
+| `"root"` | UID 0 mapped to nobody (65534). GID 0 also squashed. |
+| `"all"` | All UIDs/GIDs mapped to nobody (65534). |
+
+Squash mode cannot be changed at runtime. Attempting to change it via `UpdatePolicyOptions` or `UpdateExportOptions` returns an error.
+
+## Transfer and I/O Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `TransferSize` | `int` | `65536` (64 KB) | Max bytes per read/write RPC |
+| `Async` | `bool` | `false` | Allow async (unstable) writes |
+| `SendBufferSize` | `int` | `262144` (256 KB) | TCP send buffer size |
+| `ReceiveBufferSize` | `int` | `262144` (256 KB) | TCP receive buffer size |
+
+## Cache Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `AttrCacheTimeout` | `time.Duration` | `5s` | TTL for cached file attributes |
+| `AttrCacheSize` | `int` | `10000` | Max entries in the attribute cache (LRU) |
+| `CacheNegativeLookups` | `bool` | `false` | Cache "file not found" results |
+| `NegativeCacheTimeout` | `time.Duration` | `5s` | TTL for negative cache entries |
+| `EnableDirCache` | `bool` | `false` | Cache directory listings |
+| `DirCacheTimeout` | `time.Duration` | `10s` | TTL for cached directory entries |
+| `DirCacheMaxEntries` | `int` | `1000` | Max directories in cache |
+| `DirCacheMaxDirSize` | `int` | `10000` | Max entries per directory before skipping cache |
+
+## Connection Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `MaxWorkers` | `int` | `runtime.NumCPU() * 4` | Worker pool goroutines |
+| `MaxConnections` | `int` | `100` | Simultaneous client connections (0 = unlimited) |
+| `IdleTimeout` | `time.Duration` | `5m` | Close connections idle longer than this |
+| `TCPKeepAlive` | `bool` | `true` | Enable TCP keep-alive probes |
+| `TCPNoDelay` | `bool` | `true` | Disable Nagle's algorithm |
+
+## TimeoutConfig
+
+Passed via `ExportOptions.Timeouts`. When nil, `New()` populates all fields with defaults.
 
 ```go
 type TimeoutConfig struct {
-    ReadTimeout    time.Duration // Default: 30s
-    WriteTimeout   time.Duration // Default: 60s
-    LookupTimeout  time.Duration // Default: 10s
-    ReaddirTimeout time.Duration // Default: 30s
-    CreateTimeout  time.Duration // Default: 15s
-    RemoveTimeout  time.Duration // Default: 15s
-    RenameTimeout  time.Duration // Default: 20s
-    HandleTimeout  time.Duration // Default: 5s
-    DefaultTimeout time.Duration // Default: 30s (fallback)
+    ReadTimeout    time.Duration // default: 30s
+    WriteTimeout   time.Duration // default: 60s
+    LookupTimeout  time.Duration // default: 10s
+    ReaddirTimeout time.Duration // default: 30s
+    CreateTimeout  time.Duration // default: 15s
+    RemoveTimeout  time.Duration // default: 15s
+    RenameTimeout  time.Duration // default: 20s
+    HandleTimeout  time.Duration // default: 5s
+    DefaultTimeout time.Duration // default: 30s
 }
 ```
 
-#### Timeout Fields
+## LogConfig
 
-- **ReadTimeout**: Maximum time allowed for read operations
-- **WriteTimeout**: Maximum time allowed for write operations (longer default due to disk I/O)
-- **LookupTimeout**: Maximum time allowed for path lookup operations
-- **ReaddirTimeout**: Maximum time allowed for directory listing operations
-- **CreateTimeout**: Maximum time allowed for file creation operations
-- **RemoveTimeout**: Maximum time allowed for file deletion operations
-- **RenameTimeout**: Maximum time allowed for file rename operations
-- **HandleTimeout**: Maximum time allowed for file handle operations
-- **DefaultTimeout**: Fallback timeout for operations without a specific timeout
-
-## Example Usage
-
-### Basic Configuration
+Passed via `ExportOptions.Log`. When nil, a no-op logger is used.
 
 ```go
-options := absnfs.ExportOptions{
-    ReadOnly: true,
-    Secure: true,
+type LogConfig struct {
+    Level        string // "debug", "info", "warn", "error" (default: "info")
+    Format       string // "json" or "text" (default: "text")
+    Output       string // "stdout", "stderr", or file path (default: "stderr")
+    LogClientIPs bool   // Include client IPs in logs (default: false)
+    LogOperations bool  // Log each NFS operation with timing (default: false)
+    LogFileAccess bool  // Log file open/close patterns (default: false)
+    MaxSize      int    // Max log file MB before rotation (reserved, default: 100)
+    MaxBackups   int    // Old log files to retain (reserved, default: 3)
+    MaxAge       int    // Days to retain old logs (reserved, default: 28)
+    Compress     bool   // Gzip rotated files (reserved, default: false)
+}
+```
+
+**Note:** The `MaxSize`, `MaxBackups`, `MaxAge`, and `Compress` fields are reserved for future log rotation support. They are accepted but have no effect.
+
+## RateLimiterConfig
+
+Passed via `ExportOptions.RateLimitConfig`. Default values from `DefaultRateLimiterConfig()`:
+
+```go
+type RateLimiterConfig struct {
+    GlobalRequestsPerSecond        int           // default: 10000
+    PerIPRequestsPerSecond         int           // default: 1000
+    PerIPBurstSize                 int           // default: 500
+    PerConnectionRequestsPerSecond int           // default: 500
+    PerConnectionBurstSize         int           // default: 100
+    ReadLargeOpsPerSecond          int           // default: 100
+    WriteLargeOpsPerSecond         int           // default: 50
+    ReaddirOpsPerSecond            int           // default: 50
+    MountOpsPerMinute              int           // default: 10
+    FileHandlesPerIP               int           // default: 10000
+    FileHandlesGlobal              int           // default: 1000000
+    CleanupInterval                time.Duration // default: 5m
+}
+```
+
+## TLSConfig
+
+Passed via `ExportOptions.TLS`. When nil, connections are unencrypted.
+
+```go
+type TLSConfig struct {
+    Enabled                  bool
+    CertFile                 string           // PEM server certificate path
+    KeyFile                  string           // PEM server key path
+    CAFile                   string           // PEM CA certificate for client verification
+    ClientAuth               tls.ClientAuthType
+    MinVersion               uint16           // default: TLS 1.2
+    MaxVersion               uint16           // default: TLS 1.3
+    CipherSuites             []uint16         // empty = secure defaults
+    PreferServerCipherSuites bool
+    InsecureSkipVerify       bool             // testing only
+}
+```
+
+## Example: Custom Configuration
+
+```go
+server, err := absnfs.New(fs, absnfs.ExportOptions{
+    ReadOnly:   true,
     AllowedIPs: []string{"192.168.1.0/24", "10.0.0.5"},
-    Squash: "root",
-    TransferSize: 131072, // 128KB
-    EnableReadAhead: true,
-    ReadAheadSize: 524288, // 512KB
+    Squash:     "root",
+
+    TransferSize:     131072, // 128 KB
     AttrCacheTimeout: 10 * time.Second,
-}
+    AttrCacheSize:    20000,
+    EnableDirCache:   true,
 
-server, err := absnfs.New(fs, options)
-```
+    MaxConnections: 50,
+    MaxWorkers:     32,
+    IdleTimeout:    10 * time.Minute,
 
-### Configuration with Custom Timeouts
-
-```go
-options := absnfs.ExportOptions{
-    ReadOnly: false,
-    TransferSize: 131072,
-    Timeouts: &absnfs.TimeoutConfig{
-        ReadTimeout:    45 * time.Second,
-        WriteTimeout:   90 * time.Second,
-        LookupTimeout:  15 * time.Second,
-        ReaddirTimeout: 60 * time.Second,
-        CreateTimeout:  30 * time.Second,
-        RemoveTimeout:  30 * time.Second,
-        RenameTimeout:  45 * time.Second,
-        HandleTimeout:  10 * time.Second,
-        DefaultTimeout: 60 * time.Second,
+    Log: &absnfs.LogConfig{
+        Level:         "info",
+        Format:        "json",
+        Output:        "/var/log/nfs.log",
+        LogOperations: true,
     },
-}
 
-server, err := absnfs.New(fs, options)
+    Timeouts: &absnfs.TimeoutConfig{
+        ReadTimeout:  60 * time.Second,
+        WriteTimeout: 120 * time.Second,
+    },
+})
 ```
-
-## Runtime Update Semantics
-
-`ExportOptions` fields are internally divided into two categories with different runtime update behavior:
-
-### Tuning Fields (Immediate Update)
-
-These fields affect performance characteristics only. Changes take effect immediately via lock-free atomic swap with no service interruption:
-
-- `TransferSize`, `EnableReadAhead`, `ReadAheadSize`, `ReadAheadMaxFiles`, `ReadAheadMaxMemory`
-- `AttrCacheTimeout`, `AttrCacheSize`, `CacheNegativeLookups`, `NegativeCacheTimeout`
-- `EnableDirCache`, `DirCacheTimeout`, `DirCacheMaxEntries`, `DirCacheMaxDirSize`
-- `AdaptToMemoryPressure`, `MemoryHighWatermark`, `MemoryLowWatermark`, `MemoryCheckInterval`
-- `MaxWorkers`, `BatchOperations`, `MaxBatchSize`
-- `MaxConnections`, `IdleTimeout`, `TCPKeepAlive`, `TCPNoDelay`, `SendBufferSize`, `ReceiveBufferSize`
-- `Async`, `Log`, `Timeouts`
-
-### Policy Fields (Drain-and-Swap Update)
-
-These fields affect security invariants. Changes use drain-and-swap: new requests are temporarily rejected while in-flight requests complete, then the new policy takes effect atomically:
-
-- `ReadOnly`, `Secure`, `AllowedIPs`, `MaxFileSize`
-- `EnableRateLimiting`, `RateLimitConfig`, `TLS`
-
-### Immutable Fields
-
-These fields cannot be changed at runtime and will cause `UpdateExportOptions` to return an error:
-
-- `Squash`: Changing the user identity mapping mode at runtime could create inconsistent UID/GID behavior for in-flight requests
-
-For fine-grained control over updates, use `UpdateTuningOptions` (for tuning fields) and `UpdatePolicyOptions` (for policy fields) directly instead of `UpdateExportOptions`.
-
-## Default Options
-
-If you don't need to customize the export options, you can use the default options:
-
-```go
-server, err := absnfs.New(fs, absnfs.ExportOptions{})
-```
-
-This will create an NFS server with reasonable default settings suitable for most use cases.

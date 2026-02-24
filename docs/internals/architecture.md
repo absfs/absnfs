@@ -1,242 +1,140 @@
----
-layout: default
-title: System Architecture
----
+# Architecture
 
-# System Architecture
-
-ABSNFS is designed with a layered architecture that separates concerns and promotes maintainability. This document provides a high-level overview of the system architecture.
-
-## Architectural Layers
-
-ABSNFS is organized into the following layers, from highest to lowest level:
-
-![ABSNFS Architecture Diagram](/assets/images/architecture.png)
-
-### 1. NFS Client Interface
-
-At the highest level, ABSNFS presents a standard NFSv3 interface to clients. This ensures compatibility with any standard NFS client, including those built into operating systems.
-
-Components:
-- NFS protocol implementation (NFSv3)
-- RPC server for handling client requests
-- XDR (eXternal Data Representation) encoding/decoding
-
-### 2. ABSNFS Core
-
-The core layer implements the NFS protocol operations and manages state, caching, and file handles. This is where the ABSFS interface is adapted to the NFS protocol.
-
-Components:
-- `AbsfsNFS`: Main type that coordinates all components
-- `NFSNode`: Representation of files and directories
-- `FileHandleMap`: Management of file handles
-- `AttrCache`: Caching of file attributes
-- `DirCache`: Caching of directory listings
-- `ReadAheadBuffer`: Optimization for sequential reads
-- `TuningOptions` / `PolicyOptions`: Split configuration with atomic access
-
-### 3. ABSFS Adapter
-
-This layer adapts between NFS operations and ABSFS operations. It translates operations, errors, and attributes between the two systems.
-
-Components:
-- Operation adapters (read, write, etc.)
-- Error mapping
-- Attribute conversion
-
-### 4. ABSFS Interface
-
-The bottom layer is the ABSFS interface itself, which is implemented by various filesystem implementations.
-
-Components:
-- `absfs.FileSystem` interface
-- `absfs.File` interface
-- Concrete filesystem implementations (e.g., memfs, osfs)
-
-## Key Components
-
-### AbsfsNFS
-
-`AbsfsNFS` is the central component that coordinates all other components. It:
-
-- Maintains the root node of the filesystem
-- Manages the file handle map
-- Implements NFS operations
-- Coordinates caching and performance optimizations
-
-### NFSNode
-
-`NFSNode` represents a file or directory in the NFS filesystem. It:
-
-- Contains metadata about files and directories
-- Maps between NFS file handles and ABSFS paths
-- Manages child relationships for directories
-
-### Server
-
-The `Server` component handles network communication and RPC protocol details. It:
-
-- Listens for incoming connections
-- Decodes RPC requests
-- Routes requests to appropriate handlers
-- Encodes and sends responses
-
-### FileHandleMap
-
-The `FileHandleMap` manages mappings between NFS file handles and filesystem objects. It:
-
-- Maps uint64 handles to absfs.File objects
-- Reuses freed handles efficiently using a min-heap
-- Provides thread-safe operations with read-write mutexes
-- Handles creation, lookups, and release operations
-
-### AttrCache
-
-The `AttrCache` caches file attributes to improve performance. It:
-
-- Stores recently accessed file attributes
-- Validates cached attributes against TTL settings
-- Refreshes attributes when needed
-
-### DirCache
-
-The `DirCache` caches directory listings to improve READDIR/READDIRPLUS performance. It:
-
-- Stores recently listed directory entries
-- Validates cached entries against configurable TTL
-- Supports dynamic resizing based on memory pressure
-- Limits per-directory entry count to prevent memory issues
-
-### ReadAheadBuffer
-
-The `ReadAheadBuffer` improves read performance for sequential access patterns. It:
-
-- Detects sequential read patterns
-- Prefetches data ahead of client requests
-- Manages buffer lifecycle and eviction
-
-### WorkerPool
-
-The `WorkerPool` manages concurrent request processing. It:
-
-- Maintains a pool of worker goroutines
-- Queues incoming tasks for processing
-- Provides configurable concurrency limits
-- Tracks active workers and queue depth
-- Supports dynamic resizing
-
-### BatchProcessor
-
-The `BatchProcessor` groups similar operations for efficiency. It:
-
-- Batches read, write, and getattr operations
-- Groups requests by file handle
-- Processes batches when they reach a size threshold or timeout
-- Reduces overhead for multiple small operations
-
-### RateLimiter
-
-The `RateLimiter` prevents denial-of-service attacks. It:
-
-- Implements token bucket rate limiting
-- Enforces global, per-IP, and per-connection limits
-- Provides operation-specific limits (e.g., large reads/writes)
-- Tracks file handle allocation limits
-- Supports sliding window rate limiting for mount operations
-
-### MemoryMonitor
-
-The `MemoryMonitor` manages memory usage. It:
-
-- Tracks system memory usage
-- Detects memory pressure conditions
-- Automatically reduces cache sizes when needed
-- Provides memory statistics
-
-### TLSConfig
-
-The `TLSConfig` manages TLS/SSL encryption. It:
-
-- Configures server certificates and keys
-- Supports client certificate authentication
-- Enforces minimum TLS versions (1.2+)
-- Manages cipher suite selection
-- Supports certificate reloading for rotation
+absnfs is an NFSv3 server adapter for the [absfs](https://github.com/absfs/absfs)
+filesystem interface. Any filesystem implementing `absfs.SymlinkFileSystem` can be
+exported as an NFS share over TCP.
 
 ## Request Flow
 
-A typical NFS request flows through the system as follows:
-
-1. Client sends an NFS request to the server
-2. Server decodes the RPC request and identifies the NFS operation
-3. Server checks the drain flag; if draining, returns NFS3ERR_JUKEBOX (client retries)
-4. Server increments the in-flight counter and snapshots current options
-5. Server routes the request to the appropriate handler in AbsfsNFS with the options snapshot
-6. AbsfsNFS looks up the file handle and gets the corresponding NFSNode
-7. AbsfsNFS performs the operation on the underlying ABSFS filesystem using the snapshot
-8. Results are processed, encoded, and sent back to the client
-9. In-flight counter is decremented
-
-## Options Architecture
-
-ABSNFS splits configuration into two categories with different update semantics:
-
-### TuningOptions (Lock-Free Reads)
-
-Performance-related settings (cache sizes, worker counts, timeouts, buffer sizes, etc.) are stored behind an `atomic.Pointer[TuningOptions]`. Any goroutine can read the current tuning by loading the pointer -- no lock is needed. Stale reads are harmless since they only affect performance characteristics.
-
-Updates are applied via `UpdateTuningOptions`, which copies the current options, applies the mutation, and stores the result atomically. Side effects (cache resizing, worker pool adjustment) are applied after the swap.
-
-### PolicyOptions (Drain-and-Swap)
-
-Security-critical settings (ReadOnly, Secure, AllowedIPs, MaxFileSize, TLS, rate limiting) are stored behind an `atomic.Pointer[PolicyOptions]`. Reads are still lock-free, but updates use drain-and-swap to ensure no request observes a mix of old and new policy:
-
-1. Set `draining` flag to reject new requests (clients receive NFS3ERR_JUKEBOX and retry)
-2. Wait for all in-flight requests to complete (`inflight.Wait()`)
-3. Atomically swap to the new policy
-4. Clear the `draining` flag to resume accepting requests
-
-The `Squash` mode is immutable at runtime since changing it would invalidate the UID/GID mapping for all in-flight and future requests in unpredictable ways.
-
-### Per-Request Snapshots
-
-At the entry point of every NFS request (`HandleCall`), a `RequestOptions` snapshot is created containing pointers to the current `TuningOptions` and `PolicyOptions`. This snapshot is threaded through all handler functions and operations for the duration of the request, ensuring consistent options throughout a single request's lifetime.
-
-## Component Interactions
-
-The following diagram illustrates the interactions between components for a typical read operation:
-
 ```
-Client -> Server -> AbsfsNFS -> FileHandleMap -> NFSNode -> ABSFS (Read Operation) 
-                                          |
-                                          v
-Client <- Server <- AbsfsNFS <- ReadAheadBuffer
+TCP connection -> RPC decode -> HandleCall (policy lock + auth) ->
+  procedure handler (XDR decode -> filesystem op -> XDR encode) -> RPC reply
 ```
 
-## Design Principles
+1. A TCP connection arrives at the accept loop (`server.go`).
+2. IP filtering rejects disallowed clients immediately.
+3. The connection is registered (subject to `MaxConnections`) and handed to a
+   connection loop, which reads RPC messages in a loop.
+4. Each RPC message is decoded into an `RPCCall` (header + credentials + verifier).
+5. `HandleCall` in `nfs_handlers.go` acquires the policy read lock via `TryRLock`,
+   snapshots options, validates authentication, then dispatches to the correct
+   program handler (NFS or MOUNT) inside a goroutine.
+6. The procedure handler decodes XDR arguments from the request body, performs
+   filesystem operations via `operations.go`, encodes XDR results, and returns
+   an `RPCReply`.
+7. The reply is written back through the connection's `connIO` interface, which
+   handles record marking framing when enabled.
 
-ABSNFS was designed with the following principles in mind:
+## Key Subsystems
 
-1. **Compatibility**: Support standard NFS clients without modifications
-2. **Adaptability**: Work with any ABSFS-compatible filesystem
-3. **Performance**: Optimize common operations through caching and buffering
-4. **Correctness**: Correctly implement the NFS protocol
-5. **Robustness**: Handle errors and edge cases gracefully
-6. **Safety**: Security-critical options use drain-and-swap to prevent stale policy reads from violating security invariants
+### server.go -- TCP Lifecycle
 
-## Limitations
+Owns the `Server` type: listener setup, accept loop, per-connection goroutines,
+connection tracking (register/unregister with `sync.Once`), idle timeout cleanup,
+and graceful shutdown. The `connIO` interface abstracts framing so raw TCP and
+record-marking connections share the same dispatch loop.
 
-The current architecture has some limitations:
+### nfs_handlers.go -- RPC Dispatch
 
-1. **NFSv3 Only**: Only NFSv3 is currently supported, not newer versions
-2. **Authentication**: Limited authentication mechanisms (typical of NFSv3)
-3. **Locking**: Limited support for advisory file locking (NLM not implemented)
+Contains `NFSProcedureHandler.HandleCall`, which is the central dispatch point.
+Responsibilities:
 
-## Future Architecture Enhancements
+- Acquire the policy read lock (`TryRLock`), returning `NFS3ERR_JUKEBOX` on
+  failure so clients retry during policy drain.
+- Snapshot tuning and policy options for consistent reads within a single request.
+- Validate authentication and apply UID/GID squashing.
+- Route to NFS (`handleNFSCall`) or MOUNT (`handleMountCall`) based on the RPC
+  program number.
+- Run the handler in a goroutine that holds the policy read lock for its full
+  duration, ensuring drain-and-swap blocks until real work finishes.
 
-Planned architectural improvements include:
+### nfs_proc_*.go -- NFS3 Procedure Handlers
 
-1. **NFSv4 Support**: Adding support for the newer NFSv4 protocol
-2. **Enhanced Security**: Additional security mechanisms
-3. **Distributed Architecture**: Support for clustered/distributed NFS servers
-4. **Performance Optimizations**: Additional caching and performance improvements
+Split by RFC 1813 category:
+
+| File                    | Procedures                                             |
+| ----------------------- | ------------------------------------------------------ |
+| `nfs_proc_handlers.go`  | NULL, FSSTAT, FSINFO, PATHCONF + shared types (sattr3) |
+| `nfs_proc_attr.go`      | GETATTR, SETATTR, ACCESS                               |
+| `nfs_proc_lookup.go`    | LOOKUP, READLINK                                       |
+| `nfs_proc_readwrite.go` | READ, WRITE, COMMIT                                    |
+| `nfs_proc_create.go`    | CREATE, MKDIR, SYMLINK, MKNOD                          |
+| `nfs_proc_dir.go`       | READDIR, READDIRPLUS                                   |
+| `nfs_proc_remove.go`    | REMOVE, RMDIR, RENAME, LINK                            |
+
+Each handler follows the pattern: decode file handle, look up NFSNode, perform
+filesystem operation, encode XDR response with appropriate error reply format
+(post_op_attr, wcc_data, or double wcc_data depending on procedure).
+
+### operations.go -- Filesystem Bridge
+
+Translates NFS semantics into `absfs.SymlinkFileSystem` calls. Provides
+`Lookup`, `GetAttr`, `SetAttr`, `Read`, `Write`, `Create`, `Remove`, `Rename`,
+`Symlink`, `Readlink`, `ReadDir`, and `ReadDirPlus`. Each operation:
+
+- Checks read-only policy for mutating operations.
+- Creates a context with operation-specific timeouts from `TimeoutConfig`.
+- Calls the underlying absfs filesystem.
+- Manages attribute and directory cache invalidation.
+- Maps absfs errors to NFS status codes via `mapError`.
+
+### cache.go -- AttrCache and DirCache
+
+Two LRU caches with TTL expiration:
+
+- **AttrCache**: Caches `NFSAttrs` by path. O(1) LRU tracking via a doubly-linked
+  list. Supports negative caching (file-not-found entries with a shorter TTL).
+  Configurable size, TTL, and negative caching behavior.
+- **DirCache**: Caches `[]os.FileInfo` directory listings by path. Same LRU
+  structure. Skips caching directories exceeding `DirCacheMaxDirSize`.
+
+Both caches deep-copy data on get/put to prevent shared mutation.
+
+### filehandle.go -- Handle Allocation
+
+`FileHandleMap` assigns sequential `uint64` handles to `NFSNode` references.
+Path deduplication via `pathHandles` prevents unbounded handle growth from
+repeated LOOKUP/READDIRPLUS calls on the same path. A min-heap tracks freed
+handle IDs for O(log n) reuse. When `maxHandles` is exceeded, the oldest
+handles (lowest IDs) are evicted.
+
+### auth.go -- Authentication and Access Control
+
+`ValidateAuthentication` processes RPC credentials against `PolicyOptions`:
+
+1. IP filtering (individual IPs and CIDR subnets).
+2. Secure port enforcement (port < 1024 when `Secure=true`).
+3. AUTH_SYS credential parsing (UID, GID, auxiliary GIDs).
+4. UID/GID squashing (none, root, all modes).
+
+AUTH_NONE is accepted and mapped to nobody (65534/65534). TLS client certificate
+identity extraction is supported via `ExtractCertificateIdentity`.
+
+### options.go -- Configuration
+
+Two option types with different update semantics:
+
+- **TuningOptions**: Cache sizes, timeouts, transfer size, worker pool, TCP
+  settings. Updated via `UpdateTuningOptions` with a simple atomic swap. Stale
+  reads only affect performance, never security.
+- **PolicyOptions**: AllowedIPs, squash mode, read-only, rate limiting, TLS.
+  Updated via `UpdatePolicyOptions` with drain-and-swap: the write lock is
+  acquired (blocking new requests with JUKEBOX), in-flight requests finish,
+  then the new policy is stored and the lock released.
+
+This split exists because stale policy reads could violate security invariants
+(allowing a revoked IP, using old squash settings), while stale tuning reads
+only affect performance characteristics.
+
+### rpc_types.go -- XDR and RPC Messages
+
+XDR encoding/decoding helpers (uint32, uint64, string, opaque, file handle) and
+RPC message types (`RPCCall`, `RPCReply`, `RPCCredential`, `AuthSysCredential`).
+Includes bounds validation on all decoded lengths to prevent DoS via memory
+exhaustion.
+
+### rpc_transport.go -- Record Marking
+
+RFC 1831 section 10 record fragment framing. `RecordMarkingConn` wraps a TCP
+connection with `ReadRecord` (reassembles multi-fragment messages with total
+size limit) and `WriteRecord` (splits large messages into fragments).

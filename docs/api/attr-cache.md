@@ -1,51 +1,30 @@
----
-layout: default
-title: AttrCache
----
-
 # AttrCache
 
-The `AttrCache` component provides caching of file attributes (metadata) to improve performance by reducing the number of filesystem operations required to retrieve file information.
+LRU cache for NFS file attributes with TTL expiration and optional negative caching.
 
-## Purpose
+## Types
 
-File attribute retrieval is one of the most common operations in an NFS server. The `AttrCache` serves several important purposes:
-
-1. **Performance Improvement**: Reduces the number of filesystem calls
-2. **Latency Reduction**: Provides faster response times for attribute requests
-3. **Load Reduction**: Decreases the load on the underlying filesystem
-4. **Consistency Management**: Ensures clients see consistent attribute information
-5. **Negative Caching**: Reduces repeated lookups of non-existent files
-
-## Type Definition
+### AttrCache
 
 ```go
 type AttrCache struct {
-    // contains filtered or unexported fields
+    // (unexported fields)
 }
 ```
 
-The `AttrCache` type is used internally by the `AbsfsNFS` type and is not typically created or manipulated directly by users.
+Thread-safe attribute cache backed by a hash map and doubly-linked list for O(1) LRU operations.
 
-## Cached Attributes
+### CachedAttrs
 
-The `AttrCache` caches file attributes in an `NFSAttrs` structure:
+```go
+type CachedAttrs struct {
+    // (unexported fields)
+}
+```
 
-1. **Basic Attributes**:
-   - File mode (permissions)
-   - File size
+Internal entry type. When `isNegative` is true, the entry records that a path was confirmed non-existent. When false, `attrs` holds a deep copy of the file's `NFSAttrs`.
 
-2. **Timestamps**:
-   - Access time (Atime)
-   - Modification time (Mtime)
-
-3. **Ownership**:
-   - User ID (Uid)
-   - Group ID (Gid)
-
-## Key Operations
-
-The `AttrCache` provides several key operations:
+## Functions
 
 ### NewAttrCache
 
@@ -53,15 +32,27 @@ The `AttrCache` provides several key operations:
 func NewAttrCache(ttl time.Duration, maxSize int) *AttrCache
 ```
 
-Creates a new attribute cache with the specified TTL (time-to-live) and maximum number of entries.
+Creates a new attribute cache. If `maxSize <= 0`, defaults to 10,000 entries. Negative caching is disabled by default; enable it with `ConfigureNegativeCaching`.
+
+```go
+cache := absnfs.NewAttrCache(5*time.Second, 10000)
+```
 
 ### Get
 
 ```go
-func (c *AttrCache) Get(path string, server ...*AbsfsNFS) *NFSAttrs
+func (c *AttrCache) Get(path string, server ...*AbsfsNFS) (*NFSAttrs, bool)
 ```
 
-Retrieves the cached attributes for a file or directory. If the attributes are not in the cache or are expired, returns nil. Optionally accepts an `AbsfsNFS` server instance for recording cache hit/miss metrics.
+Retrieves cached attributes for a path. The return values distinguish three cases:
+
+| Return | Meaning |
+|--------|---------|
+| `(attrs, true)` | Positive hit -- `attrs` contains the cached file attributes. |
+| `(nil, true)` | Negative hit -- path is confirmed non-existent. |
+| `(nil, false)` | Cache miss -- path is not in the cache. |
+
+The optional `server` parameter enables metrics recording (cache hit/miss counters). Expired entries are lazily removed on access. Each hit updates the LRU position.
 
 ### Put
 
@@ -69,7 +60,7 @@ Retrieves the cached attributes for a file or directory. If the attributes are n
 func (c *AttrCache) Put(path string, attrs *NFSAttrs)
 ```
 
-Adds or updates cached attributes for the specified path. Uses LRU eviction when the cache is full.
+Stores a deep copy of `attrs` for the given path. If the cache is at capacity and the path is new, the least recently used entry is evicted first (O(1) via linked list back pointer). Updates the entry's TTL and LRU position.
 
 ### PutNegative
 
@@ -77,31 +68,7 @@ Adds or updates cached attributes for the specified path. Uses LRU eviction when
 func (c *AttrCache) PutNegative(path string)
 ```
 
-Adds a negative cache entry for a non-existent file. Only stores the entry if negative caching is enabled. Negative entries use a shorter TTL than positive entries.
-
-### ConfigureNegativeCaching
-
-```go
-func (c *AttrCache) ConfigureNegativeCaching(enable bool, ttl time.Duration)
-```
-
-Configures negative lookup caching. When enabled, the cache will store failed lookups to reduce repeated filesystem queries for non-existent files.
-
-### NegativeStats
-
-```go
-func (c *AttrCache) NegativeStats() int
-```
-
-Returns the count of negative cache entries currently stored.
-
-### InvalidateNegativeInDir
-
-```go
-func (c *AttrCache) InvalidateNegativeInDir(dirPath string)
-```
-
-Invalidates all negative cache entries in a directory. This is called when a file is created in the directory to ensure newly created files are visible.
+Stores a negative cache entry indicating the path does not exist. Only takes effect if negative caching has been enabled via `ConfigureNegativeCaching`. Uses the negative TTL (default 5 seconds) which is typically shorter than the positive TTL.
 
 ### Invalidate
 
@@ -109,7 +76,15 @@ Invalidates all negative cache entries in a directory. This is called when a fil
 func (c *AttrCache) Invalidate(path string)
 ```
 
-Removes the cached attributes for a file or directory, forcing the next `Get` call to return nil.
+Removes a single entry (positive or negative) from the cache. O(1) operation.
+
+### InvalidateNegativeInDir
+
+```go
+func (c *AttrCache) InvalidateNegativeInDir(dirPath string)
+```
+
+Removes all negative cache entries that are direct children of `dirPath`. Called when a file is created in a directory to ensure the negative entry for that filename is cleared. Only checks one level deep (not recursive).
 
 ### Clear
 
@@ -117,7 +92,31 @@ Removes the cached attributes for a file or directory, forcing the next `Get` ca
 func (c *AttrCache) Clear()
 ```
 
-Removes all entries from the cache.
+Removes all entries from the cache and resets the LRU list.
+
+### ConfigureNegativeCaching
+
+```go
+func (c *AttrCache) ConfigureNegativeCaching(enable bool, ttl time.Duration)
+```
+
+Enables or disables negative caching and sets the negative entry TTL. If `ttl <= 0`, the existing negative TTL is preserved.
+
+### Resize
+
+```go
+func (c *AttrCache) Resize(newSize int)
+```
+
+Changes the maximum cache capacity. If `newSize` is smaller than the current entry count, LRU entries are evicted until the cache fits. If `newSize <= 0`, defaults to 10,000.
+
+### UpdateTTL
+
+```go
+func (c *AttrCache) UpdateTTL(newTTL time.Duration)
+```
+
+Changes the TTL for new entries. Does not retroactively update existing entries. If `newTTL <= 0`, defaults to 5 seconds.
 
 ### Size
 
@@ -125,7 +124,7 @@ Removes all entries from the cache.
 func (c *AttrCache) Size() int
 ```
 
-Returns the current number of entries in the cache.
+Returns the current number of entries (positive and negative).
 
 ### MaxSize
 
@@ -133,7 +132,7 @@ Returns the current number of entries in the cache.
 func (c *AttrCache) MaxSize() int
 ```
 
-Returns the maximum size of the cache.
+Returns the maximum capacity.
 
 ### Stats
 
@@ -141,144 +140,12 @@ Returns the maximum size of the cache.
 func (c *AttrCache) Stats() (int, int)
 ```
 
-Returns the current size and capacity of the cache as a tuple.
+Returns `(currentSize, maxSize)`.
 
-## Cache Lifecycle
-
-Cached attributes follow a lifecycle:
-
-1. **Addition**: When attributes are first requested for a file or directory
-2. **Usage**: When attributes are retrieved from the cache
-3. **Invalidation**: When a file or directory is modified or the cache entry expires
-4. **Refresh**: When fresh attributes are fetched after invalidation
-
-## Implementation Details
-
-The `AttrCache` implementation includes several important details:
-
-### Cache Validation
-
-Cached attributes are considered valid based on:
-- A configurable time-to-live (TTL)
-- Operation-specific invalidation (e.g., writes invalidate size and mtime)
-- Explicit invalidation for operations like rename, remove, etc.
-
-### Thread Safety
-
-The `AttrCache` is thread-safe, allowing concurrent access from multiple clients.
-
-### Memory Management
-
-The cache implements memory management strategies:
-- LRU (Least Recently Used) eviction to bound memory usage
-- Size limits to prevent unbounded growth
-- Targeted invalidation to maintain consistency
-
-### Cache Coherency
-
-To ensure cache coherency, the `AttrCache`:
-- Invalidates entries affected by write operations
-- Propagates modifications to related entries
-- Respects the configured TTL for normal entries
-
-## Performance Considerations
-
-The `AttrCache` is optimized for performance in several ways:
-
-1. **Fast Path**: Optimized code path for cache hits
-2. **Concurrent Access**: Multiple readers can access the cache simultaneously
-3. **Strategic Invalidation**: Only invalidates entries that are affected by modifications
-4. **Batch Operations**: Supports batched attribute retrieval and update
-
-## Configuration Options
-
-The `AttrCache` can be configured through the `ExportOptions`:
+### NegativeStats
 
 ```go
-options := absnfs.ExportOptions{
-    // How long attributes are considered valid in the cache
-    AttrCacheTimeout: 5 * time.Second,
-
-    // Maximum number of entries in the cache
-    AttrCacheSize: 10000,
-
-    // Whether to cache negative lookups (file not found)
-    CacheNegativeLookups: true,
-
-    // Timeout for negative cache entries (typically shorter than positive)
-    NegativeCacheTimeout: 5 * time.Second,
-}
+func (c *AttrCache) NegativeStats() int
 ```
 
-## Example Usage
-
-While users don't typically interact with `AttrCache` directly, here's an example of how it's used internally:
-
-```go
-// When a client requests file attributes
-func (nfs *AbsfsNFS) handleGetAttr(handle uint64) (*NFSAttrs, error) {
-    // Get the file for the handle
-    file, exists := nfs.fileHandleMap.Get(handle)
-    if !exists {
-        return nil, errors.New("invalid file handle")
-    }
-
-    // Get the attributes using the cache
-    attrs := nfs.attrCache.Get(file.Name(), nfs)
-    if attrs == nil {
-        // Not in cache, need to fetch from filesystem
-        return nil, errors.New("attributes not cached")
-    }
-
-    return attrs, nil
-}
-
-// When a client modifies a file
-func (nfs *AbsfsNFS) handleWrite(handle uint64, offset int64, data []byte) (int, error) {
-    // Get the file for the handle
-    file, exists := nfs.fileHandleMap.Get(handle)
-    if !exists {
-        return 0, errors.New("invalid file handle")
-    }
-
-    // Write the data
-    n, err := file.WriteAt(data, offset)
-    if err != nil {
-        return 0, err
-    }
-
-    // Invalidate the cached attributes since the file changed
-    nfs.attrCache.Invalidate(file.Name())
-
-    return n, nil
-}
-```
-
-## Cache Statistics
-
-The `AttrCache` maintains statistics to help with monitoring and tuning:
-
-1. **Hit Count**: Number of successful cache hits
-2. **Miss Count**: Number of cache misses requiring filesystem access
-3. **Negative Cache Hit Count**: Number of successful negative cache hits
-4. **Negative Cache Miss Count**: Number of negative cache misses
-5. **Invalidation Count**: Number of cache invalidations
-6. **Entry Count**: Current number of entries in the cache
-7. **Negative Entry Count**: Current number of negative entries in the cache
-
-You can access these statistics through the metrics API:
-
-```go
-metrics := server.GetMetrics()
-fmt.Printf("Attribute cache hit rate: %.2f%%\n", metrics.CacheHitRate*100)
-fmt.Printf("Negative cache hit rate: %.2f%%\n", metrics.NegativeCacheHitRate*100)
-fmt.Printf("Negative cache size: %d\n", metrics.NegativeCacheSize)
-```
-
-## Relation to Other Components
-
-The `AttrCache` interacts closely with several other components in ABSNFS:
-
-- **AbsfsNFS**: Coordinates overall NFS operations and provides metrics recording
-- **NFSAttrs**: The attribute structure that is cached
-- **FileHandleMap**: Maps file handles to files whose paths are used for cache operations
+Returns the count of negative cache entries. Iterates all entries, so not O(1).

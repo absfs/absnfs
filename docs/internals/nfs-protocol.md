@@ -1,281 +1,142 @@
----
-layout: default
-title: NFS Protocol Overview
----
+# NFS Protocol Implementation
 
-# NFS Protocol Overview
+absnfs implements NFSv3 (RFC 1813) and the MOUNT protocol (RFC 1813 Appendix I)
+over ONC RPC (RFC 1831) with XDR encoding (RFC 4506).
 
-This document provides an overview of the Network File System (NFS) protocol as implemented in ABSNFS. Understanding the protocol is valuable for developers working with or extending ABSNFS.
+## NFS3 Procedures
 
-## Introduction to NFS
+All 22 NFSv3 procedures are implemented. Dispatch happens in `nfs_handlers.go`
+via the `nfsHandlers` map, which maps procedure numbers to handler functions.
 
-Network File System (NFS) is a distributed file system protocol that allows a client computer to access files over a network as if they were stored locally. Developed by Sun Microsystems, NFS has become a standard for network file sharing.
+### Metadata Operations
 
-NFS is designed to be:
-- **Stateless**: The server doesn't need to maintain client state (though NFSv4 introduced more statefulness)
-- **Platform-independent**: Works across different operating systems
-- **Transparent**: Applications can work with remote files as if they were local
-- **Network resilient**: Can recover from network interruptions
-- **Scalable**: Supports many concurrent clients
+| # | Procedure | Handler | Description |
+|---|-----------|---------|-------------|
+| 0 | NULL | `handleNull` | No-op, tests connectivity |
+| 1 | GETATTR | `handleGetattr` | Returns `fattr3` for a file handle |
+| 2 | SETATTR | `handleSetattr` | Sets mode, uid, gid, size, atime, mtime. Supports sattrguard3 (ctime check). Truncation (size=0) is applied before other attributes. |
+| 4 | ACCESS | `handleAccess` | Checks read/write/execute/lookup/delete permissions using UNIX permission bits, effective UID/GID, and auxiliary groups |
+| 18 | FSSTAT | `handleFsstat` | Returns filesystem space statistics (hardcoded: 10GB total, 5GB free) |
+| 19 | FSINFO | `handleFsinfo` | Returns transfer sizes (rtmax/wtmax=1MB, preferred=64KB, mult=4KB), max file size (1TB), time delta (1ms), and properties (symlink + homogeneous + cansettime) |
+| 20 | PATHCONF | `handlePathconf` | Returns path configuration (linkmax=1024, name_max=255, no_trunc=true, chown_restricted=true, case_preserving=true) |
 
-## NFS Protocol Versions
+### Name Resolution
 
-NFS has evolved through several versions:
+| # | Procedure | Handler | Description |
+|---|-----------|---------|-------------|
+| 3 | LOOKUP | `handleLookup` | Resolves a filename within a directory to a file handle. Validates the filename, performs path join, calls `Lookup`, and allocates a handle via `fileMap.Allocate` (which deduplicates by path). |
+| 5 | READLINK | `handleReadlink` | Reads the target of a symbolic link. Validates the node is a symlink before reading. |
 
-| Version | Status | Key Features |
-|---------|--------|--------------|
-| NFSv2   | Legacy | Original protocol, limited file size |
-| NFSv3   | Widely used | Better error handling, larger files, asynchronous writes |
-| NFSv4   | Current | Stateful operation, integrated security, firewall friendliness |
-| NFSv4.1 | Current | Parallel access to servers (pNFS), sessions |
-| NFSv4.2 | Current | Server-side copy, space reservation, sparse files |
+### Data Transfer
 
-ABSNFS currently implements NFSv3, which balances simplicity and functionality.
+| # | Procedure | Handler | Description |
+|---|-----------|---------|-------------|
+| 6 | READ | `handleRead` | Reads data from a file at a given offset. Validates offset+count does not overflow. Rate-limits large reads (>64KB). Returns data with EOF flag and post_op_attr. |
+| 7 | WRITE | `handleWrite` | Writes data to a file. Checks read-only policy. Validates count against server's advertised write size. Always returns FILE_SYNC stable mode with the server's boot-unique write verifier. |
+| 21 | COMMIT | `handleCommit` | Commits previously written data. Returns the write verifier so clients can detect server restarts (which invalidate uncommitted writes). |
 
-## NFS Architecture
+### Object Creation
 
-NFS follows a client-server architecture:
+| # | Procedure | Handler | Description |
+|---|-----------|---------|-------------|
+| 8 | CREATE | `handleCreate` | Creates a regular file. Supports UNCHECKED (mode 0), GUARDED (mode 1), and EXCLUSIVE (mode 2) creation. For EXCLUSIVE, existing files return success (simplified idempotent behavior). New files inherit the caller's effective UID/GID. |
+| 9 | MKDIR | `handleMkdir` | Creates a directory with the specified mode. Applies Chown with the caller's effective UID/GID. |
+| 10 | SYMLINK | `handleSymlink` | Creates a symbolic link. Validates the target path: rejects absolute paths and paths containing ".." components to prevent escape from the export root. Uses Lchown to set ownership without following the link. |
+| 11 | MKNOD | `handleMknod` | Stub: returns `NFSERR_NOTSUPP`. Consumes arguments to prevent stream desync. |
 
-1. **NFS Client**: Mounts remote filesystems and translates file operations into NFS protocol requests
-2. **NFS Server**: Handles requests and performs operations on the underlying filesystem
-3. **RPC Layer**: Remote Procedure Call mechanism that allows clients to invoke procedures on the server
-4. **XDR**: External Data Representation that ensures data compatibility across different architectures
+### Object Removal and Renaming
 
-## NFS Protocol Structure
+| # | Procedure | Handler | Description |
+|---|-----------|---------|-------------|
+| 12 | REMOVE | `handleRemove` | Removes a file from a directory. Validates the parent is a directory. |
+| 13 | RMDIR | `handleRmdir` | Removes a directory. Verifies the target exists and is a directory. Maps "directory not empty" errors to `NFSERR_NOTEMPTY`. |
+| 14 | RENAME | `handleRename` | Renames a file or directory. Validates both source and destination filenames. Returns double wcc_data (one for each parent directory). |
+| 15 | LINK | `handleLink` | Stub: returns `NFSERR_NOTSUPP`. Hard links are not supported. Consumes arguments to prevent stream desync. FSINFO reports FSF3_LINK=0 to advertise this. |
 
-### Protocol Layers
+### Directory Listing
 
-NFS operates as a stack of protocols:
+| # | Procedure | Handler | Description |
+|---|-----------|---------|-------------|
+| 16 | READDIR | `handleReaddir` | Lists directory entries (fileId + name + cookie). Respects the client's `count` limit for reply size. Uses cookie-based pagination. |
+| 17 | READDIRPLUS | `handleReaddirplus` | Like READDIR but also returns full `fattr3` and file handles for each entry, reducing follow-up LOOKUP/GETATTR round trips. Allocates handles for each entry via `fileMap.Allocate`. |
 
-1. **NFS Procedures**: High-level operations like READ, WRITE, LOOKUP
-2. **RPC (Remote Procedure Call)**: Framework for calling remote procedures
-3. **XDR (eXternal Data Representation)**: Data encoding format
-4. **Transport Layer**: Usually TCP or UDP
-5. **Network Layer**: IP protocol
+## Error Reply Formats
 
-### RPC Programs
+Different procedures require different error reply structures per RFC 1813:
 
-NFS relies on several RPC programs:
+| Format | Helper | Used By |
+|--------|--------|---------|
+| status only | `nfsErrorReply` | GETATTR |
+| status + post_op_attr | `nfsErrorWithPostOp` | LOOKUP, ACCESS, READ, READLINK, READDIR, READDIRPLUS, FSSTAT, FSINFO, PATHCONF |
+| status + wcc_data | `nfsErrorWithWcc` | SETATTR, WRITE, CREATE, MKDIR, SYMLINK, MKNOD, REMOVE, RMDIR, COMMIT |
+| status + post_op_attr + wcc_data | `nfsErrorWithPostOpAndWcc` | LINK |
+| status + double wcc_data | `nfsErrorWithDoubleWcc` | RENAME |
 
-1. **MOUNT Protocol (Program 100005)**:
-   - Provides initial file handle for mounting
-   - Manages mount points
-   - Authenticates mount requests
+## MOUNT Protocol
 
-2. **NFS Protocol (Program 100003)**:
-   - Handles actual file operations
-   - Implements core functionality
+The MOUNT protocol (`mount_handlers.go`) handles export discovery and initial
+file handle acquisition. Both MOUNT v1 and v3 are accepted for client compatibility.
 
-3. **NLM Protocol (Program 100021)** (Optional):
-   - Network Lock Manager
-   - Provides file locking services
+| # | Procedure | Description |
+|---|-----------|-------------|
+| 0 | NULL | No-op |
+| 1 | MNT | Mount an export. Validates the mount path, performs a Lookup, allocates the root file handle, and returns it with AUTH_SYS as the supported auth flavor. |
+| 2 | DUMP | Lists active mounts (returns empty list). |
+| 3 | UMNT | Unmount (no-op, consumes the path argument). |
+| 4 | UMNTALL | Unmount all (no-op). |
+| 5 | EXPORT | Lists available exports (returns "/" with no group restrictions). |
 
-4. **NSM Protocol (Program 100024)** (Optional):
-   - Network Status Monitor
-   - Tracks server state for lock recovery
+## RPC Framing
 
-### Portmap/rpcbind
+### Wire Format (RFC 1831)
 
-The portmap service (or rpcbind in newer systems) maps RPC program numbers to port numbers, allowing clients to find NFS services.
+RPC calls and replies are encoded using XDR (External Data Representation):
 
-## NFSv3 Procedures
+- All integers are big-endian, 4-byte aligned.
+- Strings and opaque data are length-prefixed and padded to 4-byte boundaries.
+- File handles are 8-byte opaque values (length prefix + uint64 handle ID).
 
-NFSv3 defines the following key procedures:
-
-### File and Directory Operations
-
-| Procedure    | Description                                       |
-|--------------|---------------------------------------------------|
-| NULL         | No-op, used for testing                           |
-| GETATTR      | Get file attributes                               |
-| SETATTR      | Set file attributes                               |
-| LOOKUP       | Look up filename                                  |
-| ACCESS       | Check access permissions                          |
-| READLINK     | Read from symbolic link                           |
-| READ         | Read from file                                    |
-| WRITE        | Write to file                                     |
-| CREATE       | Create a file                                     |
-| MKDIR        | Create a directory                                |
-| SYMLINK      | Create a symbolic link                            |
-| MKNOD        | Create a special device                           |
-| REMOVE       | Remove a file                                     |
-| RMDIR        | Remove a directory                                |
-| RENAME       | Rename a file or directory                        |
-| LINK         | Create a hard link                                |
-| READDIR      | Read from directory                               |
-| READDIRPLUS  | Extended read from directory                      |
-| FSSTAT       | Get filesystem statistics                         |
-| FSINFO       | Get filesystem information                        |
-| PATHCONF     | Get filesystem parameters                         |
-| COMMIT       | Commit cached data to stable storage              |
-
-## File Handles
-
-File handles are opaque identifiers used by clients to reference files and directories on the server. Key characteristics of file handles:
-
-1. **Opacity**: Clients treat them as opaque data blobs
-2. **Persistence**: Should remain valid as long as the file exists
-3. **Uniqueness**: Uniquely identify files and directories
-4. **Security**: Should not be easily forgeable
-
-In ABSNFS, file handles contain:
-- A unique identifier for the file or directory
-- A generation number to detect stale handles
-- Security information to prevent forgery
-- Additional metadata for efficient lookup
-
-## Attributes
-
-NFS defines a set of file attributes that can be queried and modified:
-
-| Attribute    | Description                                   |
-|--------------|-----------------------------------------------|
-| type         | File type (regular, directory, symlink, etc.) |
-| mode         | File permissions (Unix-style)                 |
-| nlink        | Number of hard links                          |
-| uid          | User ID of owner                              |
-| gid          | Group ID                                      |
-| size         | File size in bytes                            |
-| used         | Space used by file                            |
-| rdev         | Device IDs for special files                  |
-| fsid         | Filesystem ID                                 |
-| fileid       | File ID unique within filesystem              |
-| atime        | Last access time                              |
-| mtime        | Last modification time                        |
-| ctime        | Last status change time                       |
-
-## NFS Data Structures
-
-### File Attributes (fattr3)
-
+An RPC call contains:
 ```
-struct fattr3 {
-    ftype3      type;       /* File type */
-    mode3       mode;       /* Protection mode bits */
-    uint32      nlink;      /* Number of hard links */
-    uid3        uid;        /* User ID of owner */
-    gid3        gid;        /* Group ID of owner */
-    size3       size;       /* File size in bytes */
-    size3       used;       /* Bytes actually used */
-    specdata3   rdev;       /* Device ID */
-    uint64      fsid;       /* Filesystem ID */
-    fileid3     fileid;     /* File ID */
-    nfstime3    atime;      /* Last access time */
-    nfstime3    mtime;      /* Last modification time */
-    nfstime3    ctime;      /* Last status change time */
-};
+XID (4) | msg_type=CALL (4) | RPC version (4) | program (4) |
+version (4) | procedure (4) | credential (flavor + opaque body) |
+verifier (flavor + opaque body) | procedure-specific arguments
 ```
 
-### File System Statistics (fsstat3resok)
-
+An RPC reply contains:
 ```
-struct fsstat3resok {
-    post_op_attr obj_attributes;
-    size3        tbytes;     /* Total filesystem bytes */
-    size3        fbytes;     /* Free filesystem bytes */
-    size3        abytes;     /* Free bytes available to caller */
-    size3        tfiles;     /* Total file slots */
-    size3        ffiles;     /* Free file slots */
-    size3        afiles;     /* Free file slots available to caller */
-    uint32       invarsec;   /* Seconds for which this info is valid */
-};
+XID (4) | msg_type=REPLY (4) | reply_stat (4) |
+[if ACCEPTED: verifier + accept_stat + procedure-specific results]
+[if DENIED: reject_stat + error info]
 ```
 
-## NFS Protocol Flow
+### Record Marking (RFC 1831 Section 10)
 
-### Mount Process
+When `UseRecordMarking` is enabled (required for standard NFS clients), each
+RPC message is wrapped in record marking framing:
 
-1. Client contacts the server's portmap service to find the MOUNT program port
-2. Client sends a MOUNT request for a specific export path
-3. Server checks if the export exists and if the client has permission
-4. Server returns a file handle for the export root
-5. Client can now use this file handle for further NFS operations
+- Each fragment has a 4-byte header: bit 31 = last-fragment flag, bits 0-30 = length.
+- A complete record consists of one or more fragments, with the last fragment
+  having the last-fragment flag set.
+- `RecordMarkingReader` reassembles fragments with a configurable maximum record
+  size (default 1MB) to prevent unbounded memory growth.
+- `RecordMarkingWriter` splits large messages into fragments at `DefaultMaxFragmentSize`
+  (1MB).
 
-### File Access Flow
+### Input Validation
 
-1. Client uses LOOKUP to navigate from export root to desired file
-2. Each successful LOOKUP returns a file handle for the found file/directory
-3. Client uses this file handle in READ/WRITE operations
-4. Server validates the file handle and performs requested operations
-5. Results are returned to the client
+All XDR decoding functions enforce bounds:
 
-### Write Example
+- `MAX_XDR_STRING_LENGTH` (8KB) limits string allocations.
+- `MAX_RPC_AUTH_LENGTH` (400 bytes, per RFC 1831) limits credential/verifier sizes.
+- File handle lengths are capped at 64 bytes (NFS3 maximum).
+- XDR strings reject embedded NUL bytes.
+- Write data is bounded by the server's advertised `TransferSize`.
+- Record marking total size is bounded by `DefaultMaxRecordSize` (1MB).
 
-1. Client issues WRITE request with file handle, offset, data
-2. Server validates file handle
-3. Server checks permissions
-4. Server writes data to file
-5. Server returns status and updated attributes
+## Portmapper
 
-### Attribute Caching
-
-To improve performance, clients can cache file attributes:
-1. Server returns attributes with most operations
-2. Attributes include a recommended cache validity period
-3. Client can reuse cached attributes until they expire
-4. Client must refresh attributes after expiration
-
-## Error Handling
-
-NFS operations return status codes indicating success or specific errors:
-
-| Status Code       | Value | Description                           |
-|-------------------|-------|---------------------------------------|
-| NFS3_OK           | 0     | Success                               |
-| NFS3ERR_PERM      | 1     | Not owner                             |
-| NFS3ERR_NOENT     | 2     | No such file or directory             |
-| NFS3ERR_IO        | 5     | I/O error                             |
-| NFS3ERR_ACCES     | 13    | Permission denied                     |
-| NFS3ERR_EXIST     | 17    | File exists                           |
-| NFS3ERR_NOTDIR    | 20    | Not a directory                       |
-| NFS3ERR_ISDIR     | 21    | Is a directory                        |
-| NFS3ERR_NOSPC     | 28    | No space left on device               |
-| NFS3ERR_ROFS      | 30    | Read-only file system                 |
-| NFS3ERR_STALE     | 70    | Stale file handle                     |
-| NFS3ERR_BADHANDLE | 10001 | Invalid file handle                   |
-| NFS3ERR_SERVERFAULT | 10006 | Server fault (undefined error)      |
-| NFS3ERR_JUKEBOX | 10008 | Server busy, try again (used during policy drain) |
-
-## Security Considerations
-
-NFSv3 has limited security features:
-
-1. **AUTH_NONE**: No authentication
-2. **AUTH_SYS** (or AUTH_UNIX): Basic Unix-style UID/GID authentication
-3. **AUTH_DH** (or AUTH_DES): DES-based authentication (rarely used)
-
-NFSv3 security limitations:
-- No encryption of data
-- Limited authentication options
-- Client IP addresses can be spoofed
-- Root squashing as a basic security feature
-
-## NFS Extensions and Features
-
-Beyond the core protocol, NFS supports several extensions:
-
-1. **WebNFS**: Simplified NFS access through firewalls and for web applications
-2. **NFS-Ganesha**: User-space NFS server implementation
-3. **pNFS** (Parallel NFS): Extension for parallel access to multiple servers
-4. **NFS over RDMA**: Optimized performance using Remote Direct Memory Access
-
-## ABSNFS Implementation Details
-
-ABSNFS implements NFSv3 with these characteristics:
-
-1. **Pure Go Implementation**: No external dependencies on system NFS libraries
-2. **ABSFS Backend**: Uses the ABSFS interface for filesystem operations
-3. **File Handle Mapping**: Maps between NFS file handles and ABSFS paths
-4. **XDR Encoding/Decoding**: Implements XDR encoding/decoding in Go
-5. **RPC Server**: Custom RPC server implementation
-6. **RFC 1813 Compliance**: Correct WCC (Weak Cache Consistency) data encoding, proper error reply formats with post-operation attributes, and XDR padding for all wire protocol structures
-
-## References
-
-For more detailed information about the NFS protocol:
-
-1. [RFC 1813 - NFS Version 3 Protocol Specification](https://tools.ietf.org/html/rfc1813)
-2. [RFC 1094 - NFS Version 2 Protocol Specification](https://tools.ietf.org/html/rfc1094)
-3. [RFC 7530 - NFS Version 4 Protocol](https://tools.ietf.org/html/rfc7530)
-4. [Linux NFS-HOWTO](https://nfs.sourceforge.net/nfs-howto/)
-5. [NFS Illustrated](https://www.oreilly.com/library/view/nfs-illustrated/9780201325706/)
+`StartWithPortmapper` starts a portmapper service (RFC 1833, port 111) that
+registers the NFS program (100003) and MOUNT program (100005) for both v1 and v3.
+Standard NFS clients query the portmapper to discover which port the NFS and
+MOUNT services are running on.

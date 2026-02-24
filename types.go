@@ -1,6 +1,6 @@
 // Package absnfs implements an NFS server adapter for the absfs filesystem interface.
 //
-// This package allows any filesystem that implements the absfs.FileSystem interface
+// This package allows any filesystem that implements the absfs.SymlinkFileSystem interface
 // to be exported as an NFSv3 share over a network. It provides a complete NFS server
 // implementation with support for standard file operations, security features, and
 // performance optimizations.

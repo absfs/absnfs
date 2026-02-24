@@ -1,32 +1,11 @@
-# ABSFS NFS Server
+# absnfs
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/absfs/absnfs.svg)](https://pkg.go.dev/github.com/absfs/absnfs)
 [![Go Report Card](https://goreportcard.com/badge/github.com/absfs/absnfs)](https://goreportcard.com/report/github.com/absfs/absnfs)
 [![CI](https://github.com/absfs/absnfs/actions/workflows/ci.yml/badge.svg)](https://github.com/absfs/absnfs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-This package implements an NFS server adapter for the [absfs](https://github.com/absfs/absfs) filesystem interface. It allows any filesystem that implements the absfs.FileSystem interface to be exported as an NFS share.
-
-## Features
-
-- Export any absfs-compatible filesystem via NFS
-- NFSv3 protocol implementation with comprehensive operation support
-- **TLS/SSL encryption** for secure network communication
-- **Symlink support** (SYMLINK and READLINK operations)
-- Configurable export options (read-only, security, IP restrictions)
-- **Runtime configuration** with safe drain-and-swap for security policy changes
-- File handle management with efficient mapping
-- Error mapping between absfs and NFS error codes
-- Attribute caching for improved performance
-- **Directory caching** for faster READDIR/READDIRPLUS operations
-- **Negative lookup caching** to reduce filesystem load
-- **Memory pressure adaptation** with automatic cache reduction
-- **Rate limiting** and DoS protection
-- Worker pool for concurrent request handling
-- Batch operation processing for optimization
-- **Connection management** with idle timeout and TCP tuning
-- Comprehensive metrics and monitoring
-- **Portmapper/rpcbind** integration for service discovery
+NFSv3 server adapter for [absfs](https://github.com/absfs/absfs) filesystems. Any filesystem implementing `absfs.SymlinkFileSystem` can be exported as a network-accessible NFS share.
 
 ## Installation
 
@@ -34,7 +13,9 @@ This package implements an NFS server adapter for the [absfs](https://github.com
 go get github.com/absfs/absnfs
 ```
 
-## Usage
+Requires Go 1.23 or later.
+
+## Quick Start
 
 ```go
 package main
@@ -47,147 +28,72 @@ import (
 )
 
 func main() {
-    // Create any absfs filesystem
     fs, err := memfs.NewFS()
     if err != nil {
         log.Fatal(err)
     }
 
-    // Create test content
     f, _ := fs.Create("/hello.txt")
     f.Write([]byte("Hello from NFS!"))
     f.Close()
 
-    // Configure NFS export options
-    options := absnfs.ExportOptions{
-        ReadOnly: false,
-        Secure: true,
-        AllowedIPs: []string{"192.168.1.0/24"},
-        Squash: "none",
-    }
-
-    // Create NFS server
-    server, err := absnfs.New(fs, options)
+    server, err := absnfs.New(fs, absnfs.ExportOptions{})
     if err != nil {
         log.Fatal(err)
     }
+    defer server.Close()
 
-    // Export the filesystem
-    if err := server.Export("/export/test", 2049); err != nil {
+    if err := server.Export("/", 2049); err != nil {
         log.Fatal(err)
     }
 
-    // Wait for shutdown signal
-    <-make(chan struct{})
+    select {} // block forever
 }
 ```
 
-## Implementation Details
-
-The package provides:
-
-1. File Handle Management
-   - Unique handle generation
-   - Handle to file mapping
-   - Automatic cleanup
-
-2. NFS Operations
-   - LOOKUP
-   - GETATTR/SETATTR
-   - READ/WRITE
-   - CREATE/REMOVE
-   - RENAME
-   - READDIR
-   - SYMLINK/READLINK (symbolic link support)
-   - MKDIR/RMDIR
-
-3. Security Features
-   - TLS/SSL encryption for secure connections
-   - Read-only mode
-   - IP-based access control
-   - Secure port enforcement
-   - User ID mapping (squash options) with root and all-squash modes
-   - Rate limiting to prevent DoS attacks
-   - Symlink target sanitization
-
-## Running with Privileges
-
-Running an NFS server typically requires elevated privileges because:
-
-1. NFS servers need to modify user IDs and file permissions
-2. Administrative access may be needed for RPC registration
-
-When running in production, use:
+Mount from a client:
 
 ```bash
-# Linux/macOS
-sudo go run main.go
+# macOS
+sudo mount_nfs -o resvport,nolocks,vers=3,tcp,port=2049,mountport=2049 localhost:/ /Volumes/test
 
-# Or
-go build
-sudo ./yourprogram
+# Linux
+sudo mount -t nfs -o vers=3,tcp,port=2049,mountport=2049,nolock localhost:/ /mnt/test
 ```
 
-To use a non-privileged port (above 1024), specify it when exporting:
+## Features
 
-```go
-// Export on port 8049 instead of the standard NFS port 2049
-if err := nfsServer.Export("/export/test", 8049); err != nil {
-    log.Fatal(err)
-}
-```
+- **NFSv3 protocol** -- RFC 1813 operations including SYMLINK/READLINK
+- **TLS encryption** -- optional TLS/mTLS for secure connections
+- **Rate limiting** -- per-IP, per-connection, and global request throttling
+- **Attribute caching** -- LRU cache with configurable TTL
+- **Directory caching** -- optional caching of directory listings
+- **Worker pool** -- concurrent request processing
+- **IP filtering** -- allow/deny lists with CIDR support
+- **UID/GID squashing** -- root, all, or none squash modes
+- **Live reconfiguration** -- tuning and policy options updatable at runtime
+- **Connection management** -- idle timeout and TCP tuning
 
-## Testing
+## NFS Operations
 
-The package includes comprehensive tests that verify:
-- Basic file operations
-- Directory operations
-- Permission handling
-- Error conditions
-- Read-only mode
-- Attribute caching
-
-Run the complete test suite with:
-```bash
-go test -v ./...
-```
-
-For test coverage report:
-```bash
-go test -coverprofile=coverage.out ./...
-go tool cover -html=coverage.out -o coverage.html
-```
+LOOKUP, GETATTR, SETATTR, READ, WRITE, CREATE, REMOVE, RENAME, READDIR, READDIRPLUS, MKDIR, RMDIR, SYMLINK, READLINK, FSINFO, FSSTAT, PATHCONF, ACCESS, COMMIT
 
 ## Documentation
 
-Comprehensive documentation is available in the `docs/` directory:
-
-- [Getting Started](docs/guides/installation.md)
-- [Basic Usage](docs/guides/basic-usage.md)
-- [TLS/SSL Encryption](docs/guides/tls-encryption.md)
-- [Security Configuration](docs/guides/security.md)
-- [Performance Tuning](docs/guides/performance-tuning.md)
+- [Quick Start](docs/guides/quick-start.md)
+- [Configuration](docs/guides/configuration.md)
+- [Security](docs/guides/security.md)
+- [TLS Encryption](docs/guides/tls.md)
+- [Runtime Reconfiguration](docs/guides/runtime-config.md)
 - [API Reference](docs/api/index.md)
-- [Examples](docs/examples/index.md)
-- [Internals](docs/internals/index.md)
+- [Examples](docs/examples/basic-server.md)
 
-## Contributing
+## Testing
 
-Contributions are welcome! Please ensure:
-
-1. Tests are included for new features
-2. Documentation is updated
-3. Code follows Go best practices and the project's coding style
-4. All tests pass before submitting a pull request
-5. Commit messages are clear and descriptive
-
-See our [contributing guide](docs/compatibility/contributing.md) for more details.
+```bash
+go test -race ./...
+```
 
 ## License
 
-This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- The [absfs](https://github.com/absfs/absfs) project for providing the filesystem interface
-- Contributors to the Go NFS implementations that informed this design
+Apache License, Version 2.0 -- see [LICENSE](LICENSE).

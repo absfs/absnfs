@@ -1,143 +1,103 @@
----
-layout: default
-title: Error Codes
----
+# NFS3 Error Codes
 
-# Error Codes
+Defined in `nfs_types.go`. These constants follow RFC 1813 (NFSv3 Protocol Specification).
 
-ABSNFS maps between filesystem errors and NFS protocol error codes. This page documents the NFS error codes that can be returned to clients and how they map to Go error types.
+## Status Constants
 
-## NFS Error Codes
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `NFS_OK` | 0 | Success |
+| `NFSERR_PERM` | 1 | Not owner / permission denied |
+| `NFSERR_NOENT` | 2 | No such file or directory |
+| `NFSERR_IO` | 5 | I/O error |
+| `NFSERR_NXIO` | 6 | No such device or address |
+| `NFSERR_ACCES` | 13 | Access denied |
+| `NFSERR_EXIST` | 17 | File exists |
+| `NFSERR_NODEV` | 19 | No such device |
+| `NFSERR_NOTDIR` | 20 | Not a directory |
+| `NFSERR_ISDIR` | 21 | Is a directory |
+| `NFSERR_INVAL` | 22 | Invalid argument |
+| `NFSERR_FBIG` | 27 | File too large |
+| `NFSERR_NOSPC` | 28 | No space left on device |
+| `NFSERR_ROFS` | 30 | Read-only filesystem |
+| `NFSERR_NAMETOOLONG` | 63 | Filename too long |
+| `NFSERR_NOTEMPTY` | 66 | Directory not empty |
+| `NFSERR_DQUOT` | 69 | Disk quota exceeded |
+| `NFSERR_STALE` | 70 | Stale file handle |
+| `NFSERR_WFLUSH` | 99 | Write cache flushed |
+| `NFSERR_BADHANDLE` | 10001 | Invalid file handle |
+| `NFSERR_NOT_SYNC` | 10002 | Update synchronization mismatch (sattrguard3) |
+| `NFSERR_NOTSUPP` | 10004 | Operation not supported |
+| `NFSERR_JUKEBOX` | 10008 | Server busy, retry later (used during policy drain) |
+| `NFSERR_DELAY` | 10013 | Temporarily busy (rate limit or timeout) |
 
-The NFS protocol defines a set of error codes that are returned to clients. The following table lists the error codes implemented in ABSNFS and their meanings:
+`ACCESS_DENIED` is an alias for `NFSERR_ACCES`.
 
-| NFS Error Code | Value | Description |
-|----------------|-------|-------------|
-| NFS_OK | 0 | Success |
-| NFSERR_PERM | 1 | Not owner |
-| NFSERR_NOENT | 2 | No such file or directory |
-| NFSERR_IO | 5 | I/O error |
-| NFSERR_NXIO | 6 | No such device or address |
-| NFSERR_ACCES | 13 | Permission denied |
-| NFSERR_EXIST | 17 | File exists |
-| NFSERR_NODEV | 19 | No such device |
-| NFSERR_NOTDIR | 20 | Not a directory |
-| NFSERR_ISDIR | 21 | Is a directory |
-| NFSERR_INVAL | 22 | Invalid argument |
-| NFSERR_FBIG | 27 | File too large |
-| NFSERR_NOSPC | 28 | No space left on device |
-| NFSERR_ROFS | 30 | Read-only file system |
-| NFSERR_NAMETOOLONG | 63 | Filename too long |
-| NFSERR_NOTEMPTY | 66 | Directory not empty |
-| NFSERR_DQUOT | 69 | Disk quota exceeded |
-| NFSERR_STALE | 70 | Stale file handle |
-| NFSERR_WFLUSH | 99 | Write cache flushed |
-| NFSERR_BADHANDLE | 10001 | Invalid file handle |
-| NFSERR_NOTSUPP | 10004 | Operation not supported |
-| NFSERR_DELAY | 10013 | Server is temporarily busy (rate limit exceeded) |
+## mapError()
 
-## Error Mapping
-
-ABSNFS maps Go error types to appropriate NFS error codes. The following table shows how common Go errors are mapped:
-
-| Go Error | NFS Error Code | Description |
-|----------|----------------|-------------|
-| nil | NFS_OK | Success |
-| os.ErrNotExist | NFSERR_NOENT | No such file or directory |
-| os.ErrPermission | NFSERR_ACCES | Permission denied |
-| os.ErrExist | NFSERR_EXIST | File exists |
-| os.ErrInvalid | NFSERR_INVAL | Invalid argument |
-| syscall.ENOTEMPTY | NFSERR_NOTEMPTY | Directory not empty |
-| syscall.EISDIR | NFSERR_ISDIR | Is a directory |
-| syscall.ENOTDIR | NFSERR_NOTDIR | Not a directory |
-| syscall.ENAMETOOLONG | NFSERR_NAMETOOLONG | Filename too long |
-| syscall.EROFS | NFSERR_ROFS | Read-only file system |
-| syscall.ENOSPC | NFSERR_NOSPC | No space left on device |
-| *InvalidFileHandleError | NFSERR_BADHANDLE | Invalid file handle |
-| *NotSupportedError | NFSERR_NOTSUPP | Operation not supported |
-
-Any error that doesn't match a specific mapping is mapped to `NFSERR_IO` (I/O error) depending on the context.
-
-## Custom Error Types
-
-ABSNFS defines custom error types to represent specific NFS error conditions:
-
-### InvalidFileHandleError
-
-This error is returned when a client provides a file handle that is invalid or not found in the file handle map.
+Defined in `operations.go`. Converts Go errors to NFS status codes. This is an unexported function used internally by all NFS procedure handlers.
 
 ```go
+func mapError(err error) uint32
+```
+
+### Mapping Table
+
+| Go Error | NFS Status | Notes |
+|----------|------------|-------|
+| `nil` | `NFS_OK` | |
+| `*InvalidFileHandleError` | `NFSERR_BADHANDLE` | Checked via `errors.As` |
+| `*NotSupportedError` | `NFSERR_NOTSUPP` | Checked via `errors.As` |
+| `context.DeadlineExceeded` | `NFSERR_DELAY` | Timeout |
+| `ErrTimeout` | `NFSERR_DELAY` | Package-level timeout sentinel |
+| `os.ErrNotExist`, `syscall.ENOENT` | `NFSERR_NOENT` | |
+| `os.ErrPermission`, `syscall.EACCES`, `syscall.EPERM` | `NFSERR_PERM` | |
+| `os.ErrExist`, `syscall.EEXIST` | `NFSERR_EXIST` | |
+| `os.ErrInvalid` | `NFSERR_INVAL` | |
+| `syscall.ENOTDIR` | `NFSERR_NOTDIR` | |
+| `syscall.EISDIR` | `NFSERR_ISDIR` | |
+| `syscall.ENOSPC` | `NFSERR_NOSPC` | |
+| `syscall.EFBIG` | `NFSERR_FBIG` | |
+| `syscall.ENAMETOOLONG` | `NFSERR_NAMETOOLONG` | |
+| any other error | `NFSERR_IO` | Catch-all |
+
+### Custom Error Types
+
+```go
+// InvalidFileHandleError -> NFSERR_BADHANDLE
 type InvalidFileHandleError struct {
     Handle uint64
     Reason string
 }
-```
 
-### NotSupportedError
-
-This error is returned when a client requests an operation that is not supported by the NFS implementation (e.g., hard links).
-
-```go
+// NotSupportedError -> NFSERR_NOTSUPP
 type NotSupportedError struct {
     Operation string
     Reason    string
 }
 ```
 
-## Error Handling in Custom Filesystems
+Both are checked using `errors.As`, so wrapped errors are matched correctly.
 
-When implementing a custom filesystem for use with ABSNFS, you should use standard Go error types where appropriate:
+### ErrTimeout
 
 ```go
-// Example implementation of a Read method
-func (f *MyFile) Read(p []byte) (n int, err error) {
-    if f.closed {
-        return 0, os.ErrClosed // Will be mapped to NFSERR_IO
-    }
-
-    if !f.readable {
-        return 0, os.ErrPermission // Will be mapped to NFSERR_ACCES
-    }
-
-    // ... read data ...
-
-    return n, nil // Will be mapped to NFS_OK
-}
+var ErrTimeout = errors.New("operation timed out")
 ```
 
-## Example: Client Perspective
+Package-level sentinel returned when an operation exceeds its configured timeout from `TimeoutConfig`. Maps to `NFSERR_DELAY`.
 
-When an NFS client encounters an error, it typically translates the NFS error code to a local error. For example:
+## ACCESS3 Permission Bits
 
-- If a client tries to read a file that doesn't exist, it will receive `NFSERR_NOENT` and typically report "No such file or directory"
-- If a client tries to write to a read-only filesystem, it will receive `NFSERR_ROFS` and typically report "Read-only file system"
-
-## Example: Server Implementation
-
-Here's how error mapping is typically implemented in ABSNFS:
+Used by the NFS ACCESS procedure to check specific permissions on a file:
 
 ```go
-func mapError(err error) uint32 {
-    // Check custom errors first
-    var invalidHandle *InvalidFileHandleError
-    var notSupported *NotSupportedError
-
-    switch {
-    case err == nil:
-        return NFS_OK
-    case errors.As(err, &invalidHandle):
-        return NFSERR_BADHANDLE
-    case errors.As(err, &notSupported):
-        return NFSERR_NOTSUPP
-    case os.IsNotExist(err):
-        return NFSERR_NOENT
-    case os.IsPermission(err):
-        return NFSERR_ACCES
-    case os.IsExist(err):
-        return NFSERR_EXIST
-    // ... other mappings ...
-    default:
-        return NFSERR_IO
-    }
-}
+const (
+    ACCESS3_READ    = 0x0001 // Read data or list directory
+    ACCESS3_LOOKUP  = 0x0002 // Look up name in directory
+    ACCESS3_MODIFY  = 0x0004 // Rewrite existing data or modify directory
+    ACCESS3_EXTEND  = 0x0008 // Write new data or add to directory
+    ACCESS3_DELETE  = 0x0010 // Delete entry from directory
+    ACCESS3_EXECUTE = 0x0020 // Execute file or search directory
+)
 ```

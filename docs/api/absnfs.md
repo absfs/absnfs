@@ -26,7 +26,7 @@ Creates a new NFS server instance. The filesystem must not be nil and must imple
 - Attribute cache (always)
 - Directory cache (if `EnableDirCache` is true)
 - Worker pool (started immediately)
-- Rate limiter (if `EnableRateLimiting` is true, which is the default)
+- Rate limiter (if `EnableRateLimiting` is true)
 - Structured logger (from `LogConfig`, or no-op if nil)
 - Metrics collector
 

@@ -1,33 +1,37 @@
----
-layout: default
-title: Server
----
-
 # Server
 
-The `Server` type is responsible for handling network connections and RPC requests for the NFS protocol.
+The `Server` type manages the NFS server lifecycle: TCP listening, TLS termination, connection tracking, and graceful shutdown.
 
-## Type Definition
+## Types
+
+### ServerOptions
 
 ```go
-type Server struct {
-    // contains filtered or unexported fields
+type ServerOptions struct {
+    Name             string // Server name
+    UID              uint32 // Server UID
+    GID              uint32 // Server GID
+    ReadOnly         bool   // Read-only mode
+    Port             int    // Port to listen on (0 = random port)
+    MountPort        int    // Port for mount daemon (0 = same as NFS port)
+    Hostname         string // Hostname to bind to (default: "localhost")
+    Debug            bool   // Enable debug logging
+    UsePortmapper    bool   // Start portmapper service (requires root for port 111)
+    UseRecordMarking bool   // Use RPC record marking (required for standard NFS clients)
 }
 ```
 
-The `Server` type is not typically created directly by users. Instead, it's created and managed by the `AbsfsNFS` type.
+### Server
 
-## Key Responsibilities
+```go
+type Server struct {
+    // (unexported fields)
+}
+```
 
-The `Server` type is responsible for:
+Holds the listener, handler reference, connection state, and shutdown coordination. The server generates a unique write verifier per boot as required by RFC 1813.
 
-1. **Network Handling**: Listening for and accepting incoming connections
-2. **RPC Protocol**: Decoding and encoding RPC messages
-3. **Request Routing**: Routing RPC requests to appropriate handlers
-4. **Error Handling**: Managing network and protocol errors
-5. **Connection Management**: Handling client connection lifecycles
-
-## Methods
+## Functions
 
 ### NewServer
 
@@ -35,14 +39,14 @@ The `Server` type is responsible for:
 func NewServer(options ServerOptions) (*Server, error)
 ```
 
-Creates a new NFS server with the specified options. The `ServerOptions` type includes:
-- `Name`: Server name
-- `UID`: Server UID
-- `GID`: Server GID
-- `ReadOnly`: Read-only mode
-- `Port`: Port to listen on (default: 2049)
-- `Hostname`: Hostname to bind to (default: "localhost")
-- `Debug`: Enable debug logging
+Creates a new NFS server. Returns an error if `Port` is negative. If `Hostname` is empty, it defaults to `"localhost"`. Port 0 lets the OS assign a random port (useful for testing).
+
+```go
+server, err := absnfs.NewServer(absnfs.ServerOptions{
+    Port:             2049,
+    UseRecordMarking: true,
+})
+```
 
 ### SetHandler
 
@@ -50,7 +54,7 @@ Creates a new NFS server with the specified options. The `ServerOptions` type in
 func (s *Server) SetHandler(handler *AbsfsNFS)
 ```
 
-Sets the filesystem handler for the server. This must be called before calling `Listen()`.
+Sets the `AbsfsNFS` handler for this server. Must be called before `Listen()`. Not safe for concurrent use.
 
 ### Listen
 
@@ -58,7 +62,38 @@ Sets the filesystem handler for the server. This must be called before calling `
 func (s *Server) Listen() error
 ```
 
-Starts listening for incoming connections. The server will listen on the hostname and port specified in `ServerOptions`. If the port is already in use and the default port (2049) was specified, it will automatically try a random port.
+Starts accepting connections. Returns an error if no handler is set. Behavior depends on the handler's `PolicyOptions`:
+
+- If TLS is configured and enabled, creates a TLS listener.
+- Otherwise creates a plain TCP listener.
+
+If `TuningOptions.IdleTimeout` is set, starts a background goroutine that periodically closes idle connections.
+
+Each accepted connection is checked against:
+1. IP allow-list (`PolicyOptions.AllowedIPs`)
+2. Connection limit (`TuningOptions.MaxConnections`)
+
+Connections that pass both checks are dispatched to per-connection handling goroutines. TCP options (keepalive, no-delay, buffer sizes) are applied from `TuningOptions`.
+
+### StartWithPortmapper
+
+```go
+func (s *Server) StartWithPortmapper() error
+```
+
+Starts the NFS server with an embedded portmapper. This is required for standard NFS clients that query portmapper to discover services. Automatically enables record marking. Requires root/administrator privileges for port 111.
+
+Registers:
+- NFS service (program 100003, version 3)
+- MOUNT service (program 100005, versions 1 and 3)
+
+### GetPort
+
+```go
+func (s *Server) GetPort() int
+```
+
+Returns the port the server is listening on. Useful when port 0 was specified to get the OS-assigned port.
 
 ### Stop
 
@@ -66,113 +101,32 @@ Starts listening for incoming connections. The server will listen on the hostnam
 func (s *Server) Stop() error
 ```
 
-Stops the server, closing all active connections and releasing resources. This method waits for all goroutines to finish with a 5-second timeout.
+Gracefully shuts down the server:
 
-## Example Usage
+1. Cancels the server context (signals all goroutines).
+2. Stops the portmapper if running.
+3. Closes the listener to stop accepting new connections.
+4. Closes all active connections.
+5. Waits up to 5 seconds for all goroutines to finish.
 
-The `Server` type is typically used internally by the `AbsfsNFS` type, but can be created directly:
+Returns an error if the 5-second shutdown timeout is exceeded.
 
-```go
-// Create server with options
-serverOpts := absnfs.ServerOptions{
-    Name:     "my-nfs-server",
-    UID:      1000,
-    GID:      1000,
-    Port:     2049,
-    Hostname: "localhost",
-    Debug:    true,
-}
+## Connection Management
 
-server, err := absnfs.NewServer(serverOpts)
-if err != nil {
-    log.Fatal(err)
-}
+The server tracks active connections with per-connection state including last activity time. Connection lifecycle:
 
-// Create filesystem handler
-fs := ... // Your filesystem implementation
-nfsHandler, err := absnfs.New(fs, absnfs.NFSOptions{})
-if err != nil {
-    log.Fatal(err)
-}
+- **Registration**: Each new connection is registered with a `sync.Once`-guarded unregister mechanism to prevent double-cleanup races.
+- **Activity tracking**: Updated on each RPC call read and reply write.
+- **Idle cleanup**: A background loop (when `IdleTimeout > 0`) periodically closes connections whose last activity exceeds the timeout.
+- **Limit enforcement**: When `MaxConnections > 0`, new connections beyond the limit are rejected immediately.
 
-// Set the handler
-server.SetHandler(nfsHandler)
+## Request Dispatch
 
-// Start listening
-if err := server.Listen(); err != nil {
-    log.Fatal(err)
-}
+Each connection runs a loop that:
+1. Reads an RPC call (raw TCP or record-marking framed).
+2. Extracts client IP and builds an `AuthContext`.
+3. Checks the rate limiter (if enabled).
+4. Dispatches to `HandleCall` via the worker pool (if configured) or directly.
+5. Writes the RPC reply.
 
-// Later, stop the server
-if err := server.Stop(); err != nil {
-    log.Printf("Error during shutdown: %v", err)
-}
-```
-
-In most cases, you will use the `AbsfsNFS` type which manages the server lifecycle for you:
-
-```go
-// Create NFS server (this creates and manages a Server internally)
-nfsServer, err := absnfs.New(fs, options)
-if err != nil {
-    log.Fatal(err)
-}
-
-// Export the filesystem (this internally starts the server)
-if err := nfsServer.Export("/export/test", 2049); err != nil {
-    log.Fatal(err)
-}
-
-// Later, stop the server
-if err := nfsServer.Unexport(); err != nil {
-    log.Printf("Error during shutdown: %v", err)
-}
-```
-
-## Implementation Details
-
-The `Server` type handles several complex aspects of the NFS protocol:
-
-### RPC Protocol Support
-
-The server implements the RPC (Remote Procedure Call) protocol, which is the foundation of NFS. This includes:
-
-- XDR (eXternal Data Representation) encoding and decoding
-- RPC message framing
-- RPC authentication
-- Program and procedure dispatching
-
-### Connection Management
-
-The server manages client connections, including:
-
-- Connection establishment and teardown
-- Timeouts and keepalives
-- Connection pooling (for TCP connections)
-- UDP datagram handling
-
-### Concurrency
-
-The server handles concurrent requests from multiple clients by:
-
-- Using a connection pool
-- Processing requests concurrently
-- Ensuring thread safety for shared resources
-
-### Error Handling
-
-The server implements robust error handling for:
-
-- Network errors
-- Protocol decoding errors
-- Handler errors
-- Resource exhaustion
-
-## Performance Considerations
-
-The `Server` type is optimized for performance in several ways:
-
-1. **Connection Pooling**: Reuses connections to reduce overhead
-2. **Buffer Pooling**: Reuses buffers to reduce memory allocations
-3. **Concurrency**: Processes requests concurrently
-4. **Timeout Management**: Implements appropriate timeouts to prevent resource leaks
+The `connIO` interface abstracts framing differences between raw TCP mode (5s timeouts) and record-marking mode (30s timeouts).
