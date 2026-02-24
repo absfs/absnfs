@@ -1016,7 +1016,7 @@ func (h *NFSProcedureHandler) handleFsinfo(body io.Reader, reply *RPCReply, auth
 	binary.Write(&buf, binary.BigEndian, uint32(1048576))       // wtmax
 	binary.Write(&buf, binary.BigEndian, uint32(65536))         // wtpref
 	binary.Write(&buf, binary.BigEndian, uint32(4096))          // wtmult
-	binary.Write(&buf, binary.BigEndian, uint64(8192))          // dtpref
+	binary.Write(&buf, binary.BigEndian, uint32(8192))          // dtpref
 	binary.Write(&buf, binary.BigEndian, uint64(1099511627776)) // maxfilesize
 	binary.Write(&buf, binary.BigEndian, uint32(0))             // time_delta.seconds
 	binary.Write(&buf, binary.BigEndian, uint32(1000000))       // time_delta.nseconds
