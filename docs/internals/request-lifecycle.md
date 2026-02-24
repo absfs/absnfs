@@ -81,7 +81,7 @@ Otherwise, `HandleCall` is invoked directly. Both paths produce an `RPCReply`.
 
 ```go
 if !handler.policyRWMu.TryRLock() {
-    // Policy drain in progress -- return NFS3ERR_JUKEBOX
+    // Policy drain in progress -- return NFSERR_JUKEBOX
 }
 ```
 
@@ -195,7 +195,7 @@ at runtime:
 2. `policyRWMu.Lock()` acquires the write lock. This blocks until all goroutines
    holding read locks (in-flight requests) finish and release them.
 3. While the write lock is held, any new request calling `TryRLock` fails and
-   returns `NFS3ERR_JUKEBOX`, causing clients to retry.
+   returns `NFSERR_JUKEBOX`, causing clients to retry.
 4. The new policy is stored atomically via `n.policy.Store(&snapshot)`.
 5. `policyRWMu.Unlock()` resumes normal request processing under the new policy.
 

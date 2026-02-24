@@ -76,7 +76,7 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 	// Acquire policy read lock. TryRLock fails if a policy update (Lock)
 	// is in progress, causing us to return JUKEBOX so clients retry.
 	if !handler.policyRWMu.TryRLock() {
-		// Policy drain in progress -- return NFS3ERR_JUKEBOX
+		// Policy drain in progress -- return NFSERR_JUKEBOX
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFSERR_JUKEBOX)
 		reply.Data = buf.Bytes()

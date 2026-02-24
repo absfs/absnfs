@@ -18,7 +18,7 @@
 //
 //	fs, _ := memfs.NewFS()
 //	server, _ := absnfs.New(fs, absnfs.ExportOptions{})
-//	server.Export("/export/test")
+//	server.Export("/export/test", 2049)
 //
 // Security Features:
 //   - IP-based access control

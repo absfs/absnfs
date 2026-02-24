@@ -410,7 +410,7 @@ type ExportOptions struct {
 
 	// EnableRateLimiting enables rate limiting and DoS protection
 	// When enabled, the server will limit requests per IP, per connection, and per operation type
-	// Default: true
+	// Default: false
 	EnableRateLimiting bool
 
 	// RateLimitConfig provides detailed rate limiting configuration

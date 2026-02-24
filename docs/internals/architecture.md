@@ -39,7 +39,7 @@ record-marking connections share the same dispatch loop.
 Contains `NFSProcedureHandler.HandleCall`, which is the central dispatch point.
 Responsibilities:
 
-- Acquire the policy read lock (`TryRLock`), returning `NFS3ERR_JUKEBOX` on
+- Acquire the policy read lock (`TryRLock`), returning `NFSERR_JUKEBOX` on
   failure so clients retry during policy drain.
 - Snapshot tuning and policy options for consistent reads within a single request.
 - Validate authentication and apply UID/GID squashing.
