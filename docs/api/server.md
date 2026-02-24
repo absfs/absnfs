@@ -90,7 +90,7 @@ if err != nil {
 
 // Create filesystem handler
 fs := ... // Your filesystem implementation
-nfsHandler, err := absnfs.New(fs, absnfs.NFSOptions{})
+nfsHandler, err := absnfs.New(fs, absnfs.ServerOptions{})
 if err != nil {
     log.Fatal(err)
 }

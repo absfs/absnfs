@@ -149,7 +149,7 @@ When set to `true`, the NFS server performs additional security checks:
 - Validates file paths to prevent directory traversal attacks
 - Performs stricter permission checking
 
-**Default:** `true`
+**Default:** `false`
 
 ### AllowedIPs
 
@@ -173,7 +173,7 @@ Controls how user identities are mapped between NFS clients and the server:
 - `"root"`: Root (UID 0) is mapped to the anonymous user, other users are unchanged
 - `"all"`: All users are mapped to the anonymous user
 
-**Default:** `"root"`
+**Default:** `""` (none -- empty string means no squashing is applied)
 
 ### TransferSize
 
@@ -193,7 +193,7 @@ EnableReadAhead bool
 
 Enables read-ahead buffering for improved sequential read performance. When a client reads a file sequentially, the server will prefetch additional data to reduce latency.
 
-**Default:** `true`
+**Default:** `false`
 
 ### ReadAheadSize
 
@@ -383,7 +383,7 @@ BatchOperations bool
 
 Enables grouping of similar operations for improved performance. When enabled, the server will attempt to process multiple read/write operations together to reduce context switching and improve throughput.
 
-**Default:** `true`
+**Default:** `false`
 
 ### MaxBatchSize
 

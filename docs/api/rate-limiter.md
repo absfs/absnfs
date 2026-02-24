@@ -48,7 +48,7 @@ server, err := absnfs.New(fs, options)
 
 #### PerIPBurstSize
 - **Type**: `int`
-- **Default**: `100`
+- **Default**: `500`
 - **Description**: Burst capacity allowing temporary spikes above the per-IP rate limit
 - **Purpose**: Accommodates legitimate bursty workloads
 
@@ -56,13 +56,13 @@ server, err := absnfs.New(fs, options)
 
 #### PerConnectionRequestsPerSecond
 - **Type**: `int`
-- **Default**: `100`
+- **Default**: `500`
 - **Description**: Maximum requests per second per TCP connection
 - **Purpose**: Prevents single connection from exhausting per-IP quota
 
 #### PerConnectionBurstSize
 - **Type**: `int`
-- **Default**: `10`
+- **Default**: `100`
 - **Description**: Burst capacity for per-connection limits
 - **Purpose**: Allows brief spikes in connection activity
 
@@ -82,7 +82,7 @@ server, err := absnfs.New(fs, options)
 
 #### ReaddirOpsPerSecond
 - **Type**: `int`
-- **Default**: `20`
+- **Default**: `50`
 - **Description**: READDIR operations per second per IP
 - **Purpose**: Prevents directory enumeration attacks
 
@@ -124,12 +124,12 @@ config := absnfs.DefaultRateLimiterConfig()
 // {
 //     GlobalRequestsPerSecond: 10000,
 //     PerIPRequestsPerSecond: 1000,
-//     PerIPBurstSize: 100,
-//     PerConnectionRequestsPerSecond: 100,
-//     PerConnectionBurstSize: 10,
+//     PerIPBurstSize: 500,
+//     PerConnectionRequestsPerSecond: 500,
+//     PerConnectionBurstSize: 100,
 //     ReadLargeOpsPerSecond: 100,
 //     WriteLargeOpsPerSecond: 50,
-//     ReaddirOpsPerSecond: 20,
+//     ReaddirOpsPerSecond: 50,
 //     MountOpsPerMinute: 10,
 //     FileHandlesPerIP: 10000,
 //     FileHandlesGlobal: 1000000,
@@ -165,7 +165,7 @@ func main() {
         log.Fatal(err)
     }
 
-    server.Export("/export/myfs")
+    server.Export("/export/myfs", 2049)
 }
 ```
 
@@ -272,7 +272,7 @@ Requests pass through multiple layers of rate limiting in order:
 3. **Per-Connection Rate Limit**: Checks `PerConnectionRequestsPerSecond` for the specific connection
 4. **Per-Operation Rate Limit**: For specific operations, checks operation-type limits
 
-If any layer rejects the request, it is denied with `NFSERR_JUKEBOX`.
+If any layer rejects the request, it is denied with `NFSERR_DELAY`.
 
 ### Token Bucket Algorithm
 
@@ -288,7 +288,7 @@ Each rate limiter uses a token bucket algorithm:
 - **Refill Rate**: Tokens refill continuously at the configured rate
 - **Maximum Capacity**: Capped at the configured burst size
 - **Request Cost**: Each NFS operation consumes 1 token
-- **Graceful Degradation**: Clients receive `NFSERR_JUKEBOX` and can retry
+- **Graceful Degradation**: Clients receive `NFSERR_DELAY` and can retry
 
 ### Operation-Specific Limiting
 
@@ -320,7 +320,7 @@ Rate limiters are cleaned up automatically:
 
 When rate limit is exceeded:
 
-- **NFS Status**: `NFSERR_JUKEBOX` (error code 10008)
+- **NFS Status**: `NFSERR_DELAY` (error code 10013)
 - **Meaning**: "Server temporarily unable to service request"
 - **Client Behavior**: Clients should retry after a short delay
 - **Metrics**: Counter incremented in `RateLimitExceeded` metric
@@ -411,7 +411,7 @@ type NFSMetrics struct {
 
 ### Clients Getting Rate Limited
 
-**Symptoms**: Clients receive `NFSERR_JUKEBOX` errors frequently
+**Symptoms**: Clients receive `NFSERR_DELAY` errors frequently
 
 **Solutions**:
 1. Check which limit is being hit (global, per-IP, per-connection, or per-operation)

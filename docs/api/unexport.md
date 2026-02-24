@@ -87,21 +87,17 @@ func main() {
 
 When you call `Unexport`:
 
-1. Existing client connections will be closed
-2. Clients with mounted filesystems will experience I/O errors
-3. Clients may see messages like "NFS server not responding" or "Stale NFS handle"
-4. Clients will need to unmount and remount if the service is later restarted
+1. Existing client connections are not actively closed by Unexport
+2. Clients with mounted filesystems will experience stale handle errors on subsequent requests
+3. Clients will need to unmount and remount if the service is later restarted
 
 ## Implementation Details
 
-The `Unexport` method performs several steps:
+The `Unexport` method releases internal resources:
 
-1. Stops the RPC server
-2. Closes all open connections
-3. Releases port bindings
-4. Unregisters from the portmapper service (if applicable)
-5. Cleans up internal resources
-6. Signals to any waiting operations that the server is no longer available
+1. Releases all file handles via `fileMap.ReleaseAll()`
+2. Clears the attribute cache via `attrCache.Clear()`
+3. Clears the read-ahead buffer via `readBuf.Clear()`
 
 ## Best Practices
 

@@ -1,6 +1,6 @@
 // Package absnfs implements an NFS server adapter for the absfs filesystem interface.
 //
-// This package allows any filesystem that implements the absfs.FileSystem interface
+// This package allows any filesystem that implements the absfs.SymlinkFileSystem interface
 // to be exported as an NFSv3 share over a network. It provides a complete NFS server
 // implementation with support for standard file operations, security features, and
 // performance optimizations.
@@ -43,7 +43,7 @@ import (
 )
 
 // Version represents the current version of the absnfs package
-const Version = "1.0.3"
+const Version = "1.0.4"
 
 // NOTE: absfs.SymlinkFileSystem from the absfs package is now the standard interface.
 // The local SymlinkFileSystem interface below is kept for backwards compatibility
@@ -94,7 +94,7 @@ type ExportOptions struct {
 
 	// EnableReadAhead enables read-ahead buffering for improved sequential read performance
 	// When a client reads a file sequentially, the server prefetches additional data
-	// Default: true
+	// Default: false
 	EnableReadAhead bool
 
 	// ReadAheadSize controls the size in bytes of the read-ahead buffer
@@ -190,7 +190,7 @@ type ExportOptions struct {
 	// BatchOperations enables grouping of similar operations for improved performance
 	// When enabled, the server will attempt to process multiple read/write operations
 	// together to reduce context switching and improve throughput
-	// Default: true
+	// Default: false
 	BatchOperations bool
 
 	// MaxBatchSize controls the maximum number of operations that can be included in a single batch
@@ -234,7 +234,7 @@ type ExportOptions struct {
 
 	// EnableRateLimiting enables rate limiting and DoS protection
 	// When enabled, the server will limit requests per IP, per connection, and per operation type
-	// Default: true
+	// Default: true (set automatically when RateLimitConfig is nil)
 	EnableRateLimiting bool
 
 	// RateLimitConfig provides detailed rate limiting configuration

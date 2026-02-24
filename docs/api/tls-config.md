@@ -329,7 +329,7 @@ func main() {
         log.Fatal(err)
     }
 
-    server.Export("/export/secure")
+    server.Export("/export/secure", 2049)
 }
 ```
 

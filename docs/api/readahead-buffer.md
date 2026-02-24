@@ -149,10 +149,9 @@ The buffer adapts its behavior based on observed access patterns:
 
 The `ReadAheadBuffer` is optimized for performance in several ways:
 
-1. **Zero-Copy Design**: Minimizes data copying when possible
+1. **Simple Synchronous Cache**: Stores recently read data and serves it on cache hit
 2. **Buffer Reuse**: Reuses buffer memory to reduce allocations
-3. **Asynchronous Prefetching**: Performs prefetching in background goroutines
-4. **Intelligent Prefetching**: Only prefetches when beneficial
+3. **LRU Eviction**: Evicts least recently used buffers when memory limits are reached
 
 ## Configuration Options
 

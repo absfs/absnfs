@@ -20,7 +20,7 @@ type AbsfsNFS struct {
 ## Constructor
 
 ```go
-func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error)
+func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error)
 ```
 
 Creates a new NFS server adapter for the provided filesystem with the specified options.

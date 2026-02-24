@@ -44,15 +44,9 @@ ABSNFS maps Go error types to appropriate NFS error codes. The following table s
 |----------|----------------|-------------|
 | nil | NFS_OK | Success |
 | os.ErrNotExist | NFSERR_NOENT | No such file or directory |
-| os.ErrPermission | NFSERR_ACCES | Permission denied |
+| os.IsPermission | NFSERR_PERM | Not owner |
 | os.ErrExist | NFSERR_EXIST | File exists |
 | os.ErrInvalid | NFSERR_INVAL | Invalid argument |
-| syscall.ENOTEMPTY | NFSERR_NOTEMPTY | Directory not empty |
-| syscall.EISDIR | NFSERR_ISDIR | Is a directory |
-| syscall.ENOTDIR | NFSERR_NOTDIR | Not a directory |
-| syscall.ENAMETOOLONG | NFSERR_NAMETOOLONG | Filename too long |
-| syscall.EROFS | NFSERR_ROFS | Read-only file system |
-| syscall.ENOSPC | NFSERR_NOSPC | No space left on device |
 | *InvalidFileHandleError | NFSERR_BADHANDLE | Invalid file handle |
 | *NotSupportedError | NFSERR_NOTSUPP | Operation not supported |
 

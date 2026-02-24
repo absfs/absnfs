@@ -10,7 +10,7 @@ The `New` function is the primary entry point for creating a new NFS server adap
 ## Function Signature
 
 ```go
-func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error)
+func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error)
 ```
 
 ## Parameters
@@ -18,15 +18,15 @@ func New(fs absfs.FileSystem, options ExportOptions) (*AbsfsNFS, error)
 ### fs
 
 ```go
-fs absfs.FileSystem
+fs absfs.SymlinkFileSystem
 ```
 
-The filesystem to export. This must be an implementation of the `absfs.FileSystem` interface.
+The filesystem to export. This must be an implementation of the `absfs.SymlinkFileSystem` interface.
 
 Examples of compatible filesystems include:
 - `memfs.FS` (in-memory filesystem)
 - `osfs.FS` (operating system filesystem)
-- Any custom implementation of the `absfs.FileSystem` interface
+- Any custom implementation of the `absfs.SymlinkFileSystem` interface
 
 ### options
 
