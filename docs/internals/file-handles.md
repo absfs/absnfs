@@ -54,8 +54,9 @@ closes it. The handle does not keep a file descriptor open between requests.
    client keeps using, such as the directory it is listing, stays. Eviction
    cleans up path mappings and closes the associated files. Each step is
    amortized O(1): IDs released or retired before the hand reaches them are
-   skipped, and the queue is compacted once they make up most of it.
-   Requests with an evicted handle get `NFSERR_STALE`; the client recovers
+   skipped, and the queue is compacted once they make up most of it. A new
+   handle joins the queue only after the eviction its allocation caused, so
+   that eviction never drops the handle about to be returned. Requests with an evicted handle get `NFSERR_STALE`; the client recovers
    by looking the name up again from a handle it still holds, ultimately the
    mount root.
 
@@ -66,8 +67,10 @@ closes it. The handle does not keep a file descriptor open between requests.
    the exception: it is pinned however it was allocated (`Allocate` or
    `allocateMount`) and even when subdirectory mounts have used up the cap,
    so clients that mounted the export never lose it to eviction. That adds
-   at most one pin, so pins stay bounded at 10% of `maxHandles` plus one. A
-   pinned handle still goes stale when its object is removed or replaced,
+   at most one pin, so pins stay bounded at 10% of `maxHandles` plus one.
+   Pins also never fill the last place in the table, so eviction always has
+   an unpinned handle to drop; this only matters for a `maxHandles` below 3
+   (at 1, nothing is pinned). A pinned handle still goes stale when its object is removed or replaced,
    or on `Release`.
 
 ## Handle IDs Across Restarts

@@ -499,10 +499,11 @@ func TestRootPinnedHowever(t *testing.T) {
 	}
 }
 
-// TestRootPinUnderConcurrency mounts the export root, after subdirectory
-// mounts used up the pin cap, and more subdirectories, and allocates, looks up and releases other handles from many goroutines
-// (run with -race). The root's handle never changes and always resolves,
-// pins stay within the cap plus the root, and the table stays bounded.
+// TestRootPinUnderConcurrency mounts the export root after subdirectory
+// mounts used up the pin cap, then mounts more subdirectories and
+// allocates, looks up and releases other handles from many goroutines (run
+// with -race). The root's handle never changes and always resolves, pins
+// stay within the cap plus the root, and the table stays bounded.
 func TestRootPinUnderConcurrency(t *testing.T) {
 	const limit = 50 // cap of 5
 	fm := newFileHandleMap(limit)
@@ -587,5 +588,90 @@ func TestQuickRestartGivesNewNumbers(t *testing.T) {
 		if first := after.Allocate(&NFSNode{path: "/b"}); first <= last {
 			t.Fatalf("round %d: a map created after another gave out %d, not above its last %d", i, first, last)
 		}
+	}
+}
+
+// TestNewHandleNotEvictedByItsOwnAllocation: when every older handle was
+// used since the eviction hand last passed, the hand clears and requeues
+// them all behind the new handle. A new handle that did not count as used
+// was then reached while eviction still wanted more, and Allocate returned
+// a handle that was already NFS3ERR_STALE.
+func TestNewHandleNotEvictedByItsOwnAllocation(t *testing.T) {
+	const limit = 10
+	fm := newFileHandleMap(limit)
+	var hs []uint64
+	for i := 0; i < limit; i++ {
+		hs = append(hs, fm.Allocate(&NFSNode{path: fmt.Sprintf("/f%d", i)}))
+	}
+	for round := 0; round < 30; round++ {
+		for _, h := range hs {
+			fm.Get(h) // every handle used since the hand last passed
+		}
+		h := fm.Allocate(&NFSNode{path: fmt.Sprintf("/new%d", round)})
+		if _, ok := fm.Get(h); !ok {
+			t.Fatalf("round %d: handle %d just returned by Allocate is already stale", round, h)
+		}
+		if n := fm.Count(); n > limit {
+			t.Fatalf("round %d: %d live handles, want at most %d", round, n, limit)
+		}
+		hs = append(hs, h)
+	}
+}
+
+// TestPinsLeaveRoomAtSmallLimits: pins never take the last place in the
+// table, so at the smallest limits a new handle still survives its own
+// allocation. A root refused a pin for that reason is pinned once a place
+// is free again, when it is allocated or mounted again.
+func TestPinsLeaveRoomAtSmallLimits(t *testing.T) {
+	fm := newFileHandleMap(2) // cap of 1, and one place must stay unpinned
+	a := fm.allocateMount(&NFSNode{path: "/a"})
+	root := fm.allocateMount(&NFSNode{path: "/"})
+	if fm.pinned != 1 {
+		t.Fatalf("%d pinned handles at a limit of 2, want 1", fm.pinned)
+	}
+	for i := 0; i < 5; i++ {
+		h := fm.Allocate(&NFSNode{path: fmt.Sprintf("/f%d", i)})
+		if _, ok := fm.Get(h); !ok {
+			t.Fatalf("handle %d just returned by Allocate is already stale", h)
+		}
+		if n := fm.Count(); n > 2 {
+			t.Fatalf("%d live handles, want at most 2", n)
+		}
+	}
+	if _, ok := fm.Get(a); !ok {
+		t.Error("pinned mount handle was evicted")
+	}
+
+	if _, ok := fm.Get(root); ok {
+		t.Error("root refused a pin survived allocations past a limit of 2")
+	}
+
+	// A live root refused a pin gets one when it is looked up again after
+	// a place was freed.
+	fm = newFileHandleMap(2)
+	a = fm.allocateMount(&NFSNode{path: "/a"})
+	root = fm.Allocate(&NFSNode{path: "/"})
+	if fm.handles[root].pinned {
+		t.Fatal("root pinned into the last place of a table with a limit of 2")
+	}
+	fm.Release(a)
+	if h := fm.Allocate(&NFSNode{path: "/"}); h != root {
+		t.Fatalf("allocating / again got handle %d, want %d", h, root)
+	}
+	if fm.pinned != 1 || !fm.handles[root].pinned {
+		t.Fatalf("live root not pinned once a place was free (%d pinned)", fm.pinned)
+	}
+	for i := 0; i < 5; i++ {
+		fm.Allocate(&NFSNode{path: fmt.Sprintf("/g%d", i)})
+	}
+	if _, ok := fm.Get(root); !ok {
+		t.Error("pinned export root was evicted")
+	}
+
+	one := newFileHandleMap(1) // nothing can be pinned
+	one.allocateMount(&NFSNode{path: "/"})
+	h := one.Allocate(&NFSNode{path: "/f"})
+	if _, ok := one.Get(h); !ok || one.pinned != 0 || one.Count() != 1 {
+		t.Errorf("limit of 1: new handle live %v, %d pinned, %d handles; want true, 0, 1", ok, one.pinned, one.Count())
 	}
 }

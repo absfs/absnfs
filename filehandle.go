@@ -81,7 +81,8 @@ func (fm *FileHandleMap) Allocate(f absfs.File) uint64 {
 // of the limit (at least one) is pinned; past that, MNT handles are
 // ordinary ones. The export root's handle is the exception: it is always
 // pinned, however it was allocated, even past the cap, so a client that
-// mounted the export can always reach it. That adds at most one pin.
+// mounted the export can always reach it. That adds at most one pin. Pins
+// never fill the last place in the table (see pin).
 func (fm *FileHandleMap) allocateMount(f absfs.File) uint64 {
 	return fm.allocate(f, true)
 }
@@ -101,6 +102,9 @@ func (fm *FileHandleMap) allocate(f absfs.File, pin bool) uint64 {
 			e.file = f
 			e.used.Store(true)
 			if pin || root {
+				// A root entry is pinned when it is created unless pins
+				// already filled all but one place in the table; this
+				// pins it once a place is free again.
 				fm.pin(e, root)
 			}
 			return h
@@ -116,20 +120,29 @@ func (fm *FileHandleMap) allocate(f absfs.File, pin bool) uint64 {
 	if pin || root {
 		fm.pin(e, root)
 	}
+	// The new handle joins the clock only after the eviction it caused,
+	// so that eviction cannot pick the handle about to be returned. When
+	// every older handle had been used since the hand last passed, the
+	// hand cleared them all and reached the new one while it still wanted
+	// more, and Allocate handed out a handle that was already stale.
+	fm.evict()
 	if !e.pinned {
 		fm.clock = append(fm.clock, h)
 	}
-	fm.evict()
 	return h
 }
 
 // pin marks e never to be evicted, if fewer than a tenth of the limit (at
 // least one) is pinned or e is the export root's entry, which is pinned
 // regardless. Only the root passes the cap, so at most one more than the
-// cap is pinned. A pinned entry still in the clock is skipped and dropped
-// from it when the hand reaches it. The caller holds fm's lock.
+// cap is pinned. Pins never take the last place in the table either, so
+// eviction always has an unpinned handle other than the one being
+// allocated to drop; that only binds below a limit of 3 (at a limit of 1
+// nothing is pinned). A pinned entry still in the clock is skipped and
+// dropped from it when the hand reaches it. The caller holds fm's lock.
 func (fm *FileHandleMap) pin(e *handleEntry, root bool) {
-	if e.pinned || (!root && fm.pinned >= max(fm.limit()/10, 1)) {
+	limit := fm.limit()
+	if e.pinned || fm.pinned+1 >= limit || (!root && fm.pinned >= max(limit/10, 1)) {
 		return
 	}
 	e.pinned = true

@@ -149,8 +149,15 @@ to the macOS NFS client, which is stricter than Linux's.
   handle), and the handles MNT gives out are pinned and never evicted. At
   most a tenth of the handle limit is pinned, but the export root's handle
   is pinned however it was allocated and even when subdirectory mounts have
-  used up that cap, so a client never has to remount because its root
-  handle was evicted.
+  used up that cap, so a client that mounted the export root never has to
+  remount because that handle was evicted. Subdirectory mounts past the cap
+  get ordinary handles and can still be evicted.
+- A handle could be evicted by its own allocation: when nearly every handle
+  had been used since the eviction hand last passed, the hand cleared them
+  all and reached the new handle while it still had handles to drop, so
+  LOOKUP, CREATE or READDIRPLUS returned a handle that was already
+  `NFS3ERR_STALE`. A new handle now joins the eviction order only after the
+  eviction its allocation caused.
 
 ### Deprecated
 
