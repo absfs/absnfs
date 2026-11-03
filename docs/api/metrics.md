@@ -38,6 +38,15 @@ type NFSMetrics struct {
     NegativeCacheSize    int
     NegativeCacheHitRate float64
 
+    // File handle metrics (see ../internals/file-handles.md)
+    HandleCacheSize        int    // handles cached
+    HandleCacheCapacity    int    // MaxHandles in effect
+    HandleCacheMisses      uint64 // handles resolved without the cache
+    HandleTailWalkFailures uint64 // tail handles no walk resolved (stale)
+    HandleTombstoneFolds   uint64 // tombstone folds (may cause spurious stale)
+    HandleRedirectsDropped uint64 // rename records dropped
+    HandleInflightTimeouts uint64 // answered JUKEBOX: a change in flight outlasted the wait
+
     // Connection metrics
     ActiveConnections   int
     TotalConnections    uint64

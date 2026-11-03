@@ -135,9 +135,11 @@ server's own REMOVEs, RMDIRs and RENAMEs, so the server resolves any handle it
 issued whether or not it is cached (see
 [File Handle System](../internals/file-handles.md)). `MaxHandles` therefore
 bounds memory (about 300 bytes a handle) and the cost of misses (a decode, a
-tag check and a stat), never correctness: a client does not see
+tag check and a stat), not correctness: a client does not see
 `NFS3ERR_STALE` for an object that still exists, however many handles it
-holds. Size it above the number of files and directories clients keep using,
+holds, except in the documented residual cases (handles of paths about 45 or
+more components deep, a tail walk past its caps, a rare spurious STALE after
+the tombstone table folds), each counted in a metric. Size it above the number of files and directories clients keep using,
 so their requests stay cache hits; four `git` workspaces of the Kubernetes
 tree use about 200,000. A smaller value set with `UpdateExportOptions` evicts
 at once. `GetExportOptions` reports the value in effect.

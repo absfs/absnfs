@@ -21,7 +21,7 @@ to the macOS NFS client, which is stricter than Linux's.
   meaning. Fixed at `New`.
 - `NFSMetrics` handle cache counters: `HandleCacheSize`,
   `HandleCacheCapacity`, `HandleCacheMisses`, `HandleTailWalkFailures`,
-  `HandleTombstoneFolds`, `HandleRedirectsDropped`.
+  `HandleTombstoneFolds`, `HandleRedirectsDropped`, `HandleInflightTimeouts`.
 - `cmd/fhgen`, which generates the frozen Huffman table of version 1 handles
   and measures how many paths of a tree fit in a handle.
 - `ExportOptions.DefaultOwner` (`*FileOwner`): the uid/gid reported for files
@@ -46,6 +46,11 @@ to the macOS NFS client, which is stricter than Linux's.
   and checks listing, ownership, symlinks, file operations, locking with
   `locallocks`, removing a large directory while listing it, and a git
   commit.
+- macOS end-to-end file handle tests, run with `ABSNFS_MACOS_MOUNT=1`:
+  `TestMacOSHandlesSurviveEviction` (git in one workspace with a 64-handle
+  cache) and `TestMacOSWorkspacesWarmStatus` (four unionfs workspaces under
+  a switchfs; warm `git status` in the oldest must stay within 3x of the
+  newest).
 - README sections on mounting from macOS as a normal user and on file
   ownership. The recipe uses `locallocks` (with `nolocks`, `go build` fails to
   lock `go.mod`) and `noatime` (without it the macOS client sets the access
@@ -158,13 +163,20 @@ to the macOS NFS client, which is stricter than Linux's.
   keyed tag, the object's type, its path below the export root (Huffman
   coded, or with hashed trailing components when long), and a change-log
   epoch. The server resolves any handle it issued without the table, which
-  is now only a cache, so eviction never reports `NFS3ERR_STALE` for an
-  object that still exists, and the same object keeps the same bytes. A log
-  of the server's own REMOVEs, RMDIRs and RENAMEs (bounded, about 40 MB at
-  most) makes the handle of a removed or replaced object stale and lets a
-  renamed object's handle follow it, including every handle below a renamed
-  directory, in O(1) instead of a scan of the table. Forged, garbled,
-  legacy and empty handles are `NFS3ERR_STALE` and cost no filesystem I/O.
+  is now only a cache, so eviction does not report `NFS3ERR_STALE` for an
+  object that still exists (except in documented residual cases: handles of
+  paths about 45 or more components deep, a tail walk past its caps, a rare
+  spurious STALE after the tombstone table folds, each counted in a metric),
+  and the same object keeps the same bytes. A log of the server's own
+  REMOVEs, RMDIRs and RENAMEs (bounded, about 30 MB, briefly about 58 MB
+  while its oldest records fold) makes the handle of a removed or replaced
+  object stale and lets a renamed object's handle follow it, including every
+  handle below a renamed directory, in O(1) instead of a scan of the table. Forged, garbled,
+  legacy and empty handles are `NFS3ERR_STALE` and cost no filesystem I/O,
+  except a forged tail handle, whose tag is checked at the end of a capped
+  directory walk (at most 64 listings). A handle whose path has a REMOVE,
+  RMDIR or RENAME in flight for over 5 seconds is answered
+  `NFS3ERR_JUKEBOX`, so the client retries, not `NFS3ERR_STALE`.
   See `docs/internals/file-handles.md`.
 - READDIRPLUS replies counted only the size already written against the
   client's `maxcount`, so a long last entry could exceed it; each entry's
@@ -189,6 +201,13 @@ to the macOS NFS client, which is stricter than Linux's.
 - `FileHandleMap.Allocate`, `Get`, `GetOrError` and `Release` are
   deprecated: the `uint64` they use is a handle's first 8 bytes, an
   identifier for logs. Debug logs print handles in hex.
+  `InvalidFileHandleError` keeps only that identifier (`Handle`) and gains
+  no field with the full handle bytes, which `GetOrError`, the only place
+  it is made, does not have.
+- **MOUNT v1 MNT is refused** with `PROG_MISMATCH` (versions 3 to 3). Its
+  reply has a fixed 32-byte `fhandle`, which the new handles do not fit;
+  before, it got a v3-format reply no v1 client could read. NULL, DUMP,
+  UMNT, UMNTALL and EXPORT still answer v1.
 - **Default owner.** Files whose filesystem records no owner (memfs, virtual
   filesystems, Windows) are reported as owned by the user running the server
   rather than by root (0/0), and osfs on unix reports real owners. An export

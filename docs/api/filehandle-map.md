@@ -44,7 +44,10 @@ The cache's capacity when `ExportOptions.MaxHandles` is not set (<= 0).
   (second-chance) algorithm: entries used since the hand last passed get
   another round, others are dropped. A new entry is never evicted by its own
   insertion. Each step is amortized O(1). Eviction costs the next request
-  with the handle a miss, never `NFS3ERR_STALE`.
+  with the handle a miss, not `NFS3ERR_STALE`, except for the residual
+  cases in [File Handle System](../internals/file-handles.md) (an opaque
+  handle of a path about 45 or more components deep resolves only from the
+  cache; a tail walk past its caps).
 - **RENAME** moves the source's cached entry to the destination, so a LOOKUP
   of the new name returns the bytes the client holds. **REMOVE** and
   **RMDIR** drop the removed object's entry.

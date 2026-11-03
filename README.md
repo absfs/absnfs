@@ -256,8 +256,18 @@ removing a large directory while listing it, and a git commit. It is skipped unl
 ABSNFS_MACOS_MOUNT=1 go test -run TestMacOSUserMount -v
 ```
 
-It refuses to run as root, mounts only into a fresh temporary directory with
-`soft` options, and unmounts before stopping its server on every path. The
+The file handle tests mount git workspaces with a handle cache far smaller
+than the handles the client holds; `TestMacOSWorkspacesWarmStatus` serves four
+unionfs workspaces under a switchfs and checks that a warm `git status` in
+the oldest, whose handles were evicted, takes about as long as in the newest:
+
+```bash
+ABSNFS_MACOS_MOUNT=1 go test -run 'TestMacOSHandles|TestMacOSWorkspaces' -v
+```
+
+These tests refuse to run as root, mount only into a fresh temporary
+directory with `soft` options, and unmount before stopping their server on
+every path. The
 older `integration` build tag tests use `sudo` and `/Volumes`.
 
 ## License

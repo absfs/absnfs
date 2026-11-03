@@ -6,8 +6,13 @@ v1.2.0 an absnfs handle locates its object by path and is checked by a keyed
 tag and a server-side change log, so the server can resolve any handle it
 issued without remembering it. The in-memory `FileHandleMap` is only a cache:
 evicting an entry costs one decode, one HMAC and one `Lstat` the next time
-the handle is used, never an `NFS3ERR_STALE` for an object that still
-exists.
+the handle is used, not an `NFS3ERR_STALE` for an object that still exists.
+The exceptions are the residual cases below, each counted in a metric: an
+opaque handle (paths about 45 or more components deep, never seen in a
+measured tree) resolves only from the cache; a tail walk that exceeds its
+caps (`HandleTailWalkFailures`); and, after the tombstone table folds
+(`HandleTombstoneFolds`) or a rename record is dropped
+(`HandleRedirectsDropped`), a rare spurious STALE.
 
 Before v1.2.0 handles were 8-byte numbers that meant something only while
 they sat in an in-memory table of at most 100,000 entries. A client that held
@@ -76,12 +81,12 @@ table needs a new handle version.
 
 Measured with `go run ./cmd/fhgen -measure` (g = 0):
 
-| Tree                                   | Paths   | Inline | Raw bytes would fit |
-| -------------------------------------- | ------- | ------ | ------------------- |
-| Kubernetes (held out of the corpus)    | 37,846  | 81.4%  | 40.3%               |
-| Linux                                  | 71,475  | 99.8%  | 84.1%               |
-| Go module cache                        | 17,788  | 80.7%  | 32.3%               |
-| JavaScript `node_modules`              | 26,091  | 35.3%  | 4.8%                |
+| Tree                                | Paths  | Inline | Raw bytes would fit |
+| ----------------------------------- | ------ | ------ | ------------------- |
+| Kubernetes (held out of the corpus) | 37,846 | 81.4%  | 40.3%               |
+| Linux                               | 71,475 | 99.8%  | 84.1%               |
+| Go module cache                     | 17,788 | 80.7%  | 32.3%               |
+| JavaScript `node_modules`           | 26,091 | 35.3%  | 4.8%                |
 
 Paths that do not fit inline use the tail kind; the opaque kind needs paths
 about 45 or more components deep and has not occurred in any measured tree.
@@ -94,8 +99,10 @@ an alias. Every parse or verification failure is `NFS3ERR_STALE`: an empty
 handle, a legacy 8-byte handle (version bits 00), an unknown version, a
 reserved bit, a tag mismatch. `NFS3ERR_BADHANDLE` is not used, because
 clients recover from STALE by looking the name up again. A length above 64
-is `GARBAGE_ARGS`, as before. The tag is compared with `hmac.Equal` before any
-filesystem I/O.
+is `GARBAGE_ARGS`, as before. For inline handles the tag is compared with
+`hmac.Equal` before any filesystem I/O. A tail handle's tag covers the full
+path, which only the walk recovers, so a forged tail handle costs the
+listings of its walk before it is found stale (see Tail walk).
 
 ## The Change Log
 
@@ -103,12 +110,16 @@ filesystem I/O.
 
 - **Tombstones**: `tomb(p)` is the newest epoch at which `p` was removed,
   replaced or renamed away. They live in an open-addressing table keyed by a
-  64-bit keyed hash of the path (16 bytes a slot), at most 2^20 entries. When
-  it is full the oldest tenth folds into a coarse array of 2^20 slots (8 MiB,
-  made on the first fold), each the maximum epoch folded into it. Hash
-  collisions and folds can only raise an epoch, so they can only cause a
-  spurious STALE, never a wrong object. The root is never looked up, since it
-  cannot change.
+  64-bit keyed hash of the path (16 bytes a slot), at most 786,432 entries
+  (3/4 of 2^20 slots). When it is full the oldest tenth folds into a coarse
+  array of 2^20 slots (8 MiB, made on the first fold), each the maximum epoch
+  folded into it. A lookup returns the larger of a path's exact tombstone and
+  its coarse slot, and recording a tombstone never lowers either, so
+  replaying a compacted journal (the coarse array, then the exact entries,
+  then the rename records, whose tombstones are older) gives back what the
+  server saw. Hash collisions and folds can only raise an epoch, so they can
+  only cause a spurious STALE, never a wrong object. The root is never looked
+  up, since it cannot change.
 - **Rename records**: for each renamed source path, the last 4 renames
   `{E, dst, from}`, where `from` is the source's effective epoch just before.
   An LRU of 16,384 source paths. Dropping a record leaves the tombstone, so
@@ -119,11 +130,11 @@ filesystem I/O.
 After a successful filesystem change (a failed one records nothing, so a
 failed RMDIR of a non-empty directory, which git does, stales nothing):
 
-| Operation      | Records                                                       |
-| -------------- | ------------------------------------------------------------- |
-| REMOVE, RMDIR  | `tomb(p) = E`                                                 |
-| RENAME a to b  | `tomb(a) = tomb(b) = E`; rename record `a: {E, b, eff(a)}`    |
-| CREATE, MKDIR  | nothing: a remove before a recreate already recorded it       |
+| Operation     | Records                                                    |
+| ------------- | ---------------------------------------------------------- |
+| REMOVE, RMDIR | `tomb(p) = E`                                              |
+| RENAME a to b | `tomb(a) = tomb(b) = E`; rename record `a: {E, b, eff(a)}` |
+| CREATE, MKDIR | nothing: a remove before a recreate already recorded it    |
 
 **Validation** of a handle for `p` issued at `g` (at most 8 hops):
 
@@ -148,6 +159,13 @@ a directory carries every descendant's handle along in O(1).
 the filesystem call and commit afterwards. Validating or issuing a handle on
 a path whose chain has a change in flight waits for the commit (at most 5
 seconds); an atomic counter keeps the common case, nothing in flight, free.
+A resolution still waiting after 5 seconds (a large directory rename on a
+slow backend, a unionfs copy-up) is answered `NFS3ERR_JUKEBOX`, so the
+client retries, and counted in `HandleInflightTimeouts`; it is not
+`NFS3ERR_STALE`, since the object may well still exist, nor is it
+validated against the state before the change, since the filesystem may
+already have changed. Issuing a handle after the wait uses the epoch
+before the change, which the change then stales or redirects.
 Resolution reads a sequence number before validating and checks it again
 after its stat, so a remove and a recreate that race a resolution make it
 validate again rather than return the new object.
@@ -172,8 +190,13 @@ changes the directory or after `AttrCacheTimeout`), depth first with
 backtracking; every complete candidate is checked against the full 64-bit tag.
 The walk also tries names renamed away from a directory (they have rename
 records) and lists a renamed directory at its new path. One walk costs at
-most 32 listings and 256 tag checks; it is retried once with fresh listings,
-then the handle is stale (counted in `HandleTailWalkFailures`).
+most 32 listings and 256 tag checks; if it used any cached listing it is
+retried once with fresh ones, then the handle is stale (counted in
+`HandleTailWalkFailures`). Since the tag is checked only at the end of the
+walk, a forged tail handle (no key needed) makes the server list the
+directories its prefix and hashes lead to, at most 64 listings, before it is
+stale. That is the accepted residual: the caps bound it, and the rate
+limiter bounds the requests.
 
 **Issue** (LOOKUP, READDIRPLUS, CREATE, MKDIR, SYMLINK, MNT): if the cache
 holds bytes for the path that still validate to it, those bytes are returned;
@@ -226,19 +249,24 @@ object. For the same reason the key is not an option, and is never logged.
   clear through LOOKUP and READDIR.
 - Forging a handle needs `K_tag` (about 2^63 online attempts per guess at the
   tag). A tampered inline handle costs no filesystem I/O; a tampered tail
-  handle costs at most one capped walk, also bounded by the rate limiter.
+  handle costs at most two capped walks (64 listings), also bounded by the
+  rate limiter.
 - The journal holds virtual paths, mode 0600. AUTH_SYS trust and the
   per-operation checks are unchanged: holding a handle is not authorization.
 
 ## Memory and CPU
 
-| Structure            | Bound                                   |
-| -------------------- | --------------------------------------- |
-| Handle cache         | `MaxHandles` x ~300 B (30 MB at 100k)   |
-| Tombstones           | 2^20 x 16 B slots, about 24 MiB at most |
-| Coarse array         | 8 MiB, made on the first fold           |
-| Rename records       | 16,384 paths, about 5 MB                |
-| Directory listings   | 1,024 directories                       |
+| Structure             | Bound                                                         |
+| --------------------- | ------------------------------------------------------------- |
+| Handle cache          | `MaxHandles` x ~300 B (30 MB at 100k)                         |
+| Tombstones            | 2^20 x 16 B slots, 16 MiB at most                             |
+| Coarse array          | 8 MiB, made on the first fold                                 |
+| Rename records        | 16,384 paths, about 5 MB                                      |
+| Directory listings    | 1,024 directories                                             |
+| A fold, while it runs | about 28 MiB more (a sorted copy of the entries, a new table) |
+
+The change log therefore stays under about 30 MB, briefly about 58 MB
+during a fold.
 
 Encoding a handle costs one HMAC (about 0.35 us with the Huffman coding);
 decoding and verifying one about 0.9 us; a miss adds the stat a GETATTR does
@@ -256,4 +284,13 @@ version bits leave room for three future formats; decoders keep version 1.
 `FileHandleMap`'s uint64 methods (`Allocate`, `Get`, `GetOrError`, `Release`)
 remain as deprecated shims: the identifier is a handle's first 8 bytes, and
 no usable `FileHandleMap` can be made outside the package anyway.
-`InvalidFileHandleError.Handle` is kept. Debug logs print handles in hex.
+`InvalidFileHandleError.Handle` is kept. The design proposed adding a `Raw
+[]byte` field with the full handle; it was left out, because the only place
+the error is made, `GetOrError`, has only the 8-byte identifier, and the
+NFS handlers answer a bad handle with `NFS3ERR_STALE` without making the
+error. Debug logs print handles in hex.
+
+`MOUNT` version 1 `MNT` is answered `PROG_MISMATCH` (versions 3 to 3): its
+reply carries a fixed 32-byte `fhandle`, which a 10 to 64 byte handle does
+not fit, and absnfs serves NFSv3 only. The other MOUNT v1 procedures, whose
+replies are the same in v3, still answer.
