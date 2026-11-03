@@ -1,5 +1,7 @@
 github.com/absfs/absfs v1.0.0 h1:T+OoA3wbDimdMXt5y2IpGss1qBHF9UbK0XfxXwCyu/c=
 github.com/absfs/absfs v1.0.0/go.mod h1:30jxoFsix2CEDiZdsZD6KCOm6F+SCO/JVK3CFrj1SVo=
+github.com/absfs/basefs v1.0.0 h1:ZDDf80GUE7SwprGCshI68HYRgVI9gY2Fh0fLZkiq5lw=
+github.com/absfs/basefs v1.0.0/go.mod h1:vGfYlU0J/Rmryx/RHWtftY6TfdiOuAhgPNEPbJaoWMo=
 github.com/absfs/cachefs v1.0.0 h1:pHsf6YRN59JrE7Ojf7fWafMrBl+X5D7MWR7Ynqu3d1Y=
 github.com/absfs/cachefs v1.0.0/go.mod h1:UBwYoFUe+p6u7g+v/KKgwKmYp+rvQCaVUIH4qLHQPtQ=
 github.com/absfs/corfs v1.0.0 h1:MvTOEE4YgKb5UihEb8poWg3Vn79ReShR3H1/exbfCig=
