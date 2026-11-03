@@ -62,8 +62,13 @@ closes it. The handle does not keep a file descriptor open between requests.
 4. **Pinning**: the handles MNT gives out (`allocateMount`) are pinned and
    never evicted, so a client can always look names up again from its
    mount's root. At most 10% of `maxHandles` (at least one) is pinned; MNT
-   handles past that are ordinary. A pinned handle still goes stale when its
-   object is removed or replaced, or on `Release`.
+   handles past that are ordinary. The export root's handle (path `/`) is
+   the exception: it is pinned however it was allocated (`Allocate` or
+   `allocateMount`) and even when subdirectory mounts have used up the cap,
+   so clients that mounted the export never lose it to eviction. That adds
+   at most one pin, so pins stay bounded at 10% of `maxHandles` plus one. A
+   pinned handle still goes stale when its object is removed or replaced,
+   or on `Release`.
 
 ## Handle IDs Across Restarts
 

@@ -212,9 +212,10 @@ gid; a server not running as root can only give them its own. An UNCHECKED
   1970 until NTP syncs, counts as set back). A client holding a handle from
   before a restart, its mount's root included, gets `NFS3ERR_STALE` and must
   remount. The server keeps at most 100,000 handles and evicts the ones not
-  used recently, never the handles MNT gave out; an evicted handle reports
-  `NFS3ERR_STALE`, and the client recovers by looking the name up again
-  from a handle it still holds.
+  used recently, never the export root's handle or the handles MNT gave out
+  (up to a tenth of the limit; the root is kept regardless); an evicted
+  handle reports `NFS3ERR_STALE`, and the client recovers by looking the
+  name up again from a handle it still holds.
 - **Changes made behind the server's back are seen after a delay.** absnfs
   caches attributes for `AttrCacheTimeout` (5s by default), and, when
   enabled, misses for `NegativeCacheTimeout` and listings for

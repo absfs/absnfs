@@ -146,7 +146,11 @@ to the macOS NFS client, which is stricter than Linux's.
   handle, which MNT gives out first, was the first evicted even while the
   client was using it. Eviction now drops handles not used recently (clock
   algorithm, amortized O(1) per allocation instead of a sort of every live
-  handle), and the handles MNT gives out are pinned and never evicted.
+  handle), and the handles MNT gives out are pinned and never evicted. At
+  most a tenth of the handle limit is pinned, but the export root's handle
+  is pinned however it was allocated and even when subdirectory mounts have
+  used up that cap, so a client never has to remount because its root
+  handle was evicted.
 
 ### Deprecated
 

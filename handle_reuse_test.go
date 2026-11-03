@@ -395,6 +395,169 @@ func TestPinnedHandles(t *testing.T) {
 	}
 }
 
+// TestExportRootPinnedPastCap: subdirectory mounts that use up the pin cap
+// do not leave the export root evictable. A client mounts /a (taking the
+// one pin a limit of 10 allows), another mounts /, and lookups fill the
+// table well past the limit: the root handle still works, the table stays
+// bounded, and handles nobody uses are still evicted. Before the root was
+// exempt from the cap, its handle was evicted and the client got
+// NFS3ERR_STALE until it remounted.
+func TestExportRootPinnedPastCap(t *testing.T) {
+	mfs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mfs.Mkdir("/a", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const files = 40
+	for i := 0; i < files; i++ {
+		f, err := mfs.Create(fmt.Sprintf("/a/f%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+	}
+	nfs, conn := exportedServer(t, mfs)
+	nfs.fileMap.Lock()
+	nfs.fileMap.maxHandles = 10
+	nfs.fileMap.Unlock()
+
+	xid := uint32(1)
+	subFH, _ := mountHandle(t, conn, xid, "/a")
+	xid++
+	rootFH, _ := mountHandle(t, conn, xid, "/")
+	var first []byte
+	for i := 0; i < files; i++ {
+		xid++
+		st, fh := lookupHandle(t, conn, xid, subFH, fmt.Sprintf("f%d", i))
+		if st != NFS_OK {
+			t.Fatalf("LOOKUP f%d: status %d", i, st)
+		}
+		if i == 0 {
+			first = fh
+		}
+	}
+	if n := nfs.fileMap.Count(); n > 10 {
+		t.Errorf("%d live handles, want at most the limit of 10", n)
+	}
+	nfs.fileMap.RLock()
+	pinned := nfs.fileMap.pinned
+	nfs.fileMap.RUnlock()
+	if pinned != 2 {
+		t.Errorf("%d pinned handles, want 2 (the cap of 1 plus the export root)", pinned)
+	}
+
+	xid++
+	if st := getattrStatus(t, conn, xid, rootFH); st != NFS_OK {
+		t.Errorf("GETATTR of the export root after %d lookups: status %d, want NFS_OK", files, st)
+	}
+	xid++
+	if st, _ := lookupHandle(t, conn, xid, rootFH, "a"); st != NFS_OK {
+		t.Errorf("LOOKUP a from the export root: status %d, want NFS_OK", st)
+	}
+	xid++
+	if st := getattrStatus(t, conn, xid, subFH); st != NFS_OK {
+		t.Errorf("GETATTR of the /a mount handle: status %d, want NFS_OK", st)
+	}
+	xid++
+	if st := getattrStatus(t, conn, xid, first); st != NFSERR_STALE {
+		t.Errorf("GETATTR of the first file's handle: status %d, want NFSERR_STALE (evicted)", st)
+	}
+}
+
+// TestRootPinnedHowever: the export root's handle is pinned however it is
+// allocated, past the cap, and only once; other paths still respect the
+// cap, and a released root frees its pin.
+func TestRootPinnedHowever(t *testing.T) {
+	fm := newFileHandleMap(20) // cap of 2
+	fm.allocateMount(&NFSNode{path: "/m1"})
+	fm.allocateMount(&NFSNode{path: "/m2"})
+	over := fm.allocateMount(&NFSNode{path: "/m3"}) // past the cap: ordinary
+	root := fm.Allocate(&NFSNode{path: "/"})        // not via MNT, still pinned
+	if h := fm.allocateMount(&NFSNode{path: "/"}); h != root {
+		t.Fatalf("mounting / got handle %d, want the existing %d", h, root)
+	}
+	if fm.pinned != 3 {
+		t.Errorf("%d pinned handles, want 3 (the cap of 2 plus the root)", fm.pinned)
+	}
+	for i := 0; i < 200; i++ {
+		fm.Allocate(&NFSNode{path: fmt.Sprintf("/f%d", i)})
+		if n := fm.Count(); n > 20 {
+			t.Fatalf("%d live handles after %d allocations, want at most 20", n, i+1)
+		}
+	}
+	if _, ok := fm.Get(root); !ok {
+		t.Error("export root's handle was evicted")
+	}
+	if _, ok := fm.Get(over); ok {
+		t.Error("mount handle past the cap was never evicted")
+	}
+	fm.Release(root)
+	if fm.pinned != 2 {
+		t.Errorf("%d pinned handles after releasing the root, want 2", fm.pinned)
+	}
+}
+
+// TestRootPinUnderConcurrency mounts the export root, after subdirectory
+// mounts used up the pin cap, and more subdirectories, and allocates, looks up and releases other handles from many goroutines
+// (run with -race). The root's handle never changes and always resolves,
+// pins stay within the cap plus the root, and the table stays bounded.
+func TestRootPinUnderConcurrency(t *testing.T) {
+	const limit = 50 // cap of 5
+	fm := newFileHandleMap(limit)
+	for i := 0; i < limit/10; i++ { // use up the cap before the root mounts
+		fm.allocateMount(&NFSNode{path: fmt.Sprintf("/early%d", i)})
+	}
+	root := fm.allocateMount(&NFSNode{path: "/"})
+	const workers, perWorker = 8, 500
+	var wg sync.WaitGroup
+	errs := make(chan string, workers)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				h := fm.Allocate(&NFSNode{path: fmt.Sprintf("/w%d/f%d", w, i)})
+				switch {
+				case i%10 == 0:
+					fm.allocateMount(&NFSNode{path: fmt.Sprintf("/w%d/m%d", w, i)})
+				case i%10 == 1:
+					fm.Release(h)
+				case i%100 == 99:
+					// Use the root rarely, so a root that is not pinned
+					// would be evicted in between, and look it up both
+					// ways a client does: with its handle and by MNT.
+					if f, ok := fm.Get(root); !ok || f.Name() != "/" {
+						errs <- fmt.Sprintf("export root's handle %d stopped resolving to / after %d allocations", root, i+1)
+						return
+					}
+					if r := fm.allocateMount(&NFSNode{path: "/"}); r != root {
+						errs <- fmt.Sprintf("mounting / got handle %d, want %d", r, root)
+						return
+					}
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Error(e)
+	}
+	if _, ok := fm.Get(root); !ok {
+		t.Error("export root's handle was evicted")
+	}
+	if n := fm.Count(); n > limit {
+		t.Errorf("%d live handles, want at most the limit of %d", n, limit)
+	}
+	fm.RLock()
+	defer fm.RUnlock()
+	if fm.pinned > limit/10+1 {
+		t.Errorf("%d pinned handles, want at most %d (the cap plus the root)", fm.pinned, limit/10+1)
+	}
+}
+
 // TestEvictionClockStaysSmall: handles released or retired before the
 // clock reaches them do not pile up in it, with or without eviction.
 func TestEvictionClockStaysSmall(t *testing.T) {

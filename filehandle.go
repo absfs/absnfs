@@ -4,8 +4,8 @@
 // and evicting file handles. Handle numbers are never reused, so a handle
 // a client still holds after it was released or evicted reports
 // NFS3ERR_STALE instead of reaching another object. When the handle limit
-// is reached, the handles least recently used are evicted; the handles
-// MNT gave out are pinned and never evicted.
+// is reached, the handles least recently used are evicted; the export
+// root's handle and the handles MNT gave out are pinned and never evicted.
 package absnfs
 
 import (
@@ -43,7 +43,7 @@ func startHandleCounter() *atomic.Uint64 {
 type handleEntry struct {
 	file   absfs.File
 	used   atomic.Bool // set by lookups, cleared as the eviction clock passes
-	pinned bool        // never evicted (handles given out by MNT)
+	pinned bool        // never evicted (the export root, handles given out by MNT)
 }
 
 // newFileHandleMap returns an empty FileHandleMap that holds at most
@@ -79,7 +79,9 @@ func (fm *FileHandleMap) Allocate(f absfs.File) uint64 {
 // eviction never drops it, since a client that loses its mount's root
 // handle cannot look anything up again without remounting. At most a tenth
 // of the limit (at least one) is pinned; past that, MNT handles are
-// ordinary ones.
+// ordinary ones. The export root's handle is the exception: it is always
+// pinned, however it was allocated, even past the cap, so a client that
+// mounted the export can always reach it. That adds at most one pin.
 func (fm *FileHandleMap) allocateMount(f absfs.File) uint64 {
 	return fm.allocate(f, true)
 }
@@ -90,6 +92,7 @@ func (fm *FileHandleMap) allocate(f absfs.File, pin bool) uint64 {
 
 	node, isNode := f.(*NFSNode)
 	isNode = isNode && node.path != ""
+	root := isNode && node.path == "/"
 	if isNode {
 		if h, found := fm.pathHandles[node.path]; found {
 			// Update the file reference (may have newer attrs) and return
@@ -97,8 +100,8 @@ func (fm *FileHandleMap) allocate(f absfs.File, pin bool) uint64 {
 			e := fm.handles[h]
 			e.file = f
 			e.used.Store(true)
-			if pin {
-				fm.pin(e)
+			if pin || root {
+				fm.pin(e, root)
 			}
 			return h
 		}
@@ -110,8 +113,8 @@ func (fm *FileHandleMap) allocate(f absfs.File, pin bool) uint64 {
 	if isNode {
 		fm.pathHandles[node.path] = h
 	}
-	if pin {
-		fm.pin(e)
+	if pin || root {
+		fm.pin(e, root)
 	}
 	if !e.pinned {
 		fm.clock = append(fm.clock, h)
@@ -120,11 +123,13 @@ func (fm *FileHandleMap) allocate(f absfs.File, pin bool) uint64 {
 	return h
 }
 
-// pin marks e never to be evicted, if fewer than a tenth of the limit is
-// pinned. A pinned entry still in the clock is skipped and dropped from it
-// when the hand reaches it. The caller holds fm's lock.
-func (fm *FileHandleMap) pin(e *handleEntry) {
-	if e.pinned || fm.pinned >= max(fm.limit()/10, 1) {
+// pin marks e never to be evicted, if fewer than a tenth of the limit (at
+// least one) is pinned or e is the export root's entry, which is pinned
+// regardless. Only the root passes the cap, so at most one more than the
+// cap is pinned. A pinned entry still in the clock is skipped and dropped
+// from it when the hand reaches it. The caller holds fm's lock.
+func (fm *FileHandleMap) pin(e *handleEntry, root bool) {
+	if e.pinned || (!root && fm.pinned >= max(fm.limit()/10, 1)) {
 		return
 	}
 	e.pinned = true
