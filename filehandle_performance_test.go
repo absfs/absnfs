@@ -8,8 +8,9 @@ import (
 	"github.com/absfs/memfs"
 )
 
-// TestFileHandleReuse verifies that released handles are reused efficiently
-func TestFileHandleReuse(t *testing.T) {
+// TestFileHandleNumbersNotReused verifies that released handle numbers are
+// not given out again: allocations after a release continue the sequence.
+func TestFileHandleNumbersNotReused(t *testing.T) {
 	fs, err := memfs.NewFS()
 	if err != nil {
 		t.Fatalf("Failed to create memfs: %v", err)
@@ -24,9 +25,8 @@ func TestFileHandleReuse(t *testing.T) {
 
 	// Create file handle map
 	fm := &FileHandleMap{
-		handles:     make(map[uint64]absfs.File),
-		nextHandle:  1,
-		freeHandles: NewUint64MinHeap(),
+		handles:    make(map[uint64]absfs.File),
+		nextHandle: 1,
 	}
 
 	// Allocate handles 1-10
@@ -51,36 +51,24 @@ func TestFileHandleReuse(t *testing.T) {
 	fm.Release(5)
 	fm.Release(7)
 
-	// Allocate 3 new handles - should reuse 3, 5, 7 (in ascending order)
-	newHandles := make([]uint64, 3)
-	for i := 0; i < 3; i++ {
+	// Allocate 3 new handles: they continue at 11, not 3, 5, 7
+	for i, want := range []uint64{11, 12, 13} {
 		f, err := fs.OpenFile("/test.txt", 0, 0)
 		if err != nil {
 			t.Fatalf("Failed to open file: %v", err)
 		}
-		newHandles[i] = fm.Allocate(f)
-	}
-
-	// Verify handles are reused in order: 3, 5, 7
-	expected := []uint64{3, 5, 7}
-	for i, h := range newHandles {
-		if h != expected[i] {
-			t.Errorf("Expected reused handle %d, got %d", expected[i], h)
+		if h := fm.Allocate(f); h != want {
+			t.Errorf("allocation %d after releases: got handle %d, want %d", i, h, want)
 		}
 	}
-
-	// Next allocation should get a new handle (11)
-	f, err = fs.OpenFile("/test.txt", 0, 0)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
-	}
-	nextHandle := fm.Allocate(f)
-	if nextHandle != 11 {
-		t.Errorf("Expected next handle to be 11, got %d", nextHandle)
+	for _, h := range []uint64{3, 5, 7} {
+		if _, ok := fm.Get(h); ok {
+			t.Errorf("released handle %d resolves again", h)
+		}
 	}
 }
 
-// BenchmarkFileHandleAllocation benchmarks the new O(log n) allocation
+// BenchmarkFileHandleAllocation benchmarks allocation on a map with many live handles
 func BenchmarkFileHandleAllocation(b *testing.B) {
 	fs, err := memfs.NewFS()
 	if err != nil {
@@ -95,9 +83,8 @@ func BenchmarkFileHandleAllocation(b *testing.B) {
 	f.Close()
 
 	fm := &FileHandleMap{
-		handles:     make(map[uint64]absfs.File),
-		nextHandle:  1,
-		freeHandles: NewUint64MinHeap(),
+		handles:    make(map[uint64]absfs.File),
+		nextHandle: 1,
 	}
 
 	// Pre-allocate 1000 handles to simulate a busy server
@@ -142,9 +129,8 @@ func BenchmarkFileHandleAllocationSequential(b *testing.B) {
 	f.Close()
 
 	fm := &FileHandleMap{
-		handles:     make(map[uint64]absfs.File),
-		nextHandle:  1,
-		freeHandles: NewUint64MinHeap(),
+		handles:    make(map[uint64]absfs.File),
+		nextHandle: 1,
 	}
 
 	b.ResetTimer()
@@ -174,9 +160,8 @@ func TestFileHandleAllocationStress(t *testing.T) {
 	f.Close()
 
 	fm := &FileHandleMap{
-		handles:     make(map[uint64]absfs.File),
-		nextHandle:  1,
-		freeHandles: NewUint64MinHeap(),
+		handles:    make(map[uint64]absfs.File),
+		nextHandle: 1,
 	}
 
 	// Allocate and release handles in a pattern to test free list
@@ -204,7 +189,7 @@ func TestFileHandleAllocationStress(t *testing.T) {
 		}
 	}
 
-	// Allocate more handles - should reuse the freed ones
+	// Allocate more handles - new numbers, never the released ones
 	for i := 0; i < 50; i++ {
 		f, err := fs.OpenFile("/test.txt", 0, 0)
 		if err != nil {
@@ -229,16 +214,16 @@ func TestFileHandleAllocationStress(t *testing.T) {
 	}
 }
 
-// Example demonstrates the performance characteristics of the optimized allocation
+// ExampleFileHandleMap_Allocate_performance shows that handle numbers
+// are never reused: after a release, allocation continues the sequence.
 func ExampleFileHandleMap_Allocate_performance() {
 	fs, _ := memfs.NewFS()
 	f, _ := fs.Create("/test.txt")
 	f.Close()
 
 	fm := &FileHandleMap{
-		handles:     make(map[uint64]absfs.File),
-		nextHandle:  1,
-		freeHandles: NewUint64MinHeap(),
+		handles:    make(map[uint64]absfs.File),
+		nextHandle: 1,
 	}
 
 	// Allocate handles - O(1) time
@@ -249,14 +234,14 @@ func ExampleFileHandleMap_Allocate_performance() {
 		fmt.Printf("Allocated handle: %d\n", handles[i])
 	}
 
-	// Release some handles - O(log n) time
-	fm.Release(handles[2]) // Release handle 3
+	// Release a handle; a client still holding it gets NFS3ERR_STALE
+	fm.Release(handles[2])
 	fmt.Println("Released handle 3")
 
-	// Allocate again - reuses handle 3 in O(log n) time
+	// Allocate again - a new number, not 3
 	f, _ = fs.OpenFile("/test.txt", 0, 0)
-	reused := fm.Allocate(f)
-	fmt.Printf("Reused handle: %d\n", reused)
+	next := fm.Allocate(f)
+	fmt.Printf("Next handle: %d\n", next)
 
 	// Output:
 	// Allocated handle: 1
@@ -265,5 +250,5 @@ func ExampleFileHandleMap_Allocate_performance() {
 	// Allocated handle: 4
 	// Allocated handle: 5
 	// Released handle 3
-	// Reused handle: 3
+	// Next handle: 6
 }

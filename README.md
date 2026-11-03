@@ -204,6 +204,12 @@ gid; a server not running as root can only give them its own. An UNCHECKED
   client's handles follow a RENAME, but one that compares fileids may treat a
   moved object's handle as stale and look the name up again. The handle of a
   removed or replaced object reports `NFS3ERR_STALE`.
+- **Handles do not survive a restart.** They live in memory, and a server
+  never gives out a handle number twice, not even after restarting (the
+  numbering starts from the clock, so unless the clock is set back). A client
+  holding a handle from before a restart gets `NFS3ERR_STALE` and must
+  remount. A handle the server evicted (it keeps at most 100,000) also
+  reports `NFS3ERR_STALE`; the client recovers by looking the name up again.
 - **Changes made behind the server's back are seen after a delay.** absnfs
   caches attributes for `AttrCacheTimeout` (5s by default), and, when
   enabled, misses for `NegativeCacheTimeout` and listings for

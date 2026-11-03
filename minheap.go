@@ -1,7 +1,8 @@
-// minheap.go: Min-heap data structure for file handle ID reuse.
+// minheap.go: Min-heap of uint64 values.
 //
-// Contains uint64MinHeap implementing container/heap.Interface, used
-// by FileHandleMap to efficiently recycle released handle IDs.
+// FileHandleMap once used it to reuse released handle numbers. It no
+// longer reuses them (a reused number let a stale handle reach another
+// object); the heap stays only because NewUint64MinHeap is exported.
 package absnfs
 
 import "container/heap"
@@ -25,7 +26,10 @@ func (h *uint64MinHeap) Pop() interface{} {
 	return x
 }
 
-// NewUint64MinHeap creates and initializes a new min-heap
+// NewUint64MinHeap creates and initializes a new min-heap.
+//
+// Deprecated: nothing in absnfs uses it since file handle numbers stopped
+// being reused. It will be removed in the next major version.
 func NewUint64MinHeap() *uint64MinHeap {
 	h := &uint64MinHeap{}
 	heap.Init(h)

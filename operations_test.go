@@ -753,8 +753,8 @@ func TestOperationsAdvanced(t *testing.T) {
 			t.Fatalf("Failed to create first test file: %v", err)
 		}
 		handle1 := handleNFS.fileMap.Allocate(f1)
-		if handle1 != 1 {
-			t.Errorf("First handle should be 1, got %d", handle1)
+		if handle1 == 0 {
+			t.Error("First handle should not be 0")
 		}
 
 		f2, err := handleFS.Create("/file2")
@@ -762,19 +762,19 @@ func TestOperationsAdvanced(t *testing.T) {
 			t.Fatalf("Failed to create second test file: %v", err)
 		}
 		handle2 := handleNFS.fileMap.Allocate(f2)
-		if handle2 != 2 {
-			t.Errorf("Second handle should be 2, got %d", handle2)
+		if handle2 != handle1+1 {
+			t.Errorf("Second handle should be %d, got %d", handle1+1, handle2)
 		}
 
-		// Test handle reuse after release
+		// A released handle's number is not reused
 		handleNFS.fileMap.Release(handle1) // Release first handle
 		f3, err := handleFS.Create("/file3")
 		if err != nil {
 			t.Fatalf("Failed to create third test file: %v", err)
 		}
 		handle3 := handleNFS.fileMap.Allocate(f3)
-		if handle3 != 1 {
-			t.Errorf("Released handle 1 should be reused, got %d", handle3)
+		if handle3 != handle2+1 {
+			t.Errorf("Handle after releasing %d should be %d, got %d", handle1, handle2+1, handle3)
 		}
 
 		// Release remaining handles
@@ -787,8 +787,8 @@ func TestOperationsAdvanced(t *testing.T) {
 			t.Fatalf("Failed to create fourth test file: %v", err)
 		}
 		handle4 := handleNFS.fileMap.Allocate(f4)
-		if handle4 != 1 {
-			t.Errorf("After all releases, next handle should be 1, got %d", handle4)
+		if handle4 != handle3+1 {
+			t.Errorf("After all releases, next handle should be %d, got %d", handle3+1, handle4)
 		}
 		handleNFS.fileMap.Release(handle4)
 

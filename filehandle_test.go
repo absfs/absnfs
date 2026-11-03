@@ -29,9 +29,8 @@ func TestFileHandleMap(t *testing.T) {
 
 	// Create file handle map
 	fm := &FileHandleMap{
-		handles:     make(map[uint64]absfs.File),
-		nextHandle:  1,
-		freeHandles: NewUint64MinHeap(),
+		handles:    make(map[uint64]absfs.File),
+		nextHandle: 1,
 	}
 
 	// Test Allocate
@@ -209,9 +208,8 @@ func TestR3_FileHandleMapEviction(t *testing.T) {
 
 	// Create a FileHandleMap with a very small maximum
 	fhMap := &FileHandleMap{
-		handles:     make(map[uint64]absfs.File),
-		freeHandles: NewUint64MinHeap(),
-		maxHandles:  10,
+		handles:    make(map[uint64]absfs.File),
+		maxHandles: 10,
 	}
 
 	// Create test files and allocate handles for them
@@ -253,10 +251,9 @@ func TestR3_FileHandleMapEviction(t *testing.T) {
 
 func TestCovBoost_AllocateEviction(t *testing.T) {
 	fm := &FileHandleMap{
-		handles:     make(map[uint64]absfs.File),
-		nextHandle:  1,
-		freeHandles: NewUint64MinHeap(),
-		maxHandles:  5, // tiny limit to trigger eviction
+		handles:    make(map[uint64]absfs.File),
+		nextHandle: 1,
+		maxHandles: 5, // tiny limit to trigger eviction
 	}
 
 	fs, err := memfs.NewFS()
@@ -294,10 +291,9 @@ func TestCovBoost_AllocateEviction(t *testing.T) {
 func TestCovBoost_AllocateEvictionSmallMax(t *testing.T) {
 	// maxHandles=1: evictCount = 1/10 = 0 -> clamped to 1
 	fm := &FileHandleMap{
-		handles:     make(map[uint64]absfs.File),
-		nextHandle:  1,
-		freeHandles: NewUint64MinHeap(),
-		maxHandles:  1,
+		handles:    make(map[uint64]absfs.File),
+		nextHandle: 1,
+		maxHandles: 1,
 	}
 
 	fs, err := memfs.NewFS()
@@ -319,9 +315,8 @@ func TestCovBoost_AllocateEvictionSmallMax(t *testing.T) {
 
 func TestFileHandleMapGetOrErrorZeroCoverage(t *testing.T) {
 	fm := &FileHandleMap{
-		handles:     make(map[uint64]absfs.File),
-		nextHandle:  1,
-		freeHandles: NewUint64MinHeap(),
+		handles:    make(map[uint64]absfs.File),
+		nextHandle: 1,
 	}
 
 	mfs, _ := memfs.NewFS()
@@ -450,7 +445,6 @@ func TestAllocateDeduplicatesByPath(t *testing.T) {
 		handles:     make(map[uint64]absfs.File),
 		pathHandles: make(map[string]uint64),
 		nextHandle:  1,
-		freeHandles: NewUint64MinHeap(),
 		maxHandles:  1000,
 	}
 
@@ -468,24 +462,29 @@ func TestAllocateDeduplicatesByPath(t *testing.T) {
 	}
 }
 
-// TestAllocateEvictionReturnsToFreeList verifies that evicted handles
-// are returned to the free list for reuse.
-func TestAllocateEvictionReturnsToFreeList(t *testing.T) {
-	fm := &FileHandleMap{
-		handles:     make(map[uint64]absfs.File),
-		pathHandles: make(map[string]uint64),
-		nextHandle:  1,
-		freeHandles: NewUint64MinHeap(),
-		maxHandles:  5,
-	}
+// TestAllocateEvictionDropsOldest verifies that eviction drops the oldest
+// (lowest) handles, and that their numbers are not given out again.
+func TestAllocateEvictionDropsOldest(t *testing.T) {
+	fm := newFileHandleMap(5)
 
 	// Allocate 6 handles (triggers eviction at 6th)
+	var hs []uint64
 	for i := 0; i < 6; i++ {
-		fm.Allocate(&NFSNode{path: fmt.Sprintf("/file%d", i)})
+		hs = append(hs, fm.Allocate(&NFSNode{path: fmt.Sprintf("/file%d", i)}))
 	}
 
-	// Free list should have the evicted handle
-	if fm.freeHandles.IsEmpty() {
-		t.Error("evicted handles should be in the free list")
+	if _, ok := fm.Get(hs[0]); ok {
+		t.Error("the oldest handle survived eviction")
+	}
+	for _, h := range hs[1:] {
+		if _, ok := fm.Get(h); !ok {
+			t.Errorf("handle %d was evicted, want only the oldest", h)
+		}
+	}
+	if h, ok := fm.pathHandles["/file0"]; ok {
+		t.Errorf("evicted /file0 still maps to handle %d", h)
+	}
+	if h := fm.Allocate(&NFSNode{path: "/file0"}); h == hs[0] {
+		t.Errorf("evicted handle %d was given out again", h)
 	}
 }

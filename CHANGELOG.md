@@ -135,6 +135,20 @@ to the macOS NFS client, which is stricter than Linux's.
   `Squash` before applying anything rather than after the tuning update.
   `syscall.EINVAL` now maps to `NFS3ERR_INVAL`.
 
+- File handle numbers were reused: a handle dropped by `Release` or by
+  eviction (past 100,000 handles) went back on a free list, and a server
+  restarted over the same filesystem numbered handles from 1 again, so a
+  client still holding the old handle reached a different file or
+  directory. Handle numbers are now never reused: they only grow, and each
+  server starts numbering at the current time in nanoseconds, so a stale
+  handle reports `NFS3ERR_STALE`, also after a restart (unless the clock is
+  set back). Eviction no longer walks the gaps between live numbers.
+
+### Deprecated
+
+- `NewUint64MinHeap`: absnfs no longer uses it. It will be removed in the
+  next major version.
+
 ### Changed
 
 - **Default owner.** Files whose filesystem records no owner (memfs, virtual

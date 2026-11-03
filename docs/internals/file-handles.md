@@ -2,7 +2,9 @@
 
 NFS file handles are opaque identifiers that clients use to reference files and
 directories across requests. absnfs implements handles as sequential `uint64`
-values managed by `FileHandleMap`.
+values managed by `FileHandleMap`. A handle number is never given out twice, so
+a handle a client keeps after the server dropped it reports `NFSERR_STALE` and
+never reaches another object.
 
 ## Handle Representation
 
@@ -37,14 +39,27 @@ closes it. The handle does not keep a file descriptor open between requests.
    unbounded handle growth from repeated LOOKUP or READDIRPLUS calls for the
    same path.
 
-2. **ID assignment**: First tries to reuse a freed handle ID from `freeHandles`
-   (a min-heap, preferring the smallest available ID). If no freed IDs are
-   available, `nextHandle` is incremented to produce a new sequential ID.
+2. **ID assignment**: the new handle is `nextHandle`, which is then
+   incremented. IDs of released, evicted or retired handles are not reused:
+   reusing one would let a client still holding the old handle reach whatever
+   object the ID was given to next.
 
 3. **Eviction**: If the handle count exceeds `maxHandles` (default 100,000),
    the oldest handles (lowest IDs) are evicted. Eviction removes 10% of
-   `maxHandles` entries at a time, cleans up path mappings, closes the
-   associated files, and pushes freed IDs back onto the heap.
+   `maxHandles` entries at a time, cleans up path mappings and closes the
+   associated files. Requests with an evicted handle get `NFSERR_STALE`; a
+   client recovers by looking the name up again.
+
+## Handle IDs Across Restarts
+
+Handles live only in memory. A new `FileHandleMap` starts counting at the
+current time in nanoseconds, and each allocation takes longer than a
+nanosecond, so every ID one run of the server gave out is below the first ID
+of a later run, unless the system clock is set back between them. A client
+holding a handle from before a restart therefore gets `NFSERR_STALE` (and
+remounts) instead of reaching an unrelated object. The 64-bit counter cannot
+wrap in practice: it starts below 2^61 and grows by one per allocation. The
+wire format is unchanged: 8 bytes, well inside NFS3's 64-byte limit.
 
 ## Handles Across RENAME and REMOVE
 
@@ -57,7 +72,7 @@ Handles name paths, so the server moves them when a path changes:
   `NFSNode`; the old one is left untouched for requests in flight.
 - The handles of what a RENAME replaced, and of an object REMOVE or RMDIR
   deleted, are retired (`renamed`, `removed`): requests with them get
-  `NFSERR_STALE`, and unlike a released handle the ID is never handed out
+  `NFSERR_STALE`, and, like every handle ID, theirs is never handed out
   again, so it cannot come to name another object.
 
 File ids are derived from paths, so an object reached through a moved handle
@@ -76,12 +91,13 @@ handle from the XDR body and looks up the node in one step, returning
 
 ## Handle Release
 
-`FileHandleMap.Release` removes a handle, cleans up the path mapping, closes
-the associated file, and adds the freed ID to the min-heap for reuse.
+`FileHandleMap.Release` removes a handle, cleans up the path mapping and
+closes the associated file. The ID is not reused.
 
 `FileHandleMap.ReleaseAll` closes and removes all handles, clearing both the
-handle map and the path deduplication map, and reinitializing the free heap.
-This is called during `Unexport` when the server shuts down.
+handle map and the path deduplication map. `nextHandle` is kept, so handles
+given out afterwards still get new IDs. This is called by `Unexport` and
+`Close`.
 
 ## Path Deduplication
 

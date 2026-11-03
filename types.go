@@ -102,8 +102,7 @@ type FileHandleMap struct {
 	sync.RWMutex
 	handles     map[uint64]absfs.File
 	pathHandles map[string]uint64 // Reverse map: path -> handle for deduplication
-	nextHandle  uint64            // Counter for allocating new handles
-	freeHandles *uint64MinHeap    // Min-heap of freed handles for reuse
+	nextHandle  uint64            // Next handle number; only grows, numbers are never reused
 	maxHandles  int               // Maximum handles before eviction (0 = DefaultMaxHandles)
 }
 

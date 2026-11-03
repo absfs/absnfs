@@ -156,13 +156,8 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	}
 
 	server := &AbsfsNFS{
-		fs: fs,
-		fileMap: &FileHandleMap{
-			handles:     make(map[uint64]absfs.File),
-			pathHandles: make(map[string]uint64),
-			nextHandle:  1, // Start from 1, as 0 is typically reserved
-			freeHandles: NewUint64MinHeap(),
-		},
+		fs:               fs,
+		fileMap:          newFileHandleMap(0),
 		logger:           log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
 		structuredLogger: structuredLogger,
 		attrCache:        NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
