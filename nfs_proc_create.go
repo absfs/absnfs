@@ -321,15 +321,11 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 		return nfsErrorWithWcc(reply, NFSERR_INVAL), nil
 	}
 
-	// Validate symlink target to prevent escape from export root
-	if strings.HasPrefix(target, "/") {
+	// Unless the export allows any target, refuse targets that could lead
+	// out of the export when the backend follows links on the host:
+	// absolute ones and ones with ".." components.
+	if !h.server.handler.policy.Load().AllowAnySymlinkTarget && !symlinkTargetContained(target) {
 		return nfsErrorWithWcc(reply, NFSERR_ACCES), nil
-	}
-	// Check for .. components that could escape the export
-	for _, component := range strings.Split(target, "/") {
-		if component == ".." {
-			return nfsErrorWithWcc(reply, NFSERR_ACCES), nil
-		}
 	}
 
 	node, ok := h.lookupNode(handleVal)
@@ -436,4 +432,21 @@ func (h *NFSProcedureHandler) handleMknod(body io.Reader, reply *RPCReply, authC
 	xdrDecodeUint32(body)     // ftype3 discriminant
 
 	return nfsErrorWithWcc(reply, NFSERR_NOTSUPP), nil
+}
+
+// symlinkTargetContained reports whether a symlink target can only lead
+// down from the link's directory: it is relative and has no ".."
+// component. Such links keep a backend that follows them on the host
+// inside the export, whatever other links they pass through, because every
+// link a client can make leads down.
+func symlinkTargetContained(target string) bool {
+	if strings.HasPrefix(target, "/") {
+		return false
+	}
+	for _, component := range strings.Split(target, "/") {
+		if component == ".." {
+			return false
+		}
+	}
+	return true
 }

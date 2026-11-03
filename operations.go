@@ -1078,16 +1078,10 @@ func (s *AbsfsNFS) Readlink(node *NFSNode) (string, error) {
 		return "", fmt.Errorf("readlink: failed to read symlink %s: %w", node.path, err)
 	}
 
-	// Sanitize relative targets to prevent traversal outside export.
-	// Absolute paths within the virtual filesystem are safe (contained by absfs).
-	if !strings.HasPrefix(target, "/") {
-		for _, component := range strings.Split(target, "/") {
-			if component == ".." {
-				return "", fmt.Errorf("readlink: symlink target with '..' not allowed")
-			}
-		}
-	}
-
+	// The target is returned as stored, ".." components and all: the
+	// client resolves it in its own namespace, so its text reveals nothing
+	// the client could not reach, and refusing it broke ordinary links
+	// such as docs/up -> ../README.md (git, rg and ls -l failed with EIO).
 	return target, nil
 }
 

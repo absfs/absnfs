@@ -373,6 +373,8 @@ func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
 		Squash:             currentPolicy.Squash, // immutable
 		MaxFileSize:        newOptions.MaxFileSize,
 		EnableRateLimiting: newOptions.EnableRateLimiting,
+
+		AllowAnySymlinkTarget: newOptions.AllowAnySymlinkTarget,
 	}
 	if len(newOptions.AllowedIPs) > 0 {
 		newPolicy.AllowedIPs = make([]string, len(newOptions.AllowedIPs))

@@ -18,6 +18,7 @@ package absnfs
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -267,6 +268,24 @@ func runMacOSMount(t *testing.T, backend, extraOpts string, viaExport bool) {
 		}
 		if err := os.Remove(made); err != nil {
 			t.Fatal(err)
+		}
+
+		// A link up a level reads back and resolves (READLINK used to
+		// refuse "..", which read as EIO); making one is refused by
+		// default (ExportOptions.AllowAnySymlinkTarget).
+		if err := fs.Symlink("../hello.txt", "/sub/up"); err != nil {
+			t.Fatal(err)
+		}
+		defer fs.Remove("/sub/up")
+		up := filepath.Join(mnt, "sub", "up")
+		if target, err := os.Readlink(up); err != nil || target != "../hello.txt" {
+			t.Fatalf("readlink sub/up = %q, %v; want ../hello.txt", target, err)
+		}
+		if data, err := os.ReadFile(up); err != nil || string(data) != macOSSeedContent {
+			t.Fatalf("read through sub/up = %q, %v", data, err)
+		}
+		if err := os.Symlink("../hello.txt", filepath.Join(mnt, "sub", "up2")); !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("ln -s ../hello.txt sub/up2: %v, want permission denied", err)
 		}
 	})
 

@@ -47,6 +47,9 @@ type PolicyOptions struct {
 	EnableRateLimiting bool
 	RateLimitConfig    *RateLimiterConfig
 	TLS                *TLSConfig
+
+	// AllowAnySymlinkTarget is ExportOptions.AllowAnySymlinkTarget.
+	AllowAnySymlinkTarget bool
 }
 
 // RequestOptions is a per-request snapshot of both tuning and policy options.
@@ -104,6 +107,8 @@ func policyFromExportOptions(opts *ExportOptions) *PolicyOptions {
 		Squash:             opts.Squash,
 		MaxFileSize:        opts.MaxFileSize,
 		EnableRateLimiting: opts.EnableRateLimiting,
+
+		AllowAnySymlinkTarget: opts.AllowAnySymlinkTarget,
 	}
 	if len(opts.AllowedIPs) > 0 {
 		p.AllowedIPs = make([]string, len(opts.AllowedIPs))
@@ -122,28 +127,29 @@ func policyFromExportOptions(opts *ExportOptions) *PolicyOptions {
 // exportOptionsFromSnapshots reconstructs an ExportOptions from tuning + policy snapshots.
 func exportOptionsFromSnapshots(t *TuningOptions, p *PolicyOptions) ExportOptions {
 	opts := ExportOptions{
-		ReadOnly:             p.ReadOnly,
-		Secure:               p.Secure,
-		Squash:               p.Squash,
-		MaxFileSize:          p.MaxFileSize,
-		EnableRateLimiting:   p.EnableRateLimiting,
-		Async:                t.Async,
-		TransferSize:         t.TransferSize,
-		AttrCacheTimeout:     t.AttrCacheTimeout,
-		AttrCacheSize:        t.AttrCacheSize,
-		CacheNegativeLookups: t.CacheNegativeLookups,
-		NegativeCacheTimeout: t.NegativeCacheTimeout,
-		EnableDirCache:       t.EnableDirCache,
-		DirCacheTimeout:      t.DirCacheTimeout,
-		DirCacheMaxEntries:   t.DirCacheMaxEntries,
-		DirCacheMaxDirSize:   t.DirCacheMaxDirSize,
-		MaxWorkers:           t.MaxWorkers,
-		MaxConnections:       t.MaxConnections,
-		IdleTimeout:          t.IdleTimeout,
-		TCPKeepAlive:         t.TCPKeepAlive,
-		TCPNoDelay:           t.TCPNoDelay,
-		SendBufferSize:       t.SendBufferSize,
-		ReceiveBufferSize:    t.ReceiveBufferSize,
+		ReadOnly:              p.ReadOnly,
+		Secure:                p.Secure,
+		Squash:                p.Squash,
+		MaxFileSize:           p.MaxFileSize,
+		EnableRateLimiting:    p.EnableRateLimiting,
+		AllowAnySymlinkTarget: p.AllowAnySymlinkTarget,
+		Async:                 t.Async,
+		TransferSize:          t.TransferSize,
+		AttrCacheTimeout:      t.AttrCacheTimeout,
+		AttrCacheSize:         t.AttrCacheSize,
+		CacheNegativeLookups:  t.CacheNegativeLookups,
+		NegativeCacheTimeout:  t.NegativeCacheTimeout,
+		EnableDirCache:        t.EnableDirCache,
+		DirCacheTimeout:       t.DirCacheTimeout,
+		DirCacheMaxEntries:    t.DirCacheMaxEntries,
+		DirCacheMaxDirSize:    t.DirCacheMaxDirSize,
+		MaxWorkers:            t.MaxWorkers,
+		MaxConnections:        t.MaxConnections,
+		IdleTimeout:           t.IdleTimeout,
+		TCPKeepAlive:          t.TCPKeepAlive,
+		TCPNoDelay:            t.TCPNoDelay,
+		SendBufferSize:        t.SendBufferSize,
+		ReceiveBufferSize:     t.ReceiveBufferSize,
 	}
 	if len(p.AllowedIPs) > 0 {
 		opts.AllowedIPs = make([]string, len(p.AllowedIPs))
@@ -456,6 +462,22 @@ type ExportOptions struct {
 	// Fixed when the export is created: UpdateExportOptions rejects a
 	// different value.
 	ForceOwner bool
+
+	// AllowAnySymlinkTarget lets clients create symbolic links with any
+	// target, including absolute ones and ones with ".." components, such
+	// as the "../README.md" links common in source trees. Default: false,
+	// in which case SYMLINK refuses such targets with NFSERR_ACCES.
+	//
+	// The default protects exports of a host directory (osfs, or basefs
+	// over osfs): there the host follows links when the server opens a
+	// path, so a client could otherwise create a link that leads out of
+	// the export and read through it. Set this only when the exported
+	// filesystem resolves links within its own namespace, as memfs,
+	// c4fs, and unionfs do (a union resolves links itself, even over host
+	// layers). READLINK returns every target as stored, whatever this
+	// says: reading a link's text gives the client nothing it could not
+	// already reach, since the client resolves links itself.
+	AllowAnySymlinkTarget bool
 }
 
 // TimeoutConfig defines timeout durations for various NFS operations

@@ -16,54 +16,79 @@ import (
 	"github.com/absfs/memfs"
 )
 
-// TestR3_ReadlinkSanitization verifies that Readlink rejects symlink targets
-// containing ".." components to prevent traversal outside the export.
-func TestR3_ReadlinkSanitization(t *testing.T) {
+// TestReadlinkReturnsTargetVerbatim verifies that READLINK returns every
+// target as stored. It used to refuse targets with ".." components, which
+// broke ordinary links such as docs/up -> ../README.md: through a macOS
+// mount, readlink returned EIO, and git add and rg failed on the tree.
+func TestReadlinkReturnsTargetVerbatim(t *testing.T) {
 	fs, err := memfs.NewFS()
 	if err != nil {
 		t.Fatal(err)
 	}
-
+	if err := fs.Mkdir("/docs", 0o755); err != nil {
+		t.Fatal(err)
+	}
 	nfs, err := New(fs, ExportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer nfs.Close()
 
-	// Create a symlink with a dangerous relative target
-	err = fs.Symlink("../../etc/passwd", "/badlink")
-	if err != nil {
-		t.Skip("memfs does not support Symlink, skipping")
+	for link, target := range map[string]string{
+		"/docs/up":   "../README.md",
+		"/docs/far":  "../../etc/passwd",
+		"/dotdot":    "..",
+		"/goodlink":  "subdir/file.txt",
+		"/abs":       "/etc/hosts",
+		"/docs/self": "./x/../y",
+	} {
+		if err := fs.Symlink(target, link); err != nil {
+			t.Fatalf("Symlink(%q, %q): %v", target, link, err)
+		}
+		node, err := nfs.Lookup(link)
+		if err != nil {
+			t.Fatalf("Lookup(%s): %v", link, err)
+		}
+		got, err := nfs.Readlink(node)
+		if err != nil {
+			t.Errorf("Readlink(%s): %v", link, err)
+			continue
+		}
+		if got != target {
+			t.Errorf("Readlink(%s) = %q, want %q", link, got, target)
+		}
 	}
+}
 
-	node, err := nfs.Lookup("/badlink")
+// TestReadlinkHandlerParentTarget checks the same over the wire: the
+// READLINK reply for a link to ../README.md is NFS_OK with the target.
+func TestReadlinkHandlerParentTarget(t *testing.T) {
+	server, handler, authCtx, err := newTestServerForBugfixes()
 	if err != nil {
-		t.Fatalf("Lookup failed: %v", err)
+		t.Fatal(err)
 	}
-
-	// Readlink should reject the target containing ".."
-	_, err = nfs.Readlink(node)
-	if err == nil {
-		t.Error("Expected Readlink to reject symlink target containing '..'")
+	fs := server.handler.fs
+	if err := fs.Mkdir("/docs", 0o755); err != nil {
+		t.Fatal(err)
 	}
-
-	// Create a safe relative symlink
-	err = fs.Symlink("subdir/file.txt", "/goodlink")
+	if err := fs.Symlink("../README.md", "/docs/up"); err != nil {
+		t.Fatal(err)
+	}
+	node, err := server.handler.Lookup("/docs/up")
 	if err != nil {
-		t.Fatalf("Failed to create safe symlink: %v", err)
+		t.Fatal(err)
 	}
-
-	goodNode, err := nfs.Lookup("/goodlink")
+	var req bytes.Buffer
+	xdrEncodeFileHandle(&req, server.handler.fileMap.Allocate(node))
+	result, err := handler.handleReadlink(&req, &RPCReply{}, authCtx)
 	if err != nil {
-		t.Fatalf("Lookup failed for good link: %v", err)
+		t.Fatal(err)
 	}
-
-	target, err := nfs.Readlink(goodNode)
-	if err != nil {
-		t.Fatalf("Readlink should accept safe relative target, got error: %v", err)
+	if status := readStatusFromReply(result); status != NFS_OK {
+		t.Fatalf("READLINK status %d, want NFS_OK", status)
 	}
-	if target != "subdir/file.txt" {
-		t.Errorf("Expected target 'subdir/file.txt', got %q", target)
+	if !bytes.Contains(result.Data.([]byte), []byte("../README.md")) {
+		t.Errorf("READLINK reply does not carry the target")
 	}
 }
 
@@ -453,6 +478,67 @@ func TestR3_SymlinkTargetValidation(t *testing.T) {
 			t.Errorf("Expected NFS_OK for relative target, got %d", status)
 		}
 	})
+	// With AllowAnySymlinkTarget, absolute and ".." targets are created
+	// and read back as given.
+	t.Run("AllowAnySymlinkTarget", func(t *testing.T) {
+		opts := server.handler.GetExportOptions()
+		opts.AllowAnySymlinkTarget = true
+		if err := server.handler.UpdateExportOptions(opts); err != nil {
+			t.Fatal(err)
+		}
+		if !server.handler.GetExportOptions().AllowAnySymlinkTarget {
+			t.Fatal("GetExportOptions does not report AllowAnySymlinkTarget")
+		}
+		for name, target := range map[string]string{"up": "../README.md", "abs": "/etc/shadow"} {
+			result, err := handler.handleSymlink(
+				bytes.NewReader(buildSymlinkRequest(name, target)),
+				&RPCReply{}, authCtx)
+			if err != nil {
+				t.Fatalf("handleSymlink returned error: %v", err)
+			}
+			if status := readStatusFromReply(result); status != NFS_OK {
+				t.Errorf("%s -> %s: status %d, want NFS_OK", name, target, status)
+				continue
+			}
+			got, err := server.handler.fs.Readlink("/" + name)
+			if err != nil || got != target {
+				t.Errorf("Readlink(/%s) = %q, %v; want %q", name, got, err, target)
+			}
+		}
+		opts.AllowAnySymlinkTarget = false
+		if err := server.handler.UpdateExportOptions(opts); err != nil {
+			t.Fatal(err)
+		}
+		result, err := handler.handleSymlink(
+			bytes.NewReader(buildSymlinkRequest("up2", "../README.md")),
+			&RPCReply{}, authCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status := readStatusFromReply(result); status != NFSERR_ACCES {
+			t.Errorf("after turning it off: status %d, want NFSERR_ACCES", status)
+		}
+	})
+}
+
+func TestSymlinkTargetContained(t *testing.T) {
+	for target, want := range map[string]bool{
+		"a":           true,
+		"a/b/c":       true,
+		"./a":         true,
+		"a..b":        true,
+		"..a/b":       true,
+		"..":          false,
+		"../x":        false,
+		"a/../b":      false,
+		"a/..":        false,
+		"/etc/passwd": false,
+		"/":           false,
+	} {
+		if got := symlinkTargetContained(target); got != want {
+			t.Errorf("symlinkTargetContained(%q) = %v, want %v", target, got, want)
+		}
+	}
 }
 
 // TestR3_WriteBoundsCheck verifies that WRITE rejects count > TransferSize
