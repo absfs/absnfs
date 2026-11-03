@@ -42,3 +42,24 @@ jobs:
         with:
           files: coverage.out
           fail_ci_if_error: false
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Check gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean (run gofmt -w):"
+            echo "$unformatted"
+            exit 1
+          fi
