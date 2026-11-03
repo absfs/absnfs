@@ -37,10 +37,10 @@ type NFSMetrics struct {
 	P95WriteLatency time.Duration
 
 	// Cache metrics
-	CacheHitRate      float64
-	AttrCacheSize     int
-	AttrCacheCapacity int
-	DirCacheHitRate   float64
+	CacheHitRate         float64
+	AttrCacheSize        int
+	AttrCacheCapacity    int
+	DirCacheHitRate      float64
 	NegativeCacheSize    int     // Number of negative cache entries
 	NegativeCacheHitRate float64 // Hit rate for negative cache lookups
 

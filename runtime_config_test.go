@@ -188,8 +188,8 @@ func TestUpdateExportOptions_ConcurrentUpdates(t *testing.T) {
 			for j := 0; j < numIterations; j++ {
 				// Update options
 				opts := ExportOptions{
-					ReadOnly:     id%2 == 0,
-					MaxWorkers:   id + 1,
+					ReadOnly:      id%2 == 0,
+					MaxWorkers:    id + 1,
 					AttrCacheSize: 1000 + id*100,
 				}
 

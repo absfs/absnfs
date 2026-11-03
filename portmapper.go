@@ -60,8 +60,8 @@ type Portmapper struct {
 	wg         sync.WaitGroup
 	logger     *log.Logger
 	debug      atomic.Bool
-	listenAddr atomic.Value       // stores string; actual listen address for universal address construction
-	connSem    chan struct{}       // semaphore to limit concurrent connections
+	listenAddr atomic.Value  // stores string; actual listen address for universal address construction
+	connSem    chan struct{} // semaphore to limit concurrent connections
 }
 
 // NewPortmapper creates a new portmapper instance
