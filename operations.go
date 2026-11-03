@@ -939,7 +939,10 @@ func (s *AbsfsNFS) ReadDirPlus(dir *NFSNode) ([]*NFSNode, error) {
 	return nodes, nil
 }
 
-// Export starts serving the NFS export
+// Export starts serving the NFS export on localhost at port (0 picks a free
+// port), with the MOUNT protocol on the same port and RPC record marking, as
+// kernel NFS clients expect. Stop it with Unexport or Close. For another bind
+// address or a portmapper, build a Server with NewServer instead.
 func (s *AbsfsNFS) Export(mountPath string, port int) error {
 	if mountPath == "" {
 		return fmt.Errorf("empty mount path")
@@ -951,12 +954,14 @@ func (s *AbsfsNFS) Export(mountPath string, port int) error {
 	s.mountPath = mountPath
 
 	server, err := NewServer(ServerOptions{
-		Name:     "absfs",
-		UID:      0,
-		GID:      0,
-		ReadOnly: s.policy.Load().ReadOnly,
-		Port:     port,
-		Hostname: "localhost",
+		Name:             "absfs",
+		UID:              0,
+		GID:              0,
+		ReadOnly:         s.policy.Load().ReadOnly,
+		Port:             port,
+		MountPort:        port,
+		Hostname:         "localhost",
+		UseRecordMarking: true,
 	})
 	if err != nil {
 		return err
