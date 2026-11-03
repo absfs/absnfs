@@ -3,10 +3,18 @@ package absnfs
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
+
+	"github.com/absfs/absfs"
+	"github.com/absfs/basefs"
+	"github.com/absfs/osfs"
 )
 
 // TestWriteOwnerOverride: NFS is stateless, so a file created read-only and
@@ -163,10 +171,218 @@ func TestReplaceByRenameEdgeCases(t *testing.T) {
 	if err := e.nfs.replaceByRename("/dir/file.txt", "/dir/missing", exists); err != exists {
 		t.Errorf("missing target: %v, want the original error", err)
 	}
+	// Conflicts that appear after RENAME's own check (a racing client).
+	e.fs.Mkdir("/dir/full", 0o755)
+	if f, err := e.fs.Create("/dir/full/x"); err == nil {
+		f.Close()
+	}
+	cases := []struct {
+		from, to string
+		want     uint32
+	}{
+		{"/dir/sub", "/dir/file.txt", NFSERR_NOTDIR},
+		{"/dir/file.txt", "/dir/sub", NFSERR_ISDIR},
+		{"/dir/sub", "/dir/full", NFSERR_NOTEMPTY},
+	}
+	for _, c := range cases {
+		if got := mapError(e.nfs.replaceByRename(c.from, c.to, exists)); got != c.want {
+			t.Errorf("replace %s with %s: status %d, want %d", c.to, c.from, got, c.want)
+		}
+	}
 }
 
 func TestMapErrorNotEmpty(t *testing.T) {
 	if got := mapError(&os.PathError{Op: "remove", Path: "/d", Err: syscall.ENOTEMPTY}); got != NFSERR_NOTEMPTY {
 		t.Errorf("mapError(ENOTEMPTY) = %d, want NFSERR_NOTEMPTY", got)
+	}
+}
+
+// renameHookFS makes Rename fail the way a host does, to show that RENAME's
+// conflict rules do not depend on the backend's error.
+type renameHookFS struct {
+	absfs.SymlinkFileSystem
+	renameErr  []error // returned by successive Rename calls; nil passes through
+	readDirErr error
+}
+
+func (f *renameHookFS) Rename(oldpath, newpath string) error {
+	if len(f.renameErr) > 0 {
+		err := f.renameErr[0]
+		f.renameErr = f.renameErr[1:]
+		if err != nil {
+			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
+		}
+	}
+	return f.SymlinkFileSystem.Rename(oldpath, newpath)
+}
+
+func (f *renameHookFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if f.readDirErr != nil {
+		return nil, f.readDirErr
+	}
+	return f.SymlinkFileSystem.ReadDir(name)
+}
+
+// TestRenameConflictsIgnoreBackendError: a backend that refuses every
+// existing target with a permission error (Windows' ERROR_ACCESS_DENIED)
+// still yields the RFC 1813 statuses, and a directory still replaces an
+// empty directory.
+func TestRenameConflictsIgnoreBackendError(t *testing.T) {
+	e := newFaEnv(t, ExportOptions{})
+	e.fs.Mkdir("/dir/empty", 0o755)
+	e.fs.Mkdir("/dir/full", 0o755)
+	if f, err := e.fs.Create("/dir/full/x"); err == nil {
+		f.Close()
+	}
+	hook := &renameHookFS{SymlinkFileSystem: e.fs}
+	e.nfs.fs = hook
+	dir, err := e.nfs.Lookup("/dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		from, to string
+		want     uint32
+	}{
+		{"file.txt", "sub", NFSERR_ISDIR},
+		{"sub", "file.txt", NFSERR_NOTDIR},
+		{"sub", "full", NFSERR_NOTEMPTY},
+		{"link", "sub", NFSERR_ISDIR},     // a symlink is not a directory
+		{"sublink", "sub", NFSERR_ISDIR},  // nor is a symlink to one
+		{"sub", "sublink", NFSERR_NOTDIR}, // so a directory cannot replace it
+	}
+	for _, c := range cases {
+		hook.renameErr = []error{syscall.EACCES}
+		err := e.nfs.Rename(dir, c.from, dir, c.to)
+		if got := mapError(err); got != c.want {
+			t.Errorf("rename %s over %s: %v (status %d), want status %d", c.from, c.to, err, got, c.want)
+		}
+		if len(hook.renameErr) == 0 {
+			t.Errorf("rename %s over %s reached the backend", c.from, c.to)
+		}
+	}
+
+	hook.renameErr = []error{syscall.EACCES}
+	if err := e.nfs.Rename(dir, "sub", dir, "empty"); err != nil {
+		t.Fatalf("directory over an empty directory: %v", err)
+	}
+	if info, err := e.fs.Lstat("/dir/empty"); err != nil || !info.IsDir() {
+		t.Errorf("target after replace: %v, %v", info, err)
+	}
+	if _, err := e.fs.Lstat("/dir/sub"); !os.IsNotExist(err) {
+		t.Errorf("source still present: %v", err)
+	}
+}
+
+// TestRenameRestoresEmptyTarget: when the directory replacing an empty one
+// cannot be moved, the empty target is put back.
+func TestRenameRestoresEmptyTarget(t *testing.T) {
+	e := newFaEnv(t, ExportOptions{})
+	e.fs.Mkdir("/dir/empty", 0o700)
+	e.nfs.fs = &renameHookFS{SymlinkFileSystem: e.fs, renameErr: []error{syscall.EACCES, syscall.EIO}}
+	dir, _ := e.nfs.Lookup("/dir")
+	if err := e.nfs.Rename(dir, "sub", dir, "empty"); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("err = %v, want EIO", err)
+	}
+	info, err := e.fs.Lstat("/dir/empty")
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Errorf("empty target after failed rename: %v, %v", info, err)
+	}
+	if _, err := e.fs.Lstat("/dir/sub"); err != nil {
+		t.Errorf("source lost: %v", err)
+	}
+}
+
+func TestRenameTargetUnreadable(t *testing.T) {
+	e := newFaEnv(t, ExportOptions{})
+	e.fs.Mkdir("/dir/empty", 0o755)
+	e.nfs.fs = &renameHookFS{SymlinkFileSystem: e.fs, readDirErr: syscall.EIO}
+	dir, _ := e.nfs.Lookup("/dir")
+	if err := e.nfs.Rename(dir, "sub", dir, "empty"); !errors.Is(err, syscall.EIO) {
+		t.Errorf("err = %v, want EIO", err)
+	}
+}
+
+// TestMapErrorStatusPrecedence: a server-detected status wins over whatever
+// else its errno matches. On Windows syscall.ENOTDIR is ERROR_PATH_NOT_FOUND,
+// which is also os.ErrNotExist; this reproduces that on every host.
+func TestMapErrorStatusPrecedence(t *testing.T) {
+	notDir := &statusError{NFSERR_NOTDIR, "not a directory", os.ErrNotExist}
+	if got := mapError(fmt.Errorf("wrapped: %w", notDir)); got != NFSERR_NOTDIR {
+		t.Errorf("mapError = %d, want NFSERR_NOTDIR", got)
+	}
+	// A host errno is mapped as the host means it. Windows has no ENOTDIR of
+	// its own: syscall.ENOTDIR there is ERROR_PATH_NOT_FOUND, a missing path.
+	want := uint32(NFSERR_NOTDIR)
+	if runtime.GOOS == "windows" {
+		want = NFSERR_NOENT
+	}
+	if got := mapError(&os.PathError{Op: "open", Path: "/a/b", Err: syscall.ENOTDIR}); got != want {
+		t.Errorf("mapError(syscall.ENOTDIR) = %d, want %d", got, want)
+	}
+	for _, e := range []*statusError{errNotDir, errIsDir, errNotEmpty} {
+		if e.Error() == "" || !errors.Is(e, e.errno) {
+			t.Errorf("%v: empty message or does not unwrap to its errno", e.errno)
+		}
+	}
+}
+
+// TestRenameConflictsOnHost runs RENAME's conflict cases against the host
+// filesystem (osfs), whose rename rules differ between unix and Windows.
+func TestRenameConflictsOnHost(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{"sub", "empty", "full", "full2"} {
+		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"a.txt", "b.txt", "full/x", "full2/y"} {
+		if err := os.WriteFile(filepath.Join(root, f), []byte(f), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ofs, err := osfs.NewFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bfs, err := basefs.NewFS(ofs, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nfs, err := New(bfs, ExportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { nfs.Close() })
+	dir, err := nfs.Lookup("/")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		from, to string
+		want     uint32
+	}{
+		{"a.txt", "sub", NFSERR_ISDIR},
+		{"sub", "a.txt", NFSERR_NOTDIR},
+		{"sub", "full", NFSERR_NOTEMPTY},
+		{"a.txt", "b.txt", NFS_OK},
+		{"full2", "empty", NFS_OK},
+	}
+	for _, c := range cases {
+		err := nfs.Rename(dir, c.from, dir, c.to)
+		if got := mapError(err); got != c.want {
+			t.Errorf("rename %s over %s: %v (status %d), want status %d", c.from, c.to, err, got, c.want)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "b.txt")); err != nil || string(data) != "a.txt" {
+		t.Errorf("b.txt = %q, %v; want the renamed a.txt", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "empty", "y")); err != nil {
+		t.Errorf("replaced directory lost its contents: %v", err)
 	}
 }

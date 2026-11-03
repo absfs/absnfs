@@ -23,15 +23,36 @@ import (
 // ErrTimeout is returned when an operation times out
 var ErrTimeout = errors.New("operation timed out")
 
+// statusError is a condition the server detected itself and whose NFS status
+// must not depend on how the host spells the errno: on Windows syscall.ENOTDIR
+// is ERROR_PATH_NOT_FOUND, which also matches os.ErrNotExist.
+type statusError struct {
+	status uint32
+	msg    string
+	errno  error
+}
+
+func (e *statusError) Error() string { return e.msg }
+func (e *statusError) Unwrap() error { return e.errno }
+
+var (
+	errNotDir   = &statusError{NFSERR_NOTDIR, "not a directory", syscall.ENOTDIR}
+	errIsDir    = &statusError{NFSERR_ISDIR, "is a directory", syscall.EISDIR}
+	errNotEmpty = &statusError{NFSERR_NOTEMPTY, "directory not empty", syscall.ENOTEMPTY}
+)
+
 // mapError converts absfs errors to NFS status codes
 func mapError(err error) uint32 {
 	// Check custom errors first
 	var invalidHandle *InvalidFileHandleError
 	var notSupported *NotSupportedError
+	var status *statusError
 
 	switch {
 	case err == nil:
 		return NFS_OK
+	case errors.As(err, &status):
+		return status.status
 	case errors.As(err, &invalidHandle):
 		return NFSERR_BADHANDLE
 	case errors.As(err, &notSupported):
@@ -753,8 +774,16 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 		return fmt.Errorf("rename: cannot move %s inside itself to %s: %w", oldPath, newPath, syscall.EINVAL)
 	}
 
+	bothDirs, err := s.renameConflict(oldPath, newPath)
+	if err != nil {
+		return fmt.Errorf("rename: cannot rename %s over %s: %w", oldPath, newPath, err)
+	}
+
 	err = s.fs.Rename(oldPath, newPath)
-	if err != nil && errors.Is(err, os.ErrExist) {
+	// Go's os.Rename refuses an existing directory target on every host
+	// (EEXIST on unix, ERROR_ACCESS_DENIED on Windows), so a directory over
+	// an empty directory is replaced whatever the backend said.
+	if err != nil && (bothDirs || errors.Is(err, os.ErrExist)) {
 		err = s.replaceByRename(oldPath, newPath, err)
 	}
 	if err != nil {
@@ -806,15 +835,59 @@ func (s *AbsfsNFS) replaceByRename(oldPath, newPath string, exists error) error 
 	}
 	switch {
 	case src.IsDir() && !dst.IsDir():
-		return syscall.ENOTDIR
+		return errNotDir
 	case !src.IsDir() && dst.IsDir():
-		return syscall.EISDIR
+		return errIsDir
 	}
 	// Remove fails on a non-empty directory, which is the required error.
 	if err := s.fs.Remove(newPath); err != nil {
 		return err
 	}
-	return s.fs.Rename(oldPath, newPath)
+	err = s.fs.Rename(oldPath, newPath)
+	if err != nil && dst.IsDir() {
+		// Put the empty directory back so a failed RENAME changes nothing.
+		s.fs.Mkdir(newPath, dst.Mode().Perm())
+	}
+	return err
+}
+
+// renameConflict applies RFC 1813's rules for an existing RENAME target
+// before the backend sees the call, because hosts disagree: Windows refuses
+// all of these with ERROR_ACCESS_DENIED, and its ENOTDIR is the errno for a
+// missing path. A directory may only replace an empty directory and a
+// non-directory only a non-directory. bothDirs reports an empty directory
+// target being replaced by a directory.
+func (s *AbsfsNFS) renameConflict(oldPath, newPath string) (bothDirs bool, err error) {
+	if oldPath == newPath {
+		return false, nil
+	}
+	src, err := s.fs.Lstat(oldPath)
+	if err != nil {
+		return false, nil // the backend reports a missing source
+	}
+	dst, err := s.fs.Lstat(newPath)
+	// SameFile: a case-only rename on a case-insensitive host.
+	if err != nil || os.SameFile(src, dst) {
+		return false, nil
+	}
+	switch {
+	case src.IsDir() && !dst.IsDir():
+		return false, errNotDir
+	case !src.IsDir() && dst.IsDir():
+		return false, errIsDir
+	case !src.IsDir():
+		return false, nil
+	}
+	entries, err := s.fs.ReadDir(newPath)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		if e.Name() != "." && e.Name() != ".." {
+			return false, errNotEmpty
+		}
+	}
+	return true, nil
 }
 
 // ReadDir implements the READDIR operation

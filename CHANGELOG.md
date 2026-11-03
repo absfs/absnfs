@@ -69,6 +69,12 @@ to the macOS NFS client, which is stricter than Linux's.
 - RENAME onto an existing name now replaces it as RFC 1813 requires, also on
   filesystems whose Rename refuses an existing target (memfs). Incompatible
   targets return `NFS3ERR_ISDIR`, `NFS3ERR_NOTDIR` or `NFS3ERR_NOTEMPTY`.
+  The server checks these itself before calling the filesystem, so the
+  status no longer depends on the host's rename rules or errno spelling (on
+  Windows `ENOTDIR` is the errno for a missing path, so a directory renamed
+  over a file was reported as `NFS3ERR_NOENT`). A directory replacing an
+  empty directory falls back to remove-and-rename on any backend error, and
+  puts the empty directory back if the rename still fails.
 - CREATE in GUARDED or EXCLUSIVE mode truncated an existing file and
   reported success, so `open(O_CREAT|O_EXCL)` could not protect a lock file.
   Both modes now fail with `NFS3ERR_EXIST` and leave the file alone. EXCLUSIVE
