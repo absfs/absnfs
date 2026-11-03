@@ -115,17 +115,16 @@ func loadHandleState(maxHandles int, dir string) (*FileHandleMap, *os.File, erro
 			return nil, nil, fmt.Errorf("%s is %d bytes, want %d", handleKeyFile, len(key), handleKeySize)
 		}
 		fm := newFileHandleMapWithKey(maxHandles, key)
-		good := fm.log.replay(logData)
+		// Drop a record torn by a crash, so appends follow good ones. (A
+		// file open for appending cannot be truncated on Windows.)
+		if good := fm.log.replay(logData); good < len(logData) {
+			if err := os.Truncate(logPath, int64(good)); err != nil {
+				return nil, nil, err
+			}
+		}
 		f, err := os.OpenFile(logPath, os.O_RDWR|os.O_APPEND, 0o600)
 		if err != nil {
 			return nil, nil, err
-		}
-		// Drop a record torn by a crash, so appends follow good ones.
-		if good < len(logData) {
-			if err := f.Truncate(int64(good)); err != nil {
-				f.Close()
-				return nil, nil, err
-			}
 		}
 		return fm, f, nil
 	case keyErr != nil && !errors.Is(keyErr, os.ErrNotExist):
