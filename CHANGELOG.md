@@ -58,6 +58,24 @@ to the macOS NFS client, which is stricter than Linux's.
   after it. Every procedure now invalidates exactly what it changed (the
   whole subtree for RENAME), after changing it, and a result read before an
   invalidation is not cached.
+- Decisions that must not use cached attributes no longer do. SETATTR
+  compares the request with the file's current attributes, so a field
+  changed behind the server's back since it was cached is still set, and the
+  `sattrguard3` ctime check returns `NFS3ERR_NOT_SYNC` for a file changed
+  since the client's ctime. WRITE's owner override goes to the file's current
+  owner, read with the mode it checks.
+- Changes made through an `NFSNode` from `Lookup` (`Write`, `WriteAt`,
+  `WriteString`, `Truncate`, `Chmod`, `Chown`, `Chtimes`) invalidate the
+  server's cached attributes, so the next `GetAttr` reports them.
+- Handles named paths and ignored RENAME: after renaming a directory, a
+  client's handles for the files below it returned `NFS3ERR_NOENT`, and a
+  file made again under the old name was given the moved file's handle, so
+  a client holding it reached a different file. Handles now follow RENAME;
+  the handle of an object RENAME replaced or REMOVE/RMDIR deleted reports
+  `NFS3ERR_STALE`, and its number is never reused.
+- Disabling negative caching at run time dropped no entries, and MKDIR or
+  SYMLINK failing with `NFS3ERR_EXIST` kept a cached miss for the name, so
+  LOOKUP kept answering `NFS3ERR_NOENT` for a name that existed.
 - LOOKUP replies carried the directory's attributes from when its handle was
   made, never refreshed, so clients could keep a stale directory mtime.
 - Lowering `AttrCacheTimeout`, `NegativeCacheTimeout` or `DirCacheTimeout`

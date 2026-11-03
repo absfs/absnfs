@@ -99,7 +99,9 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
 	}
 
-	preAttrs, err := h.server.handler.GetAttr(node)
+	// Fresh attributes, not cached ones: the guard and the fields the
+	// request leaves alone must reflect the file as it is now.
+	preAttrs, err := h.server.handler.statAttrs(node.path)
 	if err != nil {
 		return nfsErrorWithWcc(reply, mapError(err)), nil
 	}
@@ -131,13 +133,10 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 		}
 	}
 
-	// SetAttr applies the fields that differ from node.attrs, so give the
-	// node the fresh attributes and start the request from a copy of them:
-	// file id, owner and times are kept unless the request sets them.
-	nodeAttrs, reqAttrs := *current, *current
-	node.mu.Lock()
-	node.attrs = &nodeAttrs
-	node.mu.Unlock()
+	// Start the request from a copy of the current attributes: file id,
+	// owner and times are kept unless the request sets them. SetAttr
+	// applies the fields that differ from what the filesystem holds.
+	reqAttrs := *current
 	attrs := &reqAttrs
 
 	if sattr.SetMode {

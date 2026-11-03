@@ -187,6 +187,7 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 
 	// The directory was empty, so nothing below it needs forgetting
 	h.server.handler.invalidate(node.path, targetPath)
+	h.server.handler.fileMap.removed(targetPath)
 
 	dirPostAttrs, err := h.server.handler.GetAttr(node)
 	if err != nil {

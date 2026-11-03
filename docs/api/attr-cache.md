@@ -107,7 +107,7 @@ Removes all entries from the cache and resets the LRU list.
 func (c *AttrCache) ConfigureNegativeCaching(enable bool, ttl time.Duration)
 ```
 
-Enables or disables negative caching and sets the negative entry TTL. If `ttl <= 0`, the existing negative TTL is preserved.
+Enables or disables negative caching and sets the negative entry TTL. If `ttl <= 0`, the existing negative TTL is preserved. Disabling it drops the negative entries already cached.
 
 ### Resize
 

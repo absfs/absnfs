@@ -200,13 +200,18 @@ gid; a server not running as root can only give them its own. An UNCHECKED
   file, absnfs adds owner write permission while it opens the file. A chmod
   arriving in that instant is undone.
 - **File ids are path based.** Renaming an object changes its fileid, and two
-  hard links (where the backing filesystem has them) have different ids.
+  hard links (where the backing filesystem has them) have different ids. A
+  client's handles follow a RENAME, but one that compares fileids may treat a
+  moved object's handle as stale and look the name up again. The handle of a
+  removed or replaced object reports `NFS3ERR_STALE`.
 - **Changes made behind the server's back are seen after a delay.** absnfs
   caches attributes for `AttrCacheTimeout` (5s by default), and, when
   enabled, misses for `NegativeCacheTimeout` and listings for
   `DirCacheTimeout`. Every change made through the server is seen at once,
   but one made to the exported filesystem directly (another process, a
-  second server over the same files) can take that long to show.
+  second server over the same files) can take that long to show. So can one
+  made through the server under another spelling of the name, on a
+  case-insensitive host filesystem (`/F` after changing `/f`).
 - **The rename fallback is not atomic.** When the backing filesystem refuses
   to replace an existing target, absnfs removes the target and renames, so for
   a moment neither name exists. osfs renames atomically and never needs it.

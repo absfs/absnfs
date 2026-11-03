@@ -180,6 +180,7 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 		node := &NFSNode{
 			SymlinkFileSystem: s.fs,
 			path:              path,
+			server:            s,
 			attrs:             attrs,
 		}
 		if attrs.Mode&os.ModeDir != 0 {
@@ -201,6 +202,7 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 	node := &NFSNode{
 		SymlinkFileSystem: s.fs,
 		path:              path,
+		server:            s,
 		attrs:             attrs,
 	}
 
@@ -243,23 +245,23 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 		return fmt.Errorf("nil attrs")
 	}
 
-	// Check if the object exists first
-	_, err := s.fs.Lstat(node.path)
+	// The request is compared with what the filesystem holds now, never
+	// with cached attributes: a field changed behind the server's back
+	// since then must still be set.
+	info, err := s.fs.Lstat(node.path)
 	if err != nil {
 		return fmt.Errorf("setattr: %w", err)
 	}
+	current := s.attrsFromInfo(node.path, info)
 	// Forget the cached attributes once done, also when a later change
 	// fails after an earlier one was applied.
 	defer s.attrCache.Invalidate(node.path)
 
-	// Read current attrs with lock protection to compare
-	node.mu.RLock()
-	currentMode := node.attrs.Mode
-	currentUid := node.attrs.Uid
-	currentGid := node.attrs.Gid
-	currentMtime := node.attrs.Mtime()
-	currentAtime := node.attrs.Atime()
-	node.mu.RUnlock()
+	currentMode := current.Mode
+	currentUid := current.Uid
+	currentGid := current.Gid
+	currentMtime := current.Mtime()
+	currentAtime := current.Atime()
 
 	if attrs.Mode&os.ModePerm != currentMode&os.ModePerm {
 		if err := s.fs.Chmod(node.path, attrs.Mode&os.ModePerm); err != nil {
@@ -390,12 +392,13 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 
 // WriteWithContext implements the WRITE operation with timeout support
 func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset int64, data []byte) (int64, error) {
-	return s.writeWithContext(ctx, node, offset, data, false)
+	return s.writeWithContext(ctx, node, offset, data, nil)
 }
 
-// writeWithContext writes data at offset. ownerOverride lets the file's
-// owner write even when its mode denies writing (see openForOwnerWrite).
-func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset int64, data []byte, ownerOverride bool) (int64, error) {
+// writeWithContext writes data at offset. When clientUID is not nil and
+// that user owns the file, it may write even when the file's mode denies
+// writing (see openForOwnerWrite).
+func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset int64, data []byte, clientUID *uint32) (int64, error) {
 	if node == nil {
 		return 0, fmt.Errorf("nil node")
 	}
@@ -457,8 +460,8 @@ func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset i
 
 	// Standard write path
 	f, err := s.fs.OpenFile(node.path, os.O_WRONLY, 0)
-	if err != nil && ownerOverride && errors.Is(err, os.ErrPermission) {
-		f, err = s.openForOwnerWrite(node.path, err)
+	if err != nil && clientUID != nil && errors.Is(err, os.ErrPermission) {
+		f, err = s.openForOwnerWrite(node.path, *clientUID, err)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("write: failed to open %s: %w", node.path, err)
@@ -497,17 +500,21 @@ func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset i
 // the duration of the open. NFS is stateless, so a client that creates a file
 // read-only and then writes to it (as git does with 0444 object files) sends
 // WRITEs the filesystem would refuse; NFS servers conventionally let the owner
-// through ("owner override"). denied is returned when the override does not
-// apply.
+// through ("owner override"). The owner is checked here, from the same Lstat
+// that reads the mode, not from cached attributes: the file may have changed
+// owner since. denied is returned when the override does not apply.
 //
 // Overrides are serialized: clients send parallel WRITEs for one file, and
 // each must see the file's real mode, not another override's temporary one.
-func (s *AbsfsNFS) openForOwnerWrite(p string, denied error) (absfs.File, error) {
+func (s *AbsfsNFS) openForOwnerWrite(p string, uid uint32, denied error) (absfs.File, error) {
 	s.ownerWriteMu.Lock()
 	defer s.ownerWriteMu.Unlock()
 
 	info, err := s.fs.Lstat(p)
 	if err != nil || !info.Mode().IsRegular() {
+		return nil, denied
+	}
+	if owner, _ := s.ownerOf(info); owner != uid {
 		return nil, denied
 	}
 	if info.Mode().Perm()&0o200 != 0 {
@@ -719,6 +726,7 @@ func (s *AbsfsNFS) RemoveWithContext(ctx context.Context, dir *NFSNode, name str
 	// Only an empty directory can be removed, so nothing below path needs
 	// forgetting: a cached miss there stays true.
 	s.invalidate(dir.path, path)
+	s.fileMap.removed(path)
 	return nil
 }
 
@@ -795,6 +803,7 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 	if err != nil {
 		return fmt.Errorf("rename: failed to rename %s to %s: %w", oldPath, newPath, err)
 	}
+	s.fileMap.renamed(oldPath, newPath)
 	return nil
 }
 
@@ -1120,13 +1129,13 @@ func (s *AbsfsNFS) Symlink(dir *NFSNode, name string, target string, attrs *NFSA
 		return nil, fmt.Errorf("symlink: failed to sanitize path: %w", err)
 	}
 
-	// Create the symlink (s.fs is absfs.SymlinkFileSystem)
+	// Create the symlink (s.fs is absfs.SymlinkFileSystem). The caches
+	// forget the name also on failure: it may exist after all (EEXIST).
 	err = s.fs.Symlink(target, path)
+	s.invalidate(dir.path, path)
 	if err != nil {
 		return nil, fmt.Errorf("symlink: failed to create symlink at %s pointing to %s: %w", path, target, err)
 	}
-
-	s.invalidate(dir.path, path)
 	return s.Lookup(path)
 }
 

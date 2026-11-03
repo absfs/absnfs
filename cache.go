@@ -6,7 +6,9 @@
 //
 // Coherence. Every procedure that changes the filesystem invalidates what
 // it changed (invalidate, invalidateTree), so the server's own changes are
-// visible to the next request. A reader that consulted the filesystem
+// visible to the next request. Entries are keyed by the name as spelled: on
+// a case-insensitive filesystem an entry cached under another spelling of
+// the same name is bounded only by its TTL. A reader that consulted the filesystem
 // before such an invalidation must not store its result after it: readers
 // take the cache's generation before reading and store with putAt, which
 // drops the result when anything was invalidated in between. Changes made
@@ -61,7 +63,8 @@ func NewAttrCache(ttl time.Duration, maxSize int) *AttrCache {
 	}
 }
 
-// ConfigureNegativeCaching configures negative lookup caching
+// ConfigureNegativeCaching configures negative lookup caching. Disabling it
+// drops the negative entries already cached.
 func (c *AttrCache) ConfigureNegativeCaching(enable bool, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -69,6 +72,16 @@ func (c *AttrCache) ConfigureNegativeCaching(enable bool, ttl time.Duration) {
 	c.enableNegative = enable
 	if ttl > 0 {
 		c.negativeTTL = ttl
+	}
+	if enable {
+		return
+	}
+	c.gen++
+	for p, cached := range c.cache {
+		if cached.isNegative {
+			c.removeFromAccessLog(p)
+			delete(c.cache, p)
+		}
 	}
 }
 

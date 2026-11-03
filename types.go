@@ -107,11 +107,15 @@ type FileHandleMap struct {
 	maxHandles  int               // Maximum handles before eviction (0 = DefaultMaxHandles)
 }
 
-// NFSNode represents a file or directory in the NFS tree
+// NFSNode represents a file or directory in the NFS tree. Its absfs.File
+// methods that change the object (Write, WriteAt, WriteString, Truncate,
+// Chmod, Chown, Chtimes) invalidate the server's cached attributes for it,
+// so the next GetAttr reports the change.
 type NFSNode struct {
 	absfs.SymlinkFileSystem
 	path     string
 	fileId   uint64
+	server   *AbsfsNFS    // the server whose caches describe this node
 	mu       sync.RWMutex // Protects attrs access
 	attrs    *NFSAttrs
 	children map[string]*NFSNode

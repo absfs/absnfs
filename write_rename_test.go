@@ -65,7 +65,7 @@ func TestOpenForOwnerWrite(t *testing.T) {
 	t.Run("not applicable", func(t *testing.T) {
 		e := newFaEnv(t, ExportOptions{})
 		for _, p := range []string{"/dir/missing", "/dir/sub", "/dir/link"} {
-			if _, err := e.nfs.openForOwnerWrite(p, denied); err != denied {
+			if _, err := e.nfs.openForOwnerWrite(p, e.owner.UID, denied); err != denied {
 				t.Errorf("%s: err = %v, want the original denial", p, err)
 			}
 		}
@@ -73,7 +73,7 @@ func TestOpenForOwnerWrite(t *testing.T) {
 
 	t.Run("already writable opens directly", func(t *testing.T) {
 		e := newFaEnv(t, ExportOptions{})
-		f, err := e.nfs.openForOwnerWrite("/dir/file.txt", denied)
+		f, err := e.nfs.openForOwnerWrite("/dir/file.txt", e.owner.UID, denied)
 		if err != nil {
 			t.Fatalf("err = %v, want an open file", err)
 		}
@@ -84,7 +84,7 @@ func TestOpenForOwnerWrite(t *testing.T) {
 		e := newFaEnv(t, ExportOptions{})
 		e.fs.Chmod("/dir/file.txt", 0o444)
 		e.nfs.fs = &faHookFS{SymlinkFileSystem: e.fs, chmodErr: []error{syscall.EPERM}}
-		if _, err := e.nfs.openForOwnerWrite("/dir/file.txt", denied); err != denied {
+		if _, err := e.nfs.openForOwnerWrite("/dir/file.txt", e.owner.UID, denied); err != denied {
 			t.Errorf("err = %v, want the original denial", err)
 		}
 	})
@@ -93,7 +93,7 @@ func TestOpenForOwnerWrite(t *testing.T) {
 		e := newFaEnv(t, ExportOptions{})
 		e.fs.Chmod("/dir/file.txt", 0o444)
 		e.nfs.fs = &faHookFS{SymlinkFileSystem: e.fs, chmodErr: []error{nil, syscall.EIO}}
-		if _, err := e.nfs.openForOwnerWrite("/dir/file.txt", denied); !errors.Is(err, syscall.EIO) {
+		if _, err := e.nfs.openForOwnerWrite("/dir/file.txt", e.owner.UID, denied); !errors.Is(err, syscall.EIO) {
 			t.Errorf("err = %v, want EIO", err)
 		}
 	})

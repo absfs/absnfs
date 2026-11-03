@@ -48,14 +48,9 @@ func (n *NFSNode) Write(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer n.changed() // runs after Close
 	defer f.Close()
-	written, writeErr := f.Write(p)
-	if writeErr == nil {
-		n.mu.Lock()
-		n.attrs.Invalidate()
-		n.mu.Unlock()
-	}
-	return written, writeErr
+	return f.Write(p)
 }
 
 // WriteAt implements absfs.File
@@ -64,14 +59,9 @@ func (n *NFSNode) WriteAt(p []byte, off int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer n.changed() // runs after Close
 	defer f.Close()
-	written, writeErr := f.WriteAt(p, off)
-	if writeErr == nil {
-		n.mu.Lock()
-		n.attrs.Invalidate()
-		n.mu.Unlock()
-	}
-	return written, writeErr
+	return f.WriteAt(p, off)
 }
 
 // Seek implements absfs.File
@@ -140,9 +130,7 @@ func (n *NFSNode) Sync() error {
 
 // Truncate implements absfs.File
 func (n *NFSNode) Truncate(size int64) error {
-	n.mu.Lock()
-	n.attrs.Invalidate() // Invalidate cache on truncate
-	n.mu.Unlock()
+	defer n.changed()
 	return n.SymlinkFileSystem.Truncate(n.path, size)
 }
 
@@ -158,26 +146,54 @@ func (n *NFSNode) Chdir() error {
 
 // Chmod implements absfs.File
 func (n *NFSNode) Chmod(mode os.FileMode) error {
-	n.mu.Lock()
-	n.attrs.Invalidate() // Invalidate cache on chmod
-	n.mu.Unlock()
+	defer n.changed()
 	return n.SymlinkFileSystem.Chmod(n.path, mode)
 }
 
 // Chown implements absfs.File
 func (n *NFSNode) Chown(uid, gid int) error {
-	n.mu.Lock()
-	n.attrs.Invalidate() // Invalidate cache on chown
-	n.mu.Unlock()
+	defer n.changed()
 	return n.SymlinkFileSystem.Chown(n.path, uid, gid)
 }
 
 // Chtimes implements absfs.File
 func (n *NFSNode) Chtimes(atime time.Time, mtime time.Time) error {
-	n.mu.Lock()
-	n.attrs.Invalidate() // Invalidate cache on chtimes
-	n.mu.Unlock()
+	defer n.changed()
 	return n.SymlinkFileSystem.Chtimes(n.path, atime, mtime)
+}
+
+// movedTo returns a node for the object n named, now at p after a RENAME.
+// n itself is left as it is: requests in flight may be using it.
+func (n *NFSNode) movedTo(p string) *NFSNode {
+	moved := &NFSNode{SymlinkFileSystem: n.SymlinkFileSystem, path: p, server: n.server}
+	n.mu.RLock()
+	if n.attrs != nil {
+		attrs := *n.attrs
+		attrs.FileId = fileID(p)
+		attrs.Invalidate()
+		moved.attrs = &attrs
+	}
+	n.mu.RUnlock()
+	if n.children != nil {
+		moved.children = make(map[string]*NFSNode)
+	}
+	return moved
+}
+
+// changed forgets what is known about the object after a change made
+// through n, also a failed one (it may have applied part of the change):
+// the node's own attributes and the server's cached ones. It runs after
+// the change, so a lookup that read the object before it cannot cache the
+// old attributes afterwards (see AttrCache.putAt).
+func (n *NFSNode) changed() {
+	n.mu.Lock()
+	if n.attrs != nil {
+		n.attrs.Invalidate()
+	}
+	n.mu.Unlock()
+	if n.server != nil {
+		n.server.attrCache.Invalidate(n.path)
+	}
 }
 
 // ReadDir implements absfs.File (fs.ReadDirFile)

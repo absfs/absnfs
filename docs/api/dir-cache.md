@@ -22,7 +22,7 @@ type CachedDirEntry struct {
 }
 ```
 
-Internal entry holding a copy of the `[]os.FileInfo` slice and its expiration time.
+Internal entry holding a copy of the `[]os.FileInfo` slice and the time it was stored; it expires once older than the current `DirCacheTimeout`.
 
 ## Functions
 

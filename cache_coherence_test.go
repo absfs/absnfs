@@ -29,10 +29,49 @@ type countingFS struct {
 	lstats atomic.Int64
 	stats  atomic.Int64
 
-	mu        sync.Mutex
-	hookPath  string
-	hook      func()
-	hookCalls int
+	mu          sync.Mutex
+	hookPath    string
+	hook        func()
+	readdirPath string
+	readdirHook func()
+	hookCalls   int
+}
+
+// OpenFile hands out a file whose Readdir runs the hook set by
+// afterNextReaddir.
+func (f *countingFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
+	file, err := f.SymlinkFileSystem.OpenFile(name, flag, perm)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err != nil || f.readdirHook == nil || name != f.readdirPath {
+		return file, err
+	}
+	hook := f.readdirHook
+	f.readdirHook = nil
+	return &readdirHookFile{File: file, fs: f, hook: hook}, nil
+}
+
+type readdirHookFile struct {
+	absfs.File
+	fs   *countingFS
+	hook func()
+}
+
+func (h *readdirHookFile) Readdir(n int) ([]os.FileInfo, error) {
+	entries, err := h.File.Readdir(n)
+	h.fs.mu.Lock()
+	h.fs.hookCalls++
+	h.fs.mu.Unlock()
+	h.hook()
+	return entries, err
+}
+
+// afterNextReaddir runs hook once, right after the next listing of p has
+// been read.
+func (f *countingFS) afterNextReaddir(p string, hook func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.readdirPath, f.readdirHook = p, hook
 }
 
 func (f *countingFS) Lstat(name string) (os.FileInfo, error) {
@@ -495,7 +534,8 @@ func TestLookupReplyCarriesCurrentDirAttrs(t *testing.T) {
 
 // TestLookupInVanishedDirectory: once the directory behind a handle is
 // gone (and its cached attributes have expired), LOOKUP reports NOENT with
-// the attributes the handle last had.
+// the attributes the handle last had. A regression guard for currentAttrs's
+// fallback; it passes on the code before it too.
 func TestLookupInVanishedDirectory(t *testing.T) {
 	e := newCacheEnv(t, ExportOptions{})
 	e.mkdir("/d")
@@ -558,10 +598,11 @@ func TestCacheSavesBackendStats(t *testing.T) {
 	}
 }
 
-// TestCacheCoherentUnderConcurrentMutation runs lookups, listings and
-// mutations of a small tree concurrently (run it with -race) and then checks
-// that every answer the caches still hold matches the filesystem. TTLs are
-// an hour, so only invalidation can keep them right.
+// TestCacheCoherentUnderConcurrentMutation runs lookups, handle use,
+// listings and mutations of a small tree concurrently (run it with -race)
+// and then checks that every answer the caches still hold matches the
+// filesystem and that every handle names the path it is recorded under.
+// TTLs are an hour, so only invalidation can keep them right.
 func TestCacheCoherentUnderConcurrentMutation(t *testing.T) {
 	e, base := newOSCacheEnv(t, ExportOptions{
 		AttrCacheTimeout:     time.Hour,
@@ -598,11 +639,15 @@ func TestCacheCoherentUnderConcurrentMutation(t *testing.T) {
 				switch r.Intn(8) {
 				case 0, 1:
 					if n, err := e.nfs.Lookup(p); err == nil {
-						e.nfs.GetAttr(n)
+						if held, ok := e.h.lookupNode(e.nfs.fileMap.Allocate(n)); ok {
+							e.nfs.GetAttr(held)
+						}
 					}
 				case 2:
-					if n, err := e.nfs.Lookup(p); err == nil {
+					if n, err := e.nfs.Lookup(p); err == nil && r.Intn(2) == 0 {
 						e.nfs.Write(n, int64(r.Intn(64)), []byte("data"))
+					} else if err == nil {
+						n.WriteAt([]byte("node"), int64(r.Intn(64)))
 					}
 				case 3:
 					if dirErr == nil {
@@ -647,6 +692,13 @@ func TestCacheCoherentUnderConcurrentMutation(t *testing.T) {
 			}
 		}
 	}
+	e.nfs.fileMap.RLock()
+	for p, h := range e.nfs.fileMap.pathHandles {
+		if n, ok := e.nfs.fileMap.handles[h].(*NFSNode); !ok || n.path != p {
+			t.Errorf("handle %d is recorded for %s but names %v", h, p, n)
+		}
+	}
+	e.nfs.fileMap.RUnlock()
 	for _, d := range dirs {
 		p := path.Join(base, d)
 		cached, ok := e.nfs.dirCache.Get(p)

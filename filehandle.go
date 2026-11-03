@@ -127,6 +127,57 @@ func (fm *FileHandleMap) Release(handle uint64) {
 	}
 }
 
+// renamed moves the handles of oldPath and of everything below it to the
+// same names below newPath, after a RENAME, so a client's handles keep
+// reaching the objects they named and a name made again under oldPath gets
+// a new handle. The handles of what newPath replaced are retired.
+func (fm *FileHandleMap) renamed(oldPath, newPath string) {
+	if oldPath == newPath {
+		return
+	}
+	fm.Lock()
+	defer fm.Unlock()
+
+	oldRoots, newRoots := []string{oldPath}, []string{newPath}
+	oldPrefixes, newPrefixes := treePrefixes(oldRoots), treePrefixes(newRoots)
+	moved := make(map[uint64]string)
+	for p, h := range fm.pathHandles {
+		switch {
+		case inAnyTree(p, oldRoots, oldPrefixes):
+			moved[h] = newPath + p[len(oldPath):]
+		case inAnyTree(p, newRoots, newPrefixes):
+			fm.retire(p, h)
+		}
+	}
+	for h, p := range moved {
+		node := fm.handles[h].(*NFSNode) // pathHandles only records nodes
+		delete(fm.pathHandles, node.path)
+		fm.handles[h] = node.movedTo(p)
+		fm.pathHandles[p] = h
+	}
+}
+
+// removed retires the handle of the object at p, after REMOVE or RMDIR.
+func (fm *FileHandleMap) removed(p string) {
+	fm.Lock()
+	defer fm.Unlock()
+	if h, ok := fm.pathHandles[p]; ok {
+		fm.retire(p, h)
+	}
+}
+
+// retire drops handle h of the object at p for good: requests with it get
+// NFS3ERR_STALE, and unlike a released handle its number is never handed
+// out again, so it cannot come to name another object. The caller holds
+// fm's lock.
+func (fm *FileHandleMap) retire(p string, h uint64) {
+	if f, ok := fm.handles[h]; ok {
+		f.Close()
+		delete(fm.handles, h)
+	}
+	delete(fm.pathHandles, p)
+}
+
 // ReleaseAll closes and removes all file handles
 func (fm *FileHandleMap) ReleaseAll() {
 	fm.Lock()

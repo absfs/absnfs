@@ -332,9 +332,10 @@ type ExportOptions struct {
 	TransferSize int
 
 	// AttrCacheTimeout controls how long file attributes are cached.
-	// Changes made through the server are seen at once; changes made to
-	// the filesystem by anything else are seen once it has passed. A
-	// changed value applies to entries already cached.
+	// Changes made through the server are seen at once (for the spelling
+	// of the name they used, on a case-insensitive filesystem); changes
+	// made to the filesystem by anything else are seen once it has passed.
+	// A changed value applies to entries already cached.
 	// Default: 5 * time.Second
 	AttrCacheTimeout time.Duration
 

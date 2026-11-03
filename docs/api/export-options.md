@@ -110,7 +110,10 @@ passed back.
 
 Changes made through the server are seen by the next request: every
 procedure invalidates what it changed, including everything below a renamed
-directory. Changes made to the exported filesystem by anything else (another
+directory. Entries are keyed by the name as spelled, so on a case-insensitive
+host filesystem (APFS and NTFS by default) an entry cached under another
+spelling of the same name (`/F` for `/f`) is seen to change only once its
+timeout has passed. Changes made to the exported filesystem by anything else (another
 process, another server over the same files) are seen once the relevant
 timeout has passed: `AttrCacheTimeout` for attributes, `NegativeCacheTimeout`
 for a name that did not exist, `DirCacheTimeout` for listings. A changed

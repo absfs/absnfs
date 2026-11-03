@@ -222,6 +222,8 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 
 	dirPath := path.Join(node.path, name)
 	if err := h.server.handler.fs.Mkdir(dirPath, os.FileMode(mode)); err != nil {
+		// The name may exist after all (EEXIST): forget a cached miss.
+		h.server.handler.invalidate(node.path, dirPath)
 		dirPostAttrs, _ := h.server.handler.GetAttr(node)
 		if dirPostAttrs == nil {
 			dirPostAttrs = dirPreAttrs

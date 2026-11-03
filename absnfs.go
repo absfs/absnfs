@@ -205,6 +205,7 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	root := &NFSNode{
 		SymlinkFileSystem: fs,
 		path:              "/",
+		server:            server,
 		children:          make(map[string]*NFSNode),
 	}
 

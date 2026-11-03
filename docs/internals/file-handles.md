@@ -46,6 +46,24 @@ closes it. The handle does not keep a file descriptor open between requests.
    `maxHandles` entries at a time, cleans up path mappings, closes the
    associated files, and pushes freed IDs back onto the heap.
 
+## Handles Across RENAME and REMOVE
+
+Handles name paths, so the server moves them when a path changes:
+
+- After a RENAME, the handles of the old name and of everything below it are
+  moved to the same names below the new one (`FileHandleMap.renamed`). A
+  client's handle keeps reaching the object it named, and a name made again
+  under the old path gets a new handle. Each moved handle gets a new
+  `NFSNode`; the old one is left untouched for requests in flight.
+- The handles of what a RENAME replaced, and of an object REMOVE or RMDIR
+  deleted, are retired (`renamed`, `removed`): requests with them get
+  `NFSERR_STALE`, and unlike a released handle the ID is never handed out
+  again, so it cannot come to name another object.
+
+File ids are derived from paths, so an object reached through a moved handle
+reports a new fileid; a client that compares fileids may then treat the handle
+as stale and look the name up again.
+
 ## Handle Lookup
 
 `FileHandleMap.Get` retrieves the `absfs.File` (actually `NFSNode`) for a handle
