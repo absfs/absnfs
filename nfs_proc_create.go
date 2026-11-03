@@ -75,9 +75,9 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithWcc(reply, status), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithWcc(reply, st), nil
 	}
 
 	// R23: Return NFS error instead of nil,err
@@ -209,9 +209,9 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 		return nfsErrorWithWcc(reply, status), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithWcc(reply, st), nil
 	}
 
 	// R23: Return NFS error instead of nil,err
@@ -331,9 +331,9 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 		return nfsErrorWithWcc(reply, NFSERR_ACCES), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithWcc(reply, st), nil
 	}
 
 	// R23: Return NFS error instead of nil,err

@@ -118,9 +118,9 @@ func (h *NFSProcedureHandler) handleFsstat(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithPostOp(reply, st), nil
 	}
 
 	// R22: Return NFS error instead of nil,err
@@ -155,9 +155,9 @@ func (h *NFSProcedureHandler) handleFsinfo(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithPostOp(reply, st), nil
 	}
 
 	// R22: Return NFS error instead of nil,err
@@ -201,9 +201,9 @@ func (h *NFSProcedureHandler) handlePathconf(body io.Reader, reply *RPCReply, au
 		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithPostOp(reply, st), nil
 	}
 
 	// R22: Return NFS error instead of nil,err

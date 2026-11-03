@@ -902,8 +902,8 @@ func TestR3_SetattrUIDGIDAuthRestriction(t *testing.T) {
 	fileHandle := getFileHandle(server, "/testfile.txt")
 
 	// Get current attrs to know the original UID/GID
-	node, ok := handler.lookupNode(fileHandle)
-	if !ok {
+	node, st := handler.lookupNode(fileHandle)
+	if st != NFS_OK {
 		t.Fatal("Failed to look up node")
 	}
 

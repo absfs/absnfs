@@ -29,9 +29,9 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithPostOp(reply, NFSERR_ACCES), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithPostOp(reply, st), nil
 	}
 
 	node.mu.RLock()
@@ -116,9 +116,9 @@ func (h *NFSProcedureHandler) handleReadlink(body io.Reader, reply *RPCReply, au
 		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithPostOp(reply, st), nil
 	}
 
 	node.mu.RLock()

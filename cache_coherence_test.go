@@ -639,7 +639,7 @@ func TestCacheCoherentUnderConcurrentMutation(t *testing.T) {
 				switch r.Intn(8) {
 				case 0, 1:
 					if n, err := e.nfs.Lookup(p); err == nil {
-						if held, ok := e.h.lookupNode(e.nfs.fileMap.issue(n)); ok {
+						if held, st := e.h.lookupNode(e.nfs.fileMap.issue(n)); st == NFS_OK {
 							e.nfs.GetAttr(held)
 						}
 					}

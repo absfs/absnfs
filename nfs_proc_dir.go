@@ -94,9 +94,9 @@ func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, aut
 		}
 	}
 
-	dir, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
+	dir, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithPostOp(reply, st), nil
 	}
 
 	// R4: Copy attrs under RLock for dir check
@@ -201,9 +201,9 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 		}
 	}
 
-	dir, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
+	dir, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithPostOp(reply, st), nil
 	}
 
 	// R4: Copy attrs under RLock for dir check

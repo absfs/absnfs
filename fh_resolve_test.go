@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/absfs/lockfs"
 	"github.com/absfs/memfs"
 	"github.com/absfs/osfs"
+	"github.com/absfs/switchfs"
 	"github.com/absfs/unionfs"
 )
 
@@ -402,7 +404,8 @@ func (c *ioCountingFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.
 }
 
 // Forged, garbled, oversized and old-format handles are stale, and cost
-// no filesystem call.
+// no filesystem call. (A forged tail handle costs a bounded walk first:
+// see TestForgedTailHandleCostIsBounded.)
 func TestBadHandlesAreStaleWithoutIO(t *testing.T) {
 	cfs := &ioCountingFS{SymlinkFileSystem: newMemFS(t)}
 	writeFile(t, cfs, "/file", 1)
@@ -479,8 +482,8 @@ func TestTailWalkCollisionsAndCaps(t *testing.T) {
 	if w.checks < 2 {
 		t.Errorf("%d tag checks: the collisions were not tried", w.checks)
 	}
-	if node, ok := nfs.resolveHandle(fh); !ok || node.path != "/"+p {
-		t.Errorf("resolveHandle: %v, %v", node, ok)
+	if node, st := nfs.resolveHandle(fh); st != NFS_OK || node.path != "/"+p {
+		t.Errorf("resolveHandle: %v, status %d", node, st)
 	}
 
 	// Past the caps the walk gives up: the handle is stale, and counted.
@@ -525,28 +528,77 @@ func TestTailWalkFollowsRenames(t *testing.T) {
 	e.size(dat, 6, "tail handle of a renamed leaf")
 }
 
-// routeFS stands for a switchfs whose route for the tree is swapped at
-// runtime: the same paths, another backend.
-type routeFS struct {
-	absfs.SymlinkFileSystem
+// switchFS is a switchfs with a memfs default backend and prefix routes
+// that strip their prefix, as c4d serves workspaces.
+type switchFS struct {
+	fs *switchfs.SwitchFS
 }
 
+func newSwitchFS(t *testing.T, routes map[string]absfs.FileSystem) *switchFS {
+	t.Helper()
+	top := newMemFS(t)
+	opts := []switchfs.Option{switchfs.WithDefault(top)}
+	for route, backend := range routes {
+		mustMkdir(t, top, route) // so listings of its parent show it
+		opts = append(opts, switchfs.WithRoute(route, backend, switchfs.WithRewriter(switchfs.StripPrefix(route))))
+	}
+	sw, err := switchfs.New(opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &switchFS{fs: sw}
+}
+
+// swap routes route to backend from now on.
+func (s *switchFS) swap(t *testing.T, route string, backend absfs.FileSystem) {
+	t.Helper()
+	if err := s.fs.RemoveRoute(route, switchfs.PatternPrefix); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.fs.AddRoute(route, backend, switchfs.WithRewriter(switchfs.StripPrefix(route))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A switchfs prefix route swapped at runtime to another backend with the
+// same tree: cached and evicted handles, inline and tail, resolve in the
+// new backend. The tail handle hashes the route's own component, so its
+// walk lists the default backend's root and then crosses into the route.
 func TestRouteSwapResolvesToNewBackend(t *testing.T) {
+	const route = "/workspace_route_of_some_length"
+	var deep []string
+	for i := 0; i < 20; i++ {
+		deep = append(deep, fmt.Sprintf("d%02d", i))
+	}
+	deepFile := "/" + strings.Join(deep, "/") + "/f"
 	one, two := newMemFS(t), newMemFS(t)
 	for i, fs := range []absfs.SymlinkFileSystem{one, two} {
-		mustMkdir(t, fs, "/ws")
-		writeFile(t, fs, "/ws/a.txt", 10*(i+1))
+		writeFile(t, fs, "/a.txt", 10*(i+1))
+		mustMkdir(t, fs, path.Dir(deepFile))
+		writeFile(t, fs, deepFile, 10*(i+1)+1)
 	}
-	rfs := &routeFS{one}
-	e := newFhEnv(t, rfs, ExportOptions{MaxHandles: 10})
+	sw := newSwitchFS(t, map[string]absfs.FileSystem{route: one})
+	e := newFhEnv(t, sw.fs, ExportOptions{MaxHandles: 10})
 	root := e.mount("/")
-	a := e.walk(root, "ws/a.txt")
-	e.size(a, 10, "before the swap")
-	rfs.SymlinkFileSystem = two
+	a := e.walk(root, route+"/a.txt")
+	f := e.walk(root, route+deepFile)
+	if ph, _ := parseHandle(a); ph.kind != fhKindInline {
+		t.Fatalf("handle of a.txt is of kind %d, want inline", ph.kind)
+	}
+	if ph, _ := parseHandle(f); ph.kind != fhKindTail || ph.path != "" {
+		t.Fatalf("handle of the deep file: kind %d, prefix %q; want a tail handle hashing the route", ph.kind, ph.path)
+	}
+	e.size(a, 10, "inline handle before the swap")
+	e.size(f, 11, "tail handle before the swap")
+
+	sw.swap(t, route, two)
 	e.nfs.attrCache.Clear()
-	e.size(a, 20, "cached handle after the swap")
+	e.size(a, 20, "cached inline handle after the swap")
+	e.size(f, 21, "cached tail handle after the swap")
 	e.nfs.fileMap.ReleaseAll()
-	e.size(a, 20, "evicted handle after the swap")
+	e.nfs.fileMap.dirs = newDirHashIndex(dirIndexLimit)
+	e.size(a, 20, "evicted inline handle after the swap")
+	e.size(f, 21, "evicted tail handle after the swap")
 }
 
 // Handles carry only virtual paths, never where an osfs export lives on
@@ -644,8 +696,8 @@ func TestHandleStress(t *testing.T) {
 					// the content read is the looked-up object's.
 					seq := e.nfs.fileMap.log.seq.Load()
 					if fh, st := e.lookup(sdir, n); st == NFS_OK {
-						node, ok := e.nfs.resolveHandle(fh)
-						if !ok {
+						node, st := e.nfs.resolveHandle(fh)
+						if st != NFS_OK {
 							continue
 						}
 						b, err := readAll(fs, node.path)
@@ -675,8 +727,8 @@ func TestHandleStress(t *testing.T) {
 
 	wrong, checked := 0, 0
 	for _, h := range held {
-		node, ok := e.nfs.resolveHandle(h.fh)
-		if !ok {
+		node, st := e.nfs.resolveHandle(h.fh)
+		if st != NFS_OK {
 			continue
 		}
 		checked++
@@ -704,4 +756,160 @@ func readAll(fs absfs.SymlinkFileSystem, p string) (string, error) {
 	defer f.Close()
 	b, err := io.ReadAll(f)
 	return string(b), err
+}
+
+// A forged tail handle cannot be found stale before its walk lists the
+// directories its prefix names: the tag covers the whole path. The caps
+// bound that cost, and an attempt whose listings were all fresh is not
+// repeated.
+func TestForgedTailHandleCostIsBounded(t *testing.T) {
+	cfs := &ioCountingFS{SymlinkFileSystem: newMemFS(t)}
+	mustMkdir(t, cfs, "/big")
+	for i := 0; i < 300; i++ {
+		mustMkdir(t, cfs, fmt.Sprintf("/big/d%d", i))
+		writeFile(t, cfs, fmt.Sprintf("/big/d%d/f", i), 1)
+	}
+	e := newFhEnv(t, cfs, ExportOptions{})
+	e.mount("/")
+	for _, hb := range []byte{0x00, 0x11, 0x5a, 0xa7, 0xff} {
+		fh := []byte{fhVersion1 | fhKindTail<<4 | fhTypeRegular<<2}
+		fh = append(fh, 1, 2, 3, 4, 5, 6, 7, 8) // a made-up tag
+		fh = append(fh, 2<<2, hb, hb)           // two 8-bit hashes
+		fh = appendHuff(fh, "big")
+		if ph, ok := parseHandle(fh); !ok || ph.kind != fhKindTail {
+			t.Fatal("the forged handle does not parse as a tail handle")
+		}
+		e.nfs.fileMap.dirs = newDirHashIndex(dirIndexLimit) // nothing cached
+		before := cfs.calls.Load()
+		e.stale(fh, "forged tail handle")
+		calls := cfs.calls.Load() - before
+		// Every listing is an Open; a few stats come with them.
+		if limit := int64(3 * tailMaxListings); calls > limit {
+			t.Errorf("hash %02x: %d filesystem calls, want at most %d", hb, calls, limit)
+		}
+		// Fresh listings only: the walk is not repeated.
+		w := tailWalker{s: e.nfs, ctx: context.Background(), fh: fh}
+		w.ph, _ = parseHandle(fh)
+		e.nfs.fileMap.dirs = newDirHashIndex(dirIndexLimit)
+		w.walk(w.ph.path, 0)
+		before = cfs.calls.Load()
+		e.nfs.fileMap.dirs = newDirHashIndex(dirIndexLimit)
+		e.stale(fh, "forged tail handle")
+		if again := cfs.calls.Load() - before; again > int64(w.listings)+1 {
+			t.Errorf("hash %02x: %d filesystem calls for %d listings: the walk was repeated", hb, again, w.listings)
+		}
+	}
+}
+
+// slowRenameFS makes Rename take delay.
+type slowRenameFS struct {
+	absfs.SymlinkFileSystem
+	delay time.Duration
+}
+
+func (s *slowRenameFS) Rename(a, b string) error {
+	time.Sleep(s.delay)
+	return s.SymlinkFileSystem.Rename(a, b)
+}
+
+// A RENAME in flight longer than inflightWait gives the handles below it
+// NFS3ERR_JUKEBOX, so clients retry, never NFS3ERR_STALE: the objects
+// still exist. Once the rename commits they follow it.
+func TestSlowRenameAnswersJukebox(t *testing.T) {
+	defer func(d time.Duration) { inflightWait = d }(inflightWait)
+	inflightWait = 100 * time.Millisecond
+	sfs := &slowRenameFS{SymlinkFileSystem: newMemFS(t)}
+	mustMkdir(t, sfs, "/repo")
+	writeFile(t, sfs, "/repo/f", 5)
+	writeFile(t, sfs, "/repo/"+strings.Repeat("long_name_", 8), 6)
+	e := newFhEnv(t, sfs, ExportOptions{})
+	root := e.mount("/")
+	cached := e.walk(root, "repo/f")
+	evicted := e.walk(root, "repo/"+strings.Repeat("long_name_", 8))
+	e.nfs.fileMap.ReleaseAll()
+	e.walk(root, "repo/f") // cached again; evicted stays out
+
+	sfs.delay = time.Second
+	done := make(chan uint32)
+	go func() { done <- e.rename(root, "repo", root, "repo2") }()
+	for e.nfs.fileMap.log.nInflight.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	for name, fh := range map[string][]byte{"cached": cached, "evicted": evicted} {
+		if st, _ := e.getattr(fh); st != NFSERR_JUKEBOX {
+			t.Errorf("%s handle below a rename in flight: status %d, want NFSERR_JUKEBOX", name, st)
+		}
+	}
+	if n := e.nfs.GetMetrics().HandleInflightTimeouts; n != 2 {
+		t.Errorf("HandleInflightTimeouts %d, want 2", n)
+	}
+	if st := <-done; st != NFS_OK {
+		t.Fatalf("RENAME: status %d", st)
+	}
+	e.size(cached, 5, "cached handle after the rename")
+	e.size(evicted, 6, "evicted handle after the rename")
+}
+
+// READDIRPLUS counts each entry's real size, its handle (10 to 64 bytes)
+// and its name, against the client's maxcount: no page is larger, except
+// one of a single entry, which is always sent.
+func TestReaddirplusPagesFitMaxcount(t *testing.T) {
+	fs := newMemFS(t)
+	mustMkdir(t, fs, "/d")
+	const n = 60
+	var names []string
+	for i := 0; i < n; i++ {
+		long := 14 + i*236/(n-1) // 14 to 250 bytes
+		name := fmt.Sprintf("%03d_%s", i, strings.Repeat("qzjx_kv0-9wQ", 25)[i%12:i%12+long-4])
+		writeFile(t, fs, "/d/"+name, i)
+		names = append(names, name)
+	}
+	e := newFhEnv(t, fs, ExportOptions{})
+	root := e.mount("/")
+	d := e.walk(root, "d")
+	longest := 0
+	for _, name := range names {
+		longest = max(longest, len(e.nfs.fileMap.issue(fileNode("/d/"+name))))
+	}
+	if longest < 56 {
+		t.Fatalf("the longest handle is %d bytes; the test wants some near 64", longest)
+	}
+	for _, maxcount := range []uint32{400, 700, 1024, 2048, 4096} {
+		seen := map[string]bool{}
+		var cookie uint64
+		for pages, eof := 0, false; !eof; pages++ {
+			if pages > n {
+				t.Fatalf("maxcount %d: the listing does not end", maxcount)
+			}
+			r, err := e.h.handleReaddirplus(bytes.NewReader(buildReaddirplusRequest(d, cookie, maxcount, maxcount)), &RPCReply{}, e.auth)
+			if err != nil {
+				t.Fatal(err)
+			}
+			size := len(r.Data.([]byte))
+			f := newFaReader(t, r)
+			if st := f.status(); st != NFS_OK {
+				t.Fatalf("maxcount %d: status %d", maxcount, st)
+			}
+			f.postOpAttr()
+			f.skip(8) // cookieverf
+			entries := f.entries(true)
+			eof = f.u32() == 1
+			if len(entries) == 0 && !eof {
+				t.Fatalf("maxcount %d: an empty page before the end", maxcount)
+			}
+			if size > int(maxcount) && len(entries) > 1 {
+				t.Errorf("maxcount %d: a page of %d entries is %d bytes", maxcount, len(entries), size)
+			}
+			for _, en := range entries {
+				if seen[en.Name] {
+					t.Errorf("maxcount %d: %s listed twice", maxcount, en.Name)
+				}
+				seen[en.Name] = true
+				cookie = en.Cookie
+			}
+		}
+		if len(seen) != n {
+			t.Errorf("maxcount %d: %d entries listed, want %d", maxcount, len(seen), n)
+		}
+	}
 }

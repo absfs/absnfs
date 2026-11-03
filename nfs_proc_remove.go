@@ -34,9 +34,9 @@ func (h *NFSProcedureHandler) handleRemove(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithWcc(reply, status), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithWcc(reply, st), nil
 	}
 
 	node.mu.RLock()
@@ -115,9 +115,9 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 		return nfsErrorWithWcc(reply, NFSERR_ACCES), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithWcc(reply, st), nil
 	}
 
 	node.mu.RLock()
@@ -246,14 +246,14 @@ func (h *NFSProcedureHandler) handleRename(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithDoubleWcc(reply, status), nil
 	}
 
-	srcDir, ok := h.lookupNode(srcHandleVal)
-	if !ok {
-		return nfsErrorWithDoubleWcc(reply, NFSERR_STALE), nil
+	srcDir, st := h.lookupNode(srcHandleVal)
+	if st != NFS_OK {
+		return nfsErrorWithDoubleWcc(reply, st), nil
 	}
 
-	dstDir, ok := h.lookupNode(dstHandleVal)
-	if !ok {
-		return nfsErrorWithDoubleWcc(reply, NFSERR_STALE), nil
+	dstDir, st := h.lookupNode(dstHandleVal)
+	if st != NFS_OK {
+		return nfsErrorWithDoubleWcc(reply, st), nil
 	}
 
 	// R23: Return NFS error instead of nil,err

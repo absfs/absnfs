@@ -29,12 +29,12 @@ func (h *NFSProcedureHandler) handleGetattr(body io.Reader, reply *RPCReply, aut
 		h.server.logger.Printf("GETATTR: Looking up handle %x, fileMap count: %d", handleVal, h.server.handler.fileMap.Count())
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
 		if h.server.options.Debug {
 			h.server.logger.Printf("GETATTR: Handle %x is stale", handleVal)
 		}
-		return nfsErrorReply(reply, NFSERR_STALE), nil
+		return nfsErrorReply(reply, st), nil
 	}
 
 	// R22: Return NFS error instead of nil,err
@@ -94,9 +94,9 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 		return nfsErrorWithWcc(reply, NFSERR_INVAL), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithWcc(reply, st), nil
 	}
 
 	// Fresh attributes, not cached ones: the guard and the fields the
@@ -196,9 +196,9 @@ func (h *NFSProcedureHandler) handleAccess(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithPostOp(reply, GARBAGE_ARGS), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithPostOp(reply, st), nil
 	}
 
 	// R22: Return NFS error instead of nil,err

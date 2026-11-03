@@ -2,8 +2,10 @@
 //
 // Handles MNT (mount export), UMNT (unmount), DUMP (list active
 // mounts), and EXPORT (list available exports). Manages the export
-// path and active mount tracking. Supports both MOUNT v1 and v3
-// for compatibility with different client implementations.
+// path and active mount tracking. MOUNT v1 is answered for NULL, DUMP,
+// UMNT, UMNTALL and EXPORT, whose replies are the same in v1 and v3; a v1
+// MNT gets PROG_MISMATCH, since its fixed 32-byte fhandle cannot carry an
+// NFSv3 handle.
 package absnfs
 
 import (
@@ -14,7 +16,7 @@ import (
 )
 
 // handleMountCall handles mount protocol operations
-// Supports both MOUNT v1 and v3 for compatibility with different clients
+// MOUNT v1 is accepted for every procedure but MNT (see above).
 func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	// Check version - accept v1 or v3
 	if call.Header.Version != 1 && call.Header.Version != MOUNT_V3 {
@@ -27,6 +29,13 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 		return reply, nil
 
 	case 1: // MNT
+		// A MOUNT v1 reply carries a fixed 32-byte fhandle, which an NFSv3
+		// handle (10 to 64 bytes) does not fit, and absnfs serves NFSv3
+		// only: v1 clients are told to use version 3.
+		if call.Header.Version != MOUNT_V3 {
+			reply.AcceptStatus = PROG_MISMATCH
+			return reply, nil
+		}
 		// Apply rate limiting for mount operations
 		if h.server.handler.rateLimiter != nil && h.server.handler.policy.Load().EnableRateLimiting {
 			if !h.server.handler.rateLimiter.AllowOperation(authCtx.ClientIP, OpTypeMount) {

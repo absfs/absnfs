@@ -795,3 +795,24 @@ func TestCovBoost_HandleMountCall_MNTGarbageArgs(t *testing.T) {
 		t.Errorf("expected GARBAGE_ARGS, got %d", result.AcceptStatus)
 	}
 }
+
+// A MOUNT v1 MNT reply would need a 32-byte fhandle, which NFSv3 handles do
+// not fit: v1 MNT is refused with PROG_MISMATCH, v1 EXPORT still answers.
+func TestMountV1MntIsProgMismatch(t *testing.T) {
+	_, handler, auth := setupHandlerEnv(t)
+	var body bytes.Buffer
+	xdrEncodeString(&body, "/")
+	call := &RPCCall{Header: RPCMsgHeader{Program: MOUNT_PROGRAM, Version: 1, Procedure: 1}}
+	reply, err := handler.handleMountCall(call, &body, &RPCReply{}, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.AcceptStatus != PROG_MISMATCH || reply.Data != nil {
+		t.Errorf("v1 MNT: accept status %d, data %v; want PROG_MISMATCH and no data", reply.AcceptStatus, reply.Data)
+	}
+	call.Header.Procedure = 5 // EXPORT
+	reply, err = handler.handleMountCall(call, bytes.NewReader(nil), &RPCReply{}, auth)
+	if err != nil || reply.AcceptStatus != SUCCESS || reply.Data == nil {
+		t.Errorf("v1 EXPORT: accept status %d, err %v", reply.AcceptStatus, err)
+	}
+}

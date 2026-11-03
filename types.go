@@ -117,6 +117,7 @@ type FileHandleMap struct {
 
 	misses       atomic.Uint64 // handles resolved without the cache
 	tailFailures atomic.Uint64 // tail handles no walk resolved
+	busy         atomic.Uint64 // resolutions that outwaited a change in flight
 }
 
 // NFSNode represents a file or directory in the NFS tree. Its absfs.File

@@ -52,6 +52,7 @@ type NFSMetrics struct {
 	HandleTailWalkFailures uint64 // Hashed-tail handles no directory walk resolved (reported stale)
 	HandleTombstoneFolds   uint64 // Times the oldest change records were folded (may cause spurious stale)
 	HandleRedirectsDropped uint64 // Rename records dropped (handles to such renamed objects go stale)
+	HandleInflightTimeouts uint64 // Requests answered NFS3ERR_JUKEBOX: a REMOVE, RMDIR or RENAME on the handle's path outlasted the wait
 
 	// Connection metrics
 	ActiveConnections   int
@@ -449,6 +450,7 @@ func (m *MetricsCollector) updateCacheMetrics() {
 		m.metrics.HandleTailWalkFailures = fm.tailFailures.Load()
 		m.metrics.HandleTombstoneFolds = fm.log.folds.Load()
 		m.metrics.HandleRedirectsDropped = fm.log.redirDrops.Load()
+		m.metrics.HandleInflightTimeouts = fm.busy.Load()
 	}
 }
 

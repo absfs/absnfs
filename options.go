@@ -482,7 +482,8 @@ type ExportOptions struct {
 	// keeps resolved, each with its NFSNode (about 300 bytes). It bounds
 	// memory and the cost of misses, not correctness: a handle no longer
 	// cached is decoded, checked and resolved again (one stat), so a
-	// client never sees NFS3ERR_STALE for an object that still exists.
+	// client does not see NFS3ERR_STALE for an object that still exists,
+	// except in the residual cases docs/internals/file-handles.md lists.
 	// Size it above the number of files and directories clients keep
 	// using, so their requests stay cache hits. Changeable at runtime; a
 	// smaller value evicts at once.

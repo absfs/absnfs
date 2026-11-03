@@ -43,9 +43,9 @@ func (h *NFSProcedureHandler) handleRead(body io.Reader, reply *RPCReply, authCt
 		}
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithPostOp(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithPostOp(reply, st), nil
 	}
 
 	// R22: Return NFS error instead of nil,err
@@ -149,9 +149,9 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 		io.ReadFull(body, padBuf) // Best effort - padding may not be present in all implementations
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithWcc(reply, st), nil
 	}
 
 	if h.server.options.Debug {
@@ -227,9 +227,9 @@ func (h *NFSProcedureHandler) handleCommit(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
-	if !ok {
-		return nfsErrorWithWcc(reply, NFSERR_STALE), nil
+	node, st := h.lookupNode(handleVal)
+	if st != NFS_OK {
+		return nfsErrorWithWcc(reply, st), nil
 	}
 
 	// R23: Return NFS error instead of nil,err

@@ -19,58 +19,71 @@ var (
 	tailMaxChecks   = 256 // candidate paths tag-checked
 )
 
-// resolveHandle returns the node handle fh names, or false when fh is stale:
-// not a handle this server issued, issued for an object removed or replaced
-// since, or for one that no longer exists. Every failure is reported to the
-// client as NFS3ERR_STALE, from which clients recover by looking the name
-// up again.
-func (s *AbsfsNFS) resolveHandle(fh []byte) (*NFSNode, bool) {
+// resolveHandle returns the node handle fh names and NFS_OK, or the status
+// to answer instead: NFSERR_STALE when fh is not a handle this server
+// issued, was issued for an object removed or replaced since, or for one
+// that no longer exists, from which clients recover by looking the name up
+// again; NFSERR_JUKEBOX when a REMOVE, RMDIR or RENAME on its path has been
+// in flight longer than inflightWait, so whether the handle still names its
+// object is not known yet, and the client retries.
+func (s *AbsfsNFS) resolveHandle(fh []byte) (*NFSNode, uint32) {
 	fm := s.fileMap
 	ctx, cancel := context.WithTimeout(context.Background(), inflightWait)
 	defer cancel()
+	// fail is the status for a failed resolution: a validate that ran out
+	// of time waiting for a change in flight is no verdict.
+	fail := func() (*NFSNode, uint32) {
+		if ctx.Err() != nil {
+			fm.busy.Add(1)
+			return nil, NFSERR_JUKEBOX
+		}
+		return nil, NFSERR_STALE
+	}
 
 	if e, node, p, g := fm.cached(fh); e != nil {
 		p2, g2, ok := fm.log.validate(ctx, p, g)
 		switch {
+		case !ok && ctx.Err() != nil:
+			return fail()
 		case !ok:
 			fm.forget(fh, e)
-			return nil, false
+			return nil, NFSERR_STALE
 		case p2 != p || g2 != g:
-			return fm.moved(fh, e, p2, g2), true
+			return fm.moved(fh, e, p2, g2), NFS_OK
 		}
-		return node, true
+		return node, NFS_OK
 	}
 	s.recordHandleMiss()
 
 	ph, ok := parseHandle(fh)
 	if !ok {
-		return nil, false
+		return nil, NFSERR_STALE
 	}
 	var p string
 	switch ph.kind {
 	case fhKindInline:
 		if !fm.codec.verify(fh, ph, ph.path) {
-			return nil, false
+			return nil, NFSERR_STALE
 		}
 		p = ph.path
 	case fhKindTail:
 		if p, ok = s.walkTail(ctx, fh, ph); !ok {
-			return nil, false
+			return fail()
 		}
 	default:
 		// Opaque handles resolve only from the cache.
-		return nil, false
+		return nil, NFSERR_STALE
 	}
 
 	for attempt := 0; attempt < resolveAttempts; attempt++ {
 		seq := fm.log.seq.Load()
 		p2, g2, ok := fm.log.validate(ctx, p, ph.g)
 		if !ok {
-			return nil, false
+			return fail()
 		}
 		node, err := s.Lookup(nodePath(p2))
 		if err != nil || fhType(node.attrs.Mode) != ph.typ {
-			return nil, false
+			return nil, NFSERR_STALE
 		}
 		// A REMOVE or RENAME that began after validate may have changed
 		// what the stat saw: validate again, after it commits.
@@ -80,9 +93,11 @@ func (s *AbsfsNFS) resolveHandle(fh []byte) (*NFSNode, bool) {
 		// Not the path's issued bytes unless none are cached: the client
 		// may hold those for the object too.
 		fm.insert(fh, node, p2, g2, ph.typ, false)
-		return node, true
+		return node, NFS_OK
 	}
-	return nil, false
+	// Changes kept racing the stat: no verdict either.
+	fm.busy.Add(1)
+	return nil, NFSERR_JUKEBOX
 }
 
 // walkTail recovers the full path of a tail handle: from the directory its
@@ -90,13 +105,21 @@ func (s *AbsfsNFS) resolveHandle(fh []byte) (*NFSNode, bool) {
 // listings, backtracking over hash collisions, until a candidate's tag
 // matches. A listing reflects the directory now, so the walk also looks at
 // names renamed away since (they have rename records) and lists a renamed
-// directory at its new path. One attempt with cached listings and one with
-// fresh ones; each is capped.
+// directory at its new path. One attempt with cached listings and, if it
+// used any, one with fresh ones; each is capped.
+//
+// The tag covers the whole path, so it is checked only once a walk reaches
+// a candidate: a forged tail handle costs the listings its walk makes (at
+// most 2*tailMaxListings) before it is found stale. That is the accepted
+// residual; the caps bound it.
 func (s *AbsfsNFS) walkTail(ctx context.Context, fh []byte, ph parsedHandle) (string, bool) {
 	for _, fresh := range []bool{false, true} {
 		w := tailWalker{s: s, ctx: ctx, fh: fh, ph: ph, fresh: fresh}
 		if p, ok := w.walk(ph.path, 0); ok {
 			return p, true
+		}
+		if w.cachedListings == 0 || ctx.Err() != nil {
+			break // a fresh attempt would see the same listings
 		}
 	}
 	s.recordTailWalkFailure()
@@ -104,13 +127,14 @@ func (s *AbsfsNFS) walkTail(ctx context.Context, fh []byte, ph parsedHandle) (st
 }
 
 type tailWalker struct {
-	s        *AbsfsNFS
-	ctx      context.Context
-	fh       []byte
-	ph       parsedHandle
-	fresh    bool
-	listings int
-	checks   int
+	s              *AbsfsNFS
+	ctx            context.Context
+	fh             []byte
+	ph             parsedHandle
+	fresh          bool
+	listings       int
+	cachedListings int // listings served from the cache
+	checks         int
 }
 
 // walk tries the names below dir (a path in the namespace the handle was
@@ -150,7 +174,11 @@ func (w *tailWalker) candidates(dir string, h uint16) []string {
 	}
 	if ok {
 		w.listings++
-		add(fm.dirs.names(w.s, now, w.fresh))
+		names, cached := fm.dirs.names(w.s, now, w.fresh)
+		if cached {
+			w.cachedListings++
+		}
+		add(names)
 		add(fm.log.redirectedChildren(now))
 	}
 	add(fm.log.redirectedChildren(dir))
@@ -177,8 +205,9 @@ func newDirHashIndex(limit int) *dirHashIndex {
 	return &dirHashIndex{limit: limit, entries: make(map[string]*list.Element), lru: list.New()}
 }
 
-// names lists canonical dir, from the cache unless fresh.
-func (d *dirHashIndex) names(s *AbsfsNFS, dir string, fresh bool) []string {
+// names lists canonical dir, from the cache unless fresh, and reports
+// whether the listing came from the cache.
+func (d *dirHashIndex) names(s *AbsfsNFS, dir string, fresh bool) ([]string, bool) {
 	now := time.Now()
 	if !fresh {
 		d.mu.Lock()
@@ -187,19 +216,19 @@ func (d *dirHashIndex) names(s *AbsfsNFS, dir string, fresh bool) []string {
 			if now.Before(l.expires) {
 				d.lru.MoveToFront(el)
 				d.mu.Unlock()
-				return l.names
+				return l.names, true
 			}
 		}
 		d.mu.Unlock()
 	}
 	f, err := s.fs.Open(nodePath(dir))
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	names, err := f.Readdirnames(-1)
 	f.Close()
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	ttl := s.tuning.Load().AttrCacheTimeout
 	d.mu.Lock()
@@ -213,7 +242,7 @@ func (d *dirHashIndex) names(s *AbsfsNFS, dir string, fresh bool) []string {
 		d.lru.Remove(old)
 		delete(d.entries, old.Value.(*dirListing).dir)
 	}
-	return names
+	return names, false
 }
 
 // forget drops the listing of the directory at NFSNode path p.

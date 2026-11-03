@@ -232,9 +232,10 @@ func nfsErrorWithDoubleWcc(reply *RPCReply, status uint32) *RPCReply {
 	return reply
 }
 
-// lookupNode resolves a file handle to its node. It reports false when the
-// handle is stale (see resolveHandle).
-func (h *NFSProcedureHandler) lookupNode(fh []byte) (*NFSNode, bool) {
+// lookupNode resolves a file handle to its node. Unless the status is
+// NFS_OK it is the one to answer: NFSERR_STALE, or NFSERR_JUKEBOX while a
+// change on the handle's path is still in flight (see resolveHandle).
+func (h *NFSProcedureHandler) lookupNode(fh []byte) (*NFSNode, uint32) {
 	return h.server.handler.resolveHandle(fh)
 }
 
@@ -247,9 +248,9 @@ func (h *NFSProcedureHandler) decodeAndLookupHandle(body io.Reader, reply *RPCRe
 		return nil, nil
 	}
 
-	node, ok := h.lookupNode(fh)
-	if !ok {
-		nfsErrorReply(reply, NFSERR_STALE)
+	node, st := h.lookupNode(fh)
+	if st != NFS_OK {
+		nfsErrorReply(reply, st)
 		return nil, nil
 	}
 

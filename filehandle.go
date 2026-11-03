@@ -7,8 +7,10 @@
 // with a handle used recently costs no decoding and no stat, and path to
 // the bytes issued for it, so the same object keeps getting the same bytes.
 // When the cache is full the entries least recently used are evicted; a
-// client that uses an evicted handle gets it resolved again, never
-// NFS3ERR_STALE for an object that still exists.
+// client that uses an evicted handle gets it resolved again, not
+// NFS3ERR_STALE for an object that still exists (but for the residual
+// cases in docs/internals/file-handles.md: opaque handles, tail walks past
+// their caps).
 package absnfs
 
 import (
@@ -26,8 +28,10 @@ import (
 const DefaultMaxHandles = 100000
 
 // inflightWait bounds how long resolving or issuing a handle waits for a
-// REMOVE, RMDIR or RENAME in flight on its path to finish.
-const inflightWait = 5 * time.Second
+// REMOVE, RMDIR or RENAME in flight on its path to finish. A resolution
+// that waits longer is answered NFS3ERR_JUKEBOX, so the client retries.
+// A variable for tests.
+var inflightWait = 5 * time.Second
 
 // handleEntry is a cached handle: the node it resolved to, and the path and
 // epoch it stands for after any RENAME it followed. node, path and g change
