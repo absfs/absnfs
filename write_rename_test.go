@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/absfs/absfs"
-	"github.com/absfs/basefs"
 	"github.com/absfs/osfs"
 )
 
@@ -349,16 +348,14 @@ func TestRenameConflictsOnHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bfs, err := basefs.NewFS(ofs, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	nfs, err := New(bfs, ExportOptions{})
+	// osfs directly, not under basefs: basefs wants a native absolute prefix
+	// and osfs an absfs path (/c/...), which on Windows cannot both hold.
+	nfs, err := New(ofs, ExportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { nfs.Close() })
-	dir, err := nfs.Lookup("/")
+	dir, err := nfs.Lookup(osfs.FromNative(root))
 	if err != nil {
 		t.Fatal(err)
 	}
