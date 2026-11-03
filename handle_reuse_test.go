@@ -144,20 +144,16 @@ func TestHandlesFromBeforeRestartAreStale(t *testing.T) {
 		t.Errorf("ExportPort after Close = %d, want 0 (export stopped)", port)
 	}
 
-	// A restart starts after the last handle was given out. Wait until the
-	// clock says so, which on a coarse clock (Windows) can take a tick.
-	for deadline := time.Now().Add(2 * time.Second); uint64(time.Now().UnixNano()) <= last; {
-		if time.Now().After(deadline) {
-			t.Fatal("clock did not pass the last handle")
-		}
-		time.Sleep(time.Millisecond)
-	}
-
+	// Restart at once, with no wait for the clock: within a process the
+	// numbering continues, whatever the clock's resolution.
 	_, conn = exportedServer(t, mfs)
 	// The restarted server hands out handles in the opposite order, so with
 	// numbers restarting from the same point /d would get the old root's.
-	newDirFH, _ := mountHandle(t, conn, 1, "/d")
+	newDirFH, newDir := mountHandle(t, conn, 1, "/d")
 	newRootFH, _ := mountHandle(t, conn, 2, "/")
+	if newDir <= last {
+		t.Errorf("restarted server's first handle %d is not above the first server's last %d", newDir, last)
+	}
 	for _, fh := range [][]byte{newDirFH, newRootFH} {
 		if bytes.Equal(fh, rootFH) || bytes.Equal(fh, dirFH) {
 			t.Errorf("restarted server gave out handle %x, which the first server had given out", fh)
@@ -192,6 +188,9 @@ func TestHandleNumbersUniqueUnderConcurrency(t *testing.T) {
 			for i := 0; i < perWorker; i++ {
 				node := &NFSNode{path: fmt.Sprintf("/w%d/f%d", w, i)}
 				h := fm.Allocate(node)
+				if i%50 == 0 {
+					h = fm.allocateMount(node) // the same handle, now maybe pinned
+				}
 
 				mu.Lock()
 				prev, dup := seen[h]
@@ -226,5 +225,204 @@ func TestHandleNumbersUniqueUnderConcurrency(t *testing.T) {
 	}
 	if n := fm.Count(); n > 64 {
 		t.Errorf("%d live handles, want at most the limit of 64", n)
+	}
+}
+
+// lookupHandle sends LOOKUP of name in the directory with wire handle dir
+// and returns the status and, when NFS_OK, the object's wire handle.
+func lookupHandle(t *testing.T, conn net.Conn, xid uint32, dir []byte, name string) (uint32, []byte) {
+	t.Helper()
+	var args bytes.Buffer
+	args.Write(dir)
+	xdrEncodeString(&args, name)
+	res := exportRPC(t, conn, xid, NFS_PROGRAM, NFS_V3, NFSPROC3_LOOKUP, args.Bytes())
+	if len(res) < 4 {
+		t.Fatalf("LOOKUP %s: short reply %x", name, res)
+	}
+	st := binary.BigEndian.Uint32(res)
+	if st != NFS_OK {
+		return st, nil
+	}
+	if len(res) < 16 || binary.BigEndian.Uint32(res[4:]) != 8 {
+		t.Fatalf("LOOKUP %s: reply %x, want an 8-byte handle", name, res)
+	}
+	return st, res[4:16]
+}
+
+// TestEvictionKeepsMountAndBusyHandles: eviction drops handles not used
+// for a while, never the handle MNT gave out (a client that lost its
+// mount's root could look nothing up again without remounting), and not a
+// directory handle the client keeps using. When eviction dropped the
+// lowest numbers first, the root went first, and with numbers no longer
+// reused it would have stayed NFS3ERR_STALE for good.
+func TestEvictionKeepsMountAndBusyHandles(t *testing.T) {
+	mfs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mfs.Mkdir("/d", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const files = 40
+	for i := 0; i < files; i++ {
+		f, err := mfs.Create(fmt.Sprintf("/d/f%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+	}
+	nfs, conn := exportedServer(t, mfs)
+	nfs.fileMap.Lock()
+	nfs.fileMap.maxHandles = 10
+	nfs.fileMap.Unlock()
+
+	xid := uint32(1)
+	rootFH, _ := mountHandle(t, conn, xid, "/")
+	xid++
+	st, dirFH := lookupHandle(t, conn, xid, rootFH, "d")
+	if st != NFS_OK {
+		t.Fatalf("LOOKUP d: status %d", st)
+	}
+	var first []byte
+	for i := 0; i < files; i++ {
+		xid++
+		st, fh := lookupHandle(t, conn, xid, dirFH, fmt.Sprintf("f%d", i))
+		if st != NFS_OK {
+			t.Fatalf("LOOKUP f%d in a directory looked up %d times: status %d", i, i, st)
+		}
+		if i == 0 {
+			first = fh
+		}
+	}
+	if n := nfs.fileMap.Count(); n > 10 {
+		t.Errorf("%d live handles, want at most the limit of 10", n)
+	}
+
+	xid++
+	if st := getattrStatus(t, conn, xid, rootFH); st != NFS_OK {
+		t.Errorf("GETATTR of the mount root after %d lookups: status %d, want NFS_OK", files, st)
+	}
+	xid++
+	if st := getattrStatus(t, conn, xid, dirFH); st != NFS_OK {
+		t.Errorf("GETATTR of the directory used for every lookup: status %d, want NFS_OK", st)
+	}
+	xid++
+	if st := getattrStatus(t, conn, xid, first); st != NFSERR_STALE {
+		t.Errorf("GETATTR of the first file's evicted handle: status %d, want NFSERR_STALE", st)
+	}
+	// The client recovers the evicted file by looking it up again.
+	xid++
+	if st, fh := lookupHandle(t, conn, xid, dirFH, "f0"); st != NFS_OK || bytes.Equal(fh, first) {
+		t.Errorf("LOOKUP f0 again: status %d handle %x, want NFS_OK and a new handle (old %x)", st, fh, first)
+	}
+}
+
+// TestEvictionSecondChance: a handle looked up since the eviction clock
+// last passed it is kept, and the handles not used are evicted, oldest
+// first.
+func TestEvictionSecondChance(t *testing.T) {
+	fm := newFileHandleMap(10)
+	hot := fm.Allocate(&NFSNode{path: "/hot"})
+	cold := fm.Allocate(&NFSNode{path: "/cold"})
+	for i := 0; i < 50; i++ {
+		fm.Allocate(&NFSNode{path: fmt.Sprintf("/f%d", i)})
+		if _, ok := fm.Get(hot); !ok {
+			t.Fatalf("handle used before every allocation was evicted after %d allocations", i+1)
+		}
+		if fm.Count() > 10 {
+			t.Fatalf("%d live handles, want at most 10", fm.Count())
+		}
+	}
+	if _, ok := fm.Get(cold); ok {
+		t.Error("handle never used again survived 50 allocations past the limit")
+	}
+	// Re-allocating a path also counts as use.
+	again := fm.Allocate(&NFSNode{path: "/again"})
+	for i := 0; i < 50; i++ {
+		fm.Allocate(&NFSNode{path: fmt.Sprintf("/g%d", i)})
+		if h := fm.Allocate(&NFSNode{path: "/again"}); h != again {
+			t.Fatalf("/again got handle %d, want %d (it was evicted while in use)", h, again)
+		}
+	}
+}
+
+// TestPinnedHandles: MNT's handles are never evicted, at most a tenth of
+// the limit (at least one) is pinned, and releasing or retiring a pinned
+// handle frees its pin.
+func TestPinnedHandles(t *testing.T) {
+	fm := newFileHandleMap(10)
+	root := fm.allocateMount(&NFSNode{path: "/"})
+	extra := fm.allocateMount(&NFSNode{path: "/extra"}) // past the cap of 1: ordinary
+	if h := fm.allocateMount(&NFSNode{path: "/"}); h != root {
+		t.Fatalf("mounting / again got handle %d, want %d", h, root)
+	}
+	for i := 0; i < 50; i++ {
+		fm.Allocate(&NFSNode{path: fmt.Sprintf("/f%d", i)})
+	}
+	if _, ok := fm.Get(root); !ok {
+		t.Error("pinned mount handle was evicted")
+	}
+	if _, ok := fm.Get(extra); ok {
+		t.Error("mount handle past the pin cap was never evicted")
+	}
+	if fm.pinned != 1 {
+		t.Errorf("%d pinned handles, want 1", fm.pinned)
+	}
+
+	// Pinning an existing handle: /f49 is live and gets the freed pin.
+	fm.Release(root)
+	if fm.pinned != 0 {
+		t.Errorf("%d pinned handles after Release, want 0", fm.pinned)
+	}
+	h := fm.Allocate(&NFSNode{path: "/f49"})
+	if p := fm.allocateMount(&NFSNode{path: "/f49"}); p != h {
+		t.Fatalf("mounting the live /f49 got handle %d, want its handle %d", p, h)
+	}
+	for i := 0; i < 50; i++ {
+		fm.Allocate(&NFSNode{path: fmt.Sprintf("/g%d", i)})
+	}
+	if _, ok := fm.Get(h); !ok {
+		t.Error("handle pinned after it was allocated was evicted")
+	}
+	fm.removed("/f49")
+	if fm.pinned != 0 {
+		t.Errorf("%d pinned handles after the pinned object was removed, want 0", fm.pinned)
+	}
+	fm.allocateMount(&NFSNode{path: "/m"})
+	fm.ReleaseAll()
+	if fm.pinned != 0 || len(fm.clock) != 0 {
+		t.Errorf("after ReleaseAll: %d pinned, clock of %d, want none", fm.pinned, len(fm.clock))
+	}
+}
+
+// TestEvictionClockStaysSmall: handles released or retired before the
+// clock reaches them do not pile up in it, with or without eviction.
+func TestEvictionClockStaysSmall(t *testing.T) {
+	fm := newFileHandleMap(100)
+	for i := 0; i < 10000; i++ {
+		fm.Release(fm.Allocate(&NFSNode{path: fmt.Sprintf("/r%d", i)}))
+		fm.Allocate(&NFSNode{path: fmt.Sprintf("/k%d", i)})
+		if i%3 == 0 {
+			fm.removed(fmt.Sprintf("/k%d", i))
+		}
+		if n, live := len(fm.clock), fm.Count(); n > 4*live+130 {
+			t.Fatalf("after %d rounds the clock holds %d numbers for %d live handles", i+1, n, live)
+		}
+	}
+}
+
+// TestQuickRestartGivesNewNumbers: a FileHandleMap created right after
+// another, as when an embedding program closes a server and creates a new
+// one, starts above every number the earlier one gave out, even within
+// one tick of a coarse clock.
+func TestQuickRestartGivesNewNumbers(t *testing.T) {
+	for i := 0; i < 1000; i++ {
+		before := newFileHandleMap(0)
+		last := before.Allocate(&NFSNode{path: "/a"})
+		before.ReleaseAll()
+		after := newFileHandleMap(0)
+		if first := after.Allocate(&NFSNode{path: "/b"}); first <= last {
+			t.Fatalf("round %d: a map created after another gave out %d, not above its last %d", i, first, last)
+		}
 	}
 }

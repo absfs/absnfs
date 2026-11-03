@@ -5,7 +5,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/absfs/absfs"
 	"github.com/absfs/memfs"
 )
 
@@ -28,10 +27,7 @@ func TestFileHandleMap(t *testing.T) {
 	}
 
 	// Create file handle map
-	fm := &FileHandleMap{
-		handles:    make(map[uint64]absfs.File),
-		nextHandle: 1,
-	}
+	fm := newFileHandleMap(0)
 
 	// Test Allocate
 	t.Run("allocate", func(t *testing.T) {
@@ -53,10 +49,10 @@ func TestFileHandleMap(t *testing.T) {
 			t.Errorf("Expected %d handles, got %d", len(files), count)
 		}
 
-		// Verify handles are sequential starting from 1
-		for i, handle := range handles {
-			if handle != uint64(i+1) {
-				t.Errorf("Expected handle %d, got %d", i+1, handle)
+		// Verify each handle is above the one before
+		for i := 1; i < len(handles); i++ {
+			if handles[i] <= handles[i-1] {
+				t.Errorf("handle %d after %d, want increasing numbers", handles[i], handles[i-1])
 			}
 		}
 	})
@@ -207,10 +203,7 @@ func TestR3_FileHandleMapEviction(t *testing.T) {
 	defer nfs.Close()
 
 	// Create a FileHandleMap with a very small maximum
-	fhMap := &FileHandleMap{
-		handles:    make(map[uint64]absfs.File),
-		maxHandles: 10,
-	}
+	fhMap := newFileHandleMap(10)
 
 	// Create test files and allocate handles for them
 	for i := 0; i < 10; i++ {
@@ -250,11 +243,7 @@ func TestR3_FileHandleMapEviction(t *testing.T) {
 // ================================================================
 
 func TestCovBoost_AllocateEviction(t *testing.T) {
-	fm := &FileHandleMap{
-		handles:    make(map[uint64]absfs.File),
-		nextHandle: 1,
-		maxHandles: 5, // tiny limit to trigger eviction
-	}
+	fm := newFileHandleMap(5)
 
 	fs, err := memfs.NewFS()
 	if err != nil {
@@ -290,11 +279,7 @@ func TestCovBoost_AllocateEviction(t *testing.T) {
 
 func TestCovBoost_AllocateEvictionSmallMax(t *testing.T) {
 	// maxHandles=1: evictCount = 1/10 = 0 -> clamped to 1
-	fm := &FileHandleMap{
-		handles:    make(map[uint64]absfs.File),
-		nextHandle: 1,
-		maxHandles: 1,
-	}
+	fm := newFileHandleMap(1)
 
 	fs, err := memfs.NewFS()
 	if err != nil {
@@ -314,10 +299,7 @@ func TestCovBoost_AllocateEvictionSmallMax(t *testing.T) {
 }
 
 func TestFileHandleMapGetOrErrorZeroCoverage(t *testing.T) {
-	fm := &FileHandleMap{
-		handles:    make(map[uint64]absfs.File),
-		nextHandle: 1,
-	}
+	fm := newFileHandleMap(0)
 
 	mfs, _ := memfs.NewFS()
 	f, _ := mfs.Create("/test.txt")
@@ -441,12 +423,7 @@ func TestFileHandleMapGetOrErrorCoverage(t *testing.T) {
 // TestAllocateDeduplicatesByPath verifies that allocating handles for the
 // same path returns the same handle (path deduplication prevents handle leak).
 func TestAllocateDeduplicatesByPath(t *testing.T) {
-	fm := &FileHandleMap{
-		handles:     make(map[uint64]absfs.File),
-		pathHandles: make(map[string]uint64),
-		nextHandle:  1,
-		maxHandles:  1000,
-	}
+	fm := newFileHandleMap(1000)
 
 	node1 := &NFSNode{path: "/test/file"}
 	node2 := &NFSNode{path: "/test/file"} // same path, different instance
@@ -463,7 +440,7 @@ func TestAllocateDeduplicatesByPath(t *testing.T) {
 }
 
 // TestAllocateEvictionDropsOldest verifies that eviction drops the oldest
-// (lowest) handles, and that their numbers are not given out again.
+// (unused) handles, and that their numbers are not given out again.
 func TestAllocateEvictionDropsOldest(t *testing.T) {
 	fm := newFileHandleMap(5)
 

@@ -694,7 +694,7 @@ func TestCacheCoherentUnderConcurrentMutation(t *testing.T) {
 	}
 	e.nfs.fileMap.RLock()
 	for p, h := range e.nfs.fileMap.pathHandles {
-		if n, ok := e.nfs.fileMap.handles[h].(*NFSNode); !ok || n.path != p {
+		if n, ok := e.nfs.fileMap.handles[h].file.(*NFSNode); !ok || n.path != p {
 			t.Errorf("handle %d is recorded for %s but names %v", h, p, n)
 		}
 	}

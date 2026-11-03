@@ -134,15 +134,19 @@ to the macOS NFS client, which is stricter than Linux's.
   or `ForceOwner` instead of silently ignoring the change, and validates
   `Squash` before applying anything rather than after the tuning update.
   `syscall.EINVAL` now maps to `NFS3ERR_INVAL`.
-
 - File handle numbers were reused: a handle dropped by `Release` or by
   eviction (past 100,000 handles) went back on a free list, and a server
   restarted over the same filesystem numbered handles from 1 again, so a
   client still holding the old handle reached a different file or
-  directory. Handle numbers are now never reused: they only grow, and each
-  server starts numbering at the current time in nanoseconds, so a stale
-  handle reports `NFS3ERR_STALE`, also after a restart (unless the clock is
-  set back). Eviction no longer walks the gaps between live numbers.
+  directory. Handle numbers are now never reused: every server in a process
+  draws from one counter that only grows, and it starts at the process's
+  start time in nanoseconds, so a stale handle reports `NFS3ERR_STALE`,
+  also after a restart (unless the clock is set back between runs).
+- Eviction dropped the lowest handle numbers first, so the mount's root
+  handle, which MNT gives out first, was the first evicted even while the
+  client was using it. Eviction now drops handles not used recently (clock
+  algorithm, amortized O(1) per allocation instead of a sort of every live
+  handle), and the handles MNT gives out are pinned and never evicted.
 
 ### Deprecated
 
@@ -151,6 +155,12 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Changed
 
+- **Restarting the server makes every client handle stale.** After a
+  restart, clients' existing handles, the mount root's included, report
+  `NFS3ERR_STALE`, so mounted clients must remount. Before, handles were
+  numbered from 1 on every start, so a client that had mounted `/` first
+  usually kept a working root handle (and other old handles could silently
+  reach different objects).
 - **Default owner.** Files whose filesystem records no owner (memfs, virtual
   filesystems, Windows) are reported as owned by the user running the server
   rather than by root (0/0), and osfs on unix reports real owners. An export

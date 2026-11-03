@@ -205,11 +205,16 @@ gid; a server not running as root can only give them its own. An UNCHECKED
   moved object's handle as stale and look the name up again. The handle of a
   removed or replaced object reports `NFS3ERR_STALE`.
 - **Handles do not survive a restart.** They live in memory, and a server
-  never gives out a handle number twice, not even after restarting (the
-  numbering starts from the clock, so unless the clock is set back). A client
-  holding a handle from before a restart gets `NFS3ERR_STALE` and must
-  remount. A handle the server evicted (it keeps at most 100,000) also
-  reports `NFS3ERR_STALE`; the client recovers by looking the name up again.
+  never gives out a handle number twice. That also holds across restarts:
+  within one process every server shares one counter, and a new process
+  starts numbering at the current time, so it holds unless the clock is set
+  back between runs (a machine without a real-time clock, which boots at
+  1970 until NTP syncs, counts as set back). A client holding a handle from
+  before a restart, its mount's root included, gets `NFS3ERR_STALE` and must
+  remount. The server keeps at most 100,000 handles and evicts the ones not
+  used recently, never the handles MNT gave out; an evicted handle reports
+  `NFS3ERR_STALE`, and the client recovers by looking the name up again
+  from a handle it still holds.
 - **Changes made behind the server's back are seen after a delay.** absnfs
   caches attributes for `AttrCacheTimeout` (5s by default), and, when
   enabled, misses for `NegativeCacheTimeout` and listings for

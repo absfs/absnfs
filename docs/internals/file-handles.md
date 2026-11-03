@@ -12,8 +12,8 @@ Each handle is an 8-byte unsigned integer. On the wire, handles are encoded as
 NFS3 opaque data: a 4-byte length (always 8) followed by the 8-byte big-endian
 handle value.
 
-The handle value is an index into `FileHandleMap.handles`, a `map[uint64]absfs.File`
-that maps handle IDs to `NFSNode` references.
+The handle value is a key of `FileHandleMap.handles`, a `map[uint64]*handleEntry`
+that maps handle IDs to `NFSNode` references (plus the entry's eviction state).
 
 ## NFSNode
 
@@ -39,27 +39,51 @@ closes it. The handle does not keep a file descriptor open between requests.
    unbounded handle growth from repeated LOOKUP or READDIRPLUS calls for the
    same path.
 
-2. **ID assignment**: the new handle is `nextHandle`, which is then
-   incremented. IDs of released, evicted or retired handles are not reused:
-   reusing one would let a client still holding the old handle reach whatever
-   object the ID was given to next.
+2. **ID assignment**: the new handle is the next value of `lastHandle`, one
+   counter shared by every `FileHandleMap` in the process. IDs of released,
+   evicted or retired handles are not reused: reusing one would let a client
+   still holding the old handle reach whatever object the ID was given to
+   next.
 
 3. **Eviction**: If the handle count exceeds `maxHandles` (default 100,000),
-   the oldest handles (lowest IDs) are evicted. Eviction removes 10% of
-   `maxHandles` entries at a time, cleans up path mappings and closes the
-   associated files. Requests with an evicted handle get `NFSERR_STALE`; a
-   client recovers by looking the name up again.
+   10% of `maxHandles` handles are evicted, chosen by the clock
+   (second-chance) algorithm. A lookup (`Get`, `GetOrError`, or an
+   `Allocate` of a path that already has a handle) marks a handle used. The
+   eviction hand walks the handles from the oldest; a used one has its mark
+   cleared and goes to the back, an unused one is evicted. So a handle a
+   client keeps using, such as the directory it is listing, stays. Eviction
+   cleans up path mappings and closes the associated files. Each step is
+   amortized O(1): IDs released or retired before the hand reaches them are
+   skipped, and the queue is compacted once they make up most of it.
+   Requests with an evicted handle get `NFSERR_STALE`; the client recovers
+   by looking the name up again from a handle it still holds, ultimately the
+   mount root.
+
+4. **Pinning**: the handles MNT gives out (`allocateMount`) are pinned and
+   never evicted, so a client can always look names up again from its
+   mount's root. At most 10% of `maxHandles` (at least one) is pinned; MNT
+   handles past that are ordinary. A pinned handle still goes stale when its
+   object is removed or replaced, or on `Release`.
 
 ## Handle IDs Across Restarts
 
-Handles live only in memory. A new `FileHandleMap` starts counting at the
-current time in nanoseconds, and each allocation takes longer than a
-nanosecond, so every ID one run of the server gave out is below the first ID
-of a later run, unless the system clock is set back between them. A client
-holding a handle from before a restart therefore gets `NFSERR_STALE` (and
-remounts) instead of reaching an unrelated object. The 64-bit counter cannot
-wrap in practice: it starts below 2^61 and grows by one per allocation. The
-wire format is unchanged: 8 bytes, well inside NFS3's 64-byte limit.
+Handles live only in memory, and every handle from before a restart reports
+`NFSERR_STALE`, the mount root included: clients must remount.
+
+- **Within a process** (an embedding program closes a server and creates a
+  new one), the new server draws from the same counter, so it never repeats
+  an ID, however quickly it starts and whatever the clock's resolution.
+- **Across processes**, the counter starts at the process's start time in
+  nanoseconds. A later process starts above every ID an earlier one gave out
+  unless the clock was set back between them, which includes a machine with
+  no real-time clock that boots at 1970 until NTP syncs, or unless the
+  earlier process gave out more handles than nanoseconds passed between the
+  two starts, which a real restart cannot do.
+
+The 64-bit counter cannot wrap in practice: it grows by one per allocation,
+and wrapping 2^64 from a start in nanoseconds would take more allocations than
+there are nanoseconds until about the year 2554. The wire format is
+unchanged: 8 bytes, well inside NFS3's 64-byte limit.
 
 ## Handles Across RENAME and REMOVE
 
@@ -95,8 +119,8 @@ handle from the XDR body and looks up the node in one step, returning
 closes the associated file. The ID is not reused.
 
 `FileHandleMap.ReleaseAll` closes and removes all handles, clearing both the
-handle map and the path deduplication map. `nextHandle` is kept, so handles
-given out afterwards still get new IDs. This is called by `Unexport` and
+handle map, the path deduplication map and the pins. The counter is shared
+and only grows, so handles given out afterwards still get new IDs. This is called by `Unexport` and
 `Close`.
 
 ## Path Deduplication

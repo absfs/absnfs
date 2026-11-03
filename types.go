@@ -100,9 +100,11 @@ type AbsfsNFS struct {
 // FileHandleMap manages the mapping between NFS file handles and absfs files
 type FileHandleMap struct {
 	sync.RWMutex
-	handles     map[uint64]absfs.File
+	handles     map[uint64]*handleEntry
 	pathHandles map[string]uint64 // Reverse map: path -> handle for deduplication
-	nextHandle  uint64            // Next handle number; only grows, numbers are never reused
+	clock       []uint64          // Eviction candidates in clock order; clock[hand] comes next
+	hand        int               // Index in clock of the next eviction candidate
+	pinned      int               // Number of pinned (never evicted) handles
 	maxHandles  int               // Maximum handles before eviction (0 = DefaultMaxHandles)
 }
 

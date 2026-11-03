@@ -95,9 +95,10 @@ Both caches deep-copy data on get/put to prevent shared mutation.
 `FileHandleMap` assigns sequential `uint64` handles to `NFSNode` references.
 Path deduplication via `pathHandles` prevents unbounded handle growth from
 repeated LOOKUP/READDIRPLUS calls on the same path. Handle IDs are never
-reused, within a run or (the counter starts at the clock) across restarts, so
-a stale handle reports `NFSERR_STALE`. When `maxHandles` is exceeded, the
-oldest handles (lowest IDs) are evicted.
+reused, within a process (one counter serves every map) or (the counter starts
+at the clock) across restarts, so a stale handle reports `NFSERR_STALE`. When
+`maxHandles` is exceeded, handles not used recently are evicted (clock
+algorithm); the handles MNT gave out are pinned and never evicted.
 
 ### auth.go -- Authentication and Access Control
 

@@ -70,7 +70,7 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 		}
 
 		// Allocate file handle for root
-		handle := h.server.handler.fileMap.Allocate(node)
+		handle := h.server.handler.fileMap.allocateMount(node)
 		if h.server.options.Debug {
 			h.server.logger.Printf("MOUNT: Allocated handle %d for path '%s', fileMap count: %d", handle, mountPath, h.server.handler.fileMap.Count())
 		}

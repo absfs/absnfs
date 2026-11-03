@@ -2,9 +2,9 @@ package absnfs
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
-	"github.com/absfs/absfs"
 	"github.com/absfs/memfs"
 )
 
@@ -24,12 +24,9 @@ func TestFileHandleNumbersNotReused(t *testing.T) {
 	f.Close()
 
 	// Create file handle map
-	fm := &FileHandleMap{
-		handles:    make(map[uint64]absfs.File),
-		nextHandle: 1,
-	}
+	fm := newFileHandleMap(0)
 
-	// Allocate handles 1-10
+	// Allocate ten handles; each number is above the one before
 	handles := make([]uint64, 10)
 	for i := 0; i < 10; i++ {
 		f, err := fs.OpenFile("/test.txt", 0, 0)
@@ -37,31 +34,32 @@ func TestFileHandleNumbersNotReused(t *testing.T) {
 			t.Fatalf("Failed to open file: %v", err)
 		}
 		handles[i] = fm.Allocate(f)
-	}
-
-	// Verify handles are 1-10
-	for i, h := range handles {
-		if h != uint64(i+1) {
-			t.Errorf("Expected handle %d, got %d", i+1, h)
+		if i > 0 && handles[i] <= handles[i-1] {
+			t.Errorf("handle %d after %d, want increasing numbers", handles[i], handles[i-1])
 		}
 	}
 
-	// Release handles 3, 5, and 7
-	fm.Release(3)
-	fm.Release(5)
-	fm.Release(7)
+	// Release the third, fifth and seventh
+	released := []uint64{handles[2], handles[4], handles[6]}
+	for _, h := range released {
+		fm.Release(h)
+	}
 
-	// Allocate 3 new handles: they continue at 11, not 3, 5, 7
-	for i, want := range []uint64{11, 12, 13} {
+	// Allocate 3 new handles: they continue above the last, not reusing
+	// the released numbers
+	last := handles[9]
+	for i := 0; i < 3; i++ {
 		f, err := fs.OpenFile("/test.txt", 0, 0)
 		if err != nil {
 			t.Fatalf("Failed to open file: %v", err)
 		}
-		if h := fm.Allocate(f); h != want {
-			t.Errorf("allocation %d after releases: got handle %d, want %d", i, h, want)
+		h := fm.Allocate(f)
+		if h <= last {
+			t.Errorf("allocation %d after releases: got handle %d, want one above %d", i, h, last)
 		}
+		last = h
 	}
-	for _, h := range []uint64{3, 5, 7} {
+	for _, h := range released {
 		if _, ok := fm.Get(h); ok {
 			t.Errorf("released handle %d resolves again", h)
 		}
@@ -82,10 +80,7 @@ func BenchmarkFileHandleAllocation(b *testing.B) {
 	}
 	f.Close()
 
-	fm := &FileHandleMap{
-		handles:    make(map[uint64]absfs.File),
-		nextHandle: 1,
-	}
+	fm := newFileHandleMap(0)
 
 	// Pre-allocate 1000 handles to simulate a busy server
 	preAllocated := make([]uint64, 1000)
@@ -128,10 +123,7 @@ func BenchmarkFileHandleAllocationSequential(b *testing.B) {
 	}
 	f.Close()
 
-	fm := &FileHandleMap{
-		handles:    make(map[uint64]absfs.File),
-		nextHandle: 1,
-	}
+	fm := newFileHandleMap(0)
 
 	b.ResetTimer()
 
@@ -159,10 +151,7 @@ func TestFileHandleAllocationStress(t *testing.T) {
 	}
 	f.Close()
 
-	fm := &FileHandleMap{
-		handles:    make(map[uint64]absfs.File),
-		nextHandle: 1,
-	}
+	fm := newFileHandleMap(0)
 
 	// Allocate and release handles in a pattern to test free list
 	allocated := make(map[uint64]bool)
@@ -221,34 +210,46 @@ func ExampleFileHandleMap_Allocate_performance() {
 	f, _ := fs.Create("/test.txt")
 	f.Close()
 
-	fm := &FileHandleMap{
-		handles:    make(map[uint64]absfs.File),
-		nextHandle: 1,
-	}
+	fm := newFileHandleMap(0)
 
-	// Allocate handles - O(1) time
+	// Allocate handles - O(1) time. Numbers start from the clock, so they
+	// are large; each is above the one before.
 	handles := make([]uint64, 5)
-	for i := 0; i < 5; i++ {
+	for i := range handles {
 		f, _ := fs.OpenFile("/test.txt", 0, 0)
 		handles[i] = fm.Allocate(f)
-		fmt.Printf("Allocated handle: %d\n", handles[i])
 	}
+	fmt.Println("increasing:", slices.IsSorted(handles))
 
 	// Release a handle; a client still holding it gets NFS3ERR_STALE
 	fm.Release(handles[2])
-	fmt.Println("Released handle 3")
+	_, ok := fm.Get(handles[2])
+	fmt.Println("released handle resolves:", ok)
 
-	// Allocate again - a new number, not 3
+	// Allocate again - a new number, above every earlier one
 	f, _ = fs.OpenFile("/test.txt", 0, 0)
 	next := fm.Allocate(f)
-	fmt.Printf("Next handle: %d\n", next)
+	fmt.Println("new number:", next > handles[4])
 
 	// Output:
-	// Allocated handle: 1
-	// Allocated handle: 2
-	// Allocated handle: 3
-	// Allocated handle: 4
-	// Allocated handle: 5
-	// Released handle 3
-	// Next handle: 6
+	// increasing: true
+	// released handle resolves: false
+	// new number: true
+}
+
+// BenchmarkAllocatePastLimit allocates new paths in a map held at
+// DefaultMaxHandles, so allocations keep triggering eviction.
+func BenchmarkAllocatePastLimit(b *testing.B) {
+	fm := newFileHandleMap(0)
+	for i := 0; i < DefaultMaxHandles; i++ {
+		fm.Allocate(&NFSNode{path: fmt.Sprintf("/pre%d", i)})
+	}
+	nodes := make([]*NFSNode, b.N)
+	for i := range nodes {
+		nodes[i] = &NFSNode{path: fmt.Sprintf("/n%d", i)}
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fm.Allocate(nodes[i])
+	}
 }
