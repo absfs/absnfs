@@ -39,14 +39,7 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 	node.mu.RUnlock()
 
 	if !isDir {
-		// R4: Copy attrs under RLock
-		node.mu.RLock()
-		if node.attrs == nil {
-			node.mu.RUnlock()
-			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
-		}
-		nodeAttrsCopy := *node.attrs
-		node.mu.RUnlock()
+		nodeAttrsCopy := h.currentAttrs(node)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFSERR_NOTDIR)
 		xdrEncodeUint32(&buf, 1)
@@ -67,14 +60,7 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 		if h.server.options.Debug {
 			h.server.logger.Printf("LOOKUP: '%s' not found: %v", lookupPath, err)
 		}
-		// R4: Copy attrs under RLock
-		node.mu.RLock()
-		if node.attrs == nil {
-			node.mu.RUnlock()
-			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
-		}
-		nodeAttrsCopy := *node.attrs
-		node.mu.RUnlock()
+		nodeAttrsCopy := h.currentAttrs(node)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, mapError(err))
 		xdrEncodeUint32(&buf, 1)
@@ -94,9 +80,7 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 	lookupNode.mu.RLock()
 	lookupAttrsCopy := *lookupNode.attrs
 	lookupNode.mu.RUnlock()
-	node.mu.RLock()
-	nodeAttrsCopy := *node.attrs
-	node.mu.RUnlock()
+	nodeAttrsCopy := h.currentAttrs(node)
 
 	var buf bytes.Buffer
 	xdrEncodeUint32(&buf, NFS_OK)
@@ -111,6 +95,18 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 	}
 	reply.Data = buf.Bytes()
 	return reply, nil
+}
+
+// currentAttrs returns the attributes to report for node, as GETATTR would
+// (from the attribute cache within its TTL), or the snapshot the handle
+// holds when they cannot be read, as when the object is gone.
+func (h *NFSProcedureHandler) currentAttrs(node *NFSNode) NFSAttrs {
+	if current, err := h.server.handler.GetAttr(node); err == nil {
+		return *current
+	}
+	node.mu.RLock()
+	defer node.mu.RUnlock()
+	return *node.attrs
 }
 
 // handleReadlink handles NFSPROC3_READLINK - read symbolic link

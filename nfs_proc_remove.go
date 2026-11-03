@@ -185,13 +185,8 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 		return reply, nil
 	}
 
-	// Invalidate caches for removed directory and parent
-	h.server.handler.attrCache.Invalidate(targetPath)
-	h.server.handler.attrCache.Invalidate(node.path)
-	if h.server.handler.dirCache != nil {
-		h.server.handler.dirCache.Invalidate(node.path)
-		h.server.handler.dirCache.Invalidate(targetPath)
-	}
+	// The directory was empty, so nothing below it needs forgetting
+	h.server.handler.invalidate(node.path, targetPath)
 
 	dirPostAttrs, err := h.server.handler.GetAttr(node)
 	if err != nil {

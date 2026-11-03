@@ -253,6 +253,7 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 			}
 		}
 	}
+	h.server.handler.invalidate(node.path, dirPath)
 
 	newNode, err := h.server.handler.Lookup(dirPath)
 	if err != nil {
@@ -390,6 +391,12 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 		if err := h.server.handler.fs.Lchown(symlinkPath, lchownUID, lchownGID); err != nil {
 			if h.server.options.Debug {
 				h.server.logger.Printf("SYMLINK: Lchown failed for '%s': %v", symlinkPath, err)
+			}
+		} else {
+			// The owner changed after Symlink cached the link's attributes.
+			h.server.handler.invalidate(symlinkPath)
+			if owned, err := h.server.handler.Lookup(symlinkPath); err == nil {
+				newNode = owned
 			}
 		}
 	}

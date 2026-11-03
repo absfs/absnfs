@@ -169,7 +169,9 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 	default:
 	}
 
-	// Check cache first (including negative cache)
+	// Check cache first (including negative cache). The generation is taken
+	// first so a result read before a concurrent change is not cached.
+	gen := s.attrCache.generation()
 	if attrs, found := s.attrCache.Get(path, s); found {
 		if attrs == nil {
 			// Negative cache hit: path confirmed non-existent
@@ -190,7 +192,7 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 	if err != nil {
 		// Store negative cache entry if enabled and error is "not found"
 		if errors.Is(err, os.ErrNotExist) {
-			s.attrCache.PutNegative(path)
+			s.attrCache.putNegativeAt(path, gen)
 			s.RecordNegativeCacheMiss()
 		}
 		return nil, fmt.Errorf("lookup: %w", err)
@@ -206,8 +208,7 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 		node.children = make(map[string]*NFSNode)
 	}
 
-	// Cache the attributes
-	s.attrCache.Put(path, attrs)
+	s.attrCache.putAt(path, attrs, gen)
 	return node, nil
 }
 
@@ -217,8 +218,9 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 		return nil, fmt.Errorf("nil node")
 	}
 
-	// Check cache first
-	if attrs, found := s.attrCache.Get(node.path, s); found && attrs != nil && attrs.IsValid() {
+	// The cache serves only entries within their TTL
+	gen := s.attrCache.generation()
+	if attrs, _ := s.attrCache.Get(node.path, s); attrs != nil {
 		return attrs, nil
 	}
 
@@ -228,8 +230,7 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 		return nil, fmt.Errorf("getattr: %w", err)
 	}
 
-	// Cache the attributes
-	s.attrCache.Put(node.path, attrs)
+	s.attrCache.putAt(node.path, attrs, gen)
 	return attrs, nil
 }
 
@@ -247,6 +248,9 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 	if err != nil {
 		return fmt.Errorf("setattr: %w", err)
 	}
+	// Forget the cached attributes once done, also when a later change
+	// fails after an earlier one was applied.
+	defer s.attrCache.Invalidate(node.path)
 
 	// Read current attrs with lock protection to compare
 	node.mu.RLock()
@@ -275,9 +279,6 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 			return fmt.Errorf("setattr: chtimes failed: %w", err)
 		}
 	}
-
-	// Invalidate cache after attribute changes
-	s.attrCache.Invalidate(node.path)
 
 	// Re-read what the filesystem now records rather than trusting the
 	// request, so the node keeps its file id and real owner.
@@ -450,6 +451,10 @@ func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset i
 		data = data[:tuning.TransferSize]
 	}
 
+	// Forget the cached attributes once the file is written and closed (or
+	// the attempt failed, perhaps after an owner override changed the mode).
+	defer s.attrCache.Invalidate(node.path)
+
 	// Standard write path
 	f, err := s.fs.OpenFile(node.path, os.O_WRONLY, 0)
 	if err != nil && ownerOverride && errors.Is(err, os.ErrPermission) {
@@ -466,9 +471,6 @@ func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset i
 
 	n, err := f.WriteAt(data, offset)
 	if err == nil {
-		// Invalidate cache after successful write
-		s.attrCache.Invalidate(node.path)
-
 		// Update modification time explicitly
 		now := time.Now()
 		if chtimesErr := s.fs.Chtimes(node.path, now, now); chtimesErr != nil {
@@ -593,10 +595,23 @@ func (s *AbsfsNFS) createWithContext(ctx context.Context, dir *NFSNode, name str
 		return nil, fmt.Errorf("create: failed to sanitize path: %w", err)
 	}
 
-	// Try to make a new file first. Only a file this call created gets the
-	// requested mode and owner, and only such a file is removed on failure:
-	// UNCHECKED on an existing file truncates it but keeps its mode and owner,
-	// as open(O_CREAT|O_TRUNC) does.
+	// A failed attempt may still have changed the directory (a file made
+	// and removed again), so the caches forget both either way.
+	err = s.createFile(path, attrs, exclusive)
+	s.invalidate(dir.path, path)
+	if err != nil {
+		return nil, err
+	}
+	return s.Lookup(path)
+}
+
+// createFile makes the file at path, or truncates it unless exclusive.
+//
+// It tries to make a new file first. Only a file this call created gets the
+// requested mode and owner, and only such a file is removed on failure:
+// UNCHECKED on an existing file truncates it but keeps its mode and owner,
+// as open(O_CREAT|O_TRUNC) does.
+func (s *AbsfsNFS) createFile(path string, attrs *NFSAttrs, exclusive bool) error {
 	created := true
 	f, err := s.fs.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, attrs.Mode&os.ModePerm)
 	if err != nil && !exclusive && errors.Is(err, os.ErrExist) {
@@ -604,29 +619,18 @@ func (s *AbsfsNFS) createWithContext(ctx context.Context, dir *NFSNode, name str
 		f, err = s.fs.OpenFile(path, os.O_RDWR|os.O_TRUNC, 0)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("create: failed to create %s: %w", path, err)
+		return fmt.Errorf("create: failed to create %s: %w", path, err)
 	}
 	if err := f.Close(); err != nil {
 		if created {
 			s.fs.Remove(path)
 		}
-		return nil, fmt.Errorf("create: failed to close %s: %w", path, err)
+		return fmt.Errorf("create: failed to close %s: %w", path, err)
 	}
-
 	if created {
-		if err := s.applyNewFileAttrs(path, attrs); err != nil {
-			return nil, err
-		}
+		return s.applyNewFileAttrs(path, attrs)
 	}
-
-	// Invalidate parent directory caches and negative cache entries in the directory
-	s.attrCache.Invalidate(dir.path)
-	s.attrCache.InvalidateNegativeInDir(dir.path)
-	s.attrCache.Invalidate(path) // Also invalidate the specific path in case it was negatively cached
-	if s.dirCache != nil {
-		s.dirCache.Invalidate(dir.path)
-	}
-	return s.Lookup(path)
+	return nil
 }
 
 // applyNewFileAttrs gives a file CREATE just made its requested mode and
@@ -712,12 +716,9 @@ func (s *AbsfsNFS) RemoveWithContext(ctx context.Context, dir *NFSNode, name str
 	if err != nil {
 		return fmt.Errorf("remove: failed to remove %s: %w", path, err)
 	}
-	// Invalidate caches
-	s.attrCache.Invalidate(path)
-	s.attrCache.Invalidate(dir.path)
-	if s.dirCache != nil {
-		s.dirCache.Invalidate(dir.path)
-	}
+	// Only an empty directory can be removed, so nothing below path needs
+	// forgetting: a cached miss there stays true.
+	s.invalidate(dir.path, path)
 	return nil
 }
 
@@ -786,20 +787,13 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 	if err != nil && (bothDirs || errors.Is(err, os.ErrExist)) {
 		err = s.replaceByRename(oldPath, newPath, err)
 	}
+	// Both names and everything below them (when a directory moved or was
+	// replaced) are forgotten, also after a failure: replaceByRename may
+	// have removed the target first.
+	s.invalidate(oldDir.path, newDir.path)
+	s.invalidateTree(oldPath, newPath)
 	if err != nil {
 		return fmt.Errorf("rename: failed to rename %s to %s: %w", oldPath, newPath, err)
-	}
-	// Invalidate caches and negative cache entries
-	s.attrCache.Invalidate(oldPath)
-	s.attrCache.Invalidate(newPath)
-	s.attrCache.Invalidate(oldDir.path)
-	s.attrCache.Invalidate(newDir.path)
-	// Invalidate negative cache entries in both directories
-	s.attrCache.InvalidateNegativeInDir(oldDir.path)
-	s.attrCache.InvalidateNegativeInDir(newDir.path)
-	if s.dirCache != nil {
-		s.dirCache.Invalidate(oldDir.path)
-		s.dirCache.Invalidate(newDir.path)
 	}
 	return nil
 }
@@ -921,7 +915,9 @@ func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFS
 	// Check directory cache first if enabled
 	var entries []os.FileInfo
 	var cacheHit bool
+	var gen uint64
 	if s.dirCache != nil {
+		gen = s.dirCache.generation()
 		entries, cacheHit = s.dirCache.Get(dir.path)
 		if cacheHit {
 			// Record cache hit in metrics
@@ -988,9 +984,9 @@ func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFS
 		return nil, fmt.Errorf("readdir: failed to read entries from %s: %w", dir.path, err)
 	}
 
-	// Store entries in cache if enabled
+	// Store entries in cache if enabled and nothing changed meanwhile
 	if s.dirCache != nil {
-		s.dirCache.Put(dir.path, entries)
+		s.dirCache.putAt(dir.path, entries, gen)
 	}
 
 	var nodes []*NFSNode
@@ -1032,11 +1028,12 @@ func (s *AbsfsNFS) ReadDirPlus(dir *NFSNode) ([]*NFSNode, error) {
 	// client's GETATTRs, so it reports what the filesystem holds now. An
 	// entry that vanished in between keeps the attributes LOOKUP gave it.
 	for _, node := range nodes {
+		gen := s.attrCache.generation()
 		attrs, err := s.statAttrs(node.path)
 		if err != nil {
 			continue
 		}
-		s.attrCache.Put(node.path, attrs)
+		s.attrCache.putAt(node.path, attrs, gen)
 
 		// Assign attrs with write lock protection
 		node.mu.Lock()
@@ -1129,13 +1126,7 @@ func (s *AbsfsNFS) Symlink(dir *NFSNode, name string, target string, attrs *NFSA
 		return nil, fmt.Errorf("symlink: failed to create symlink at %s pointing to %s: %w", path, target, err)
 	}
 
-	// Invalidate parent directory caches and negative cache entries in the directory
-	s.attrCache.Invalidate(dir.path)
-	s.attrCache.InvalidateNegativeInDir(dir.path)
-	s.attrCache.Invalidate(path) // Also invalidate the specific path in case it was negatively cached
-	if s.dirCache != nil {
-		s.dirCache.Invalidate(dir.path)
-	}
+	s.invalidate(dir.path, path)
 	return s.Lookup(path)
 }
 

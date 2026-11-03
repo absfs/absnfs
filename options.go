@@ -331,8 +331,10 @@ type ExportOptions struct {
 	// Default: 65536 (64KB)
 	TransferSize int
 
-	// AttrCacheTimeout controls how long file attributes are cached
-	// Longer timeouts improve performance but may cause clients to see stale data
+	// AttrCacheTimeout controls how long file attributes are cached.
+	// Changes made through the server are seen at once; changes made to
+	// the filesystem by anything else are seen once it has passed. A
+	// changed value applies to entries already cached.
 	// Default: 5 * time.Second
 	AttrCacheTimeout time.Duration
 
@@ -347,9 +349,9 @@ type ExportOptions struct {
 	// Default: false (disabled)
 	CacheNegativeLookups bool
 
-	// NegativeCacheTimeout controls how long negative cache entries are kept
-	// Shorter timeouts reduce the chance of stale negative cache entries
-	// Only applicable when CacheNegativeLookups is true
+	// NegativeCacheTimeout controls how long negative cache entries are kept:
+	// how long a file created by anything other than the server can stay
+	// invisible. Only applicable when CacheNegativeLookups is true
 	// Default: 5 * time.Second
 	NegativeCacheTimeout time.Duration
 
@@ -358,9 +360,10 @@ type ExportOptions struct {
 	// Default: false (disabled)
 	EnableDirCache bool
 
-	// DirCacheTimeout controls how long directory entries are cached
-	// Longer timeouts improve performance but may cause clients to see stale directory listings
-	// Only applicable when EnableDirCache is true
+	// DirCacheTimeout controls how long directory listings are cached: how
+	// long a change made to the filesystem by anything other than the
+	// server can stay out of a listing (the server's own changes are seen at
+	// once). Only applicable when EnableDirCache is true
 	// Default: 10 * time.Second
 	DirCacheTimeout time.Duration
 

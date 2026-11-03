@@ -170,6 +170,8 @@ gid; a server not running as root can only give them its own. An UNCHECKED
 - **Security**: IP allow lists with CIDR, read-only exports, root or all
   squashing, TLS and mutual TLS, rate limiting.
 - **Performance**: attribute and directory caches, worker pool, TCP tuning.
+  The caches are coherent with the server's own changes (see Caveats for
+  changes made behind its back).
 - **Live reconfiguration**: tuning applies immediately; policy changes drain
   in-flight requests first.
 - **Metrics and structured logging.**
@@ -199,6 +201,12 @@ gid; a server not running as root can only give them its own. An UNCHECKED
   arriving in that instant is undone.
 - **File ids are path based.** Renaming an object changes its fileid, and two
   hard links (where the backing filesystem has them) have different ids.
+- **Changes made behind the server's back are seen after a delay.** absnfs
+  caches attributes for `AttrCacheTimeout` (5s by default), and, when
+  enabled, misses for `NegativeCacheTimeout` and listings for
+  `DirCacheTimeout`. Every change made through the server is seen at once,
+  but one made to the exported filesystem directly (another process, a
+  second server over the same files) can take that long to show.
 - **The rename fallback is not atomic.** When the backing filesystem refuses
   to replace an existing target, absnfs removes the target and renames, so for
   a moment neither name exists. osfs renames atomically and never needs it.

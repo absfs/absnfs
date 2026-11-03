@@ -14,6 +14,13 @@ type AttrCache struct {
 
 Thread-safe attribute cache backed by a hash map and doubly-linked list for O(1) LRU operations.
 
+The server keeps it coherent with its own changes: every procedure that
+changes an object invalidates what it changed (a RENAME the whole subtree
+below both names), and a lookup that read the filesystem before such an
+invalidation does not cache its result afterwards. Changes made to the
+filesystem by anything other than the server are seen once an entry's TTL
+has passed.
+
 ### CachedAttrs
 
 ```go
@@ -52,7 +59,7 @@ Retrieves cached attributes for a path. The return values distinguish three case
 | `(nil, true)` | Negative hit -- path is confirmed non-existent. |
 | `(nil, false)` | Cache miss -- path is not in the cache. |
 
-The optional `server` parameter enables metrics recording (cache hit/miss counters). Expired entries are lazily removed on access. Each hit updates the LRU position.
+An entry is served only while it is younger than the TTL in force at the time of the `Get`. Positive hits are copies whose `IsValid` reports true until the entry expires. The optional `server` parameter enables metrics recording (cache hit/miss counters). Expired entries are lazily removed on access. Each hit updates the LRU position.
 
 ### Put
 
@@ -84,7 +91,7 @@ Removes a single entry (positive or negative) from the cache. O(1) operation.
 func (c *AttrCache) InvalidateNegativeInDir(dirPath string)
 ```
 
-Removes all negative cache entries that are direct children of `dirPath`. Called when a file is created in a directory to ensure the negative entry for that filename is cleared. Only checks one level deep (not recursive).
+Removes all negative cache entries that are direct children of `dirPath`. Only checks one level deep (not recursive). The server itself invalidates just the names a procedure changes.
 
 ### Clear
 
@@ -116,7 +123,7 @@ Changes the maximum cache capacity. If `newSize` is smaller than the current ent
 func (c *AttrCache) UpdateTTL(newTTL time.Duration)
 ```
 
-Changes the TTL for new entries. Does not retroactively update existing entries. If `newTTL <= 0`, defaults to 5 seconds.
+Changes the TTL. It applies to every entry, including those already cached, so lowering it also bounds entries stored under the old value. If `newTTL <= 0`, defaults to 5 seconds. The negative TTL set by `ConfigureNegativeCaching` likewise applies to existing negative entries.
 
 ### Size
 

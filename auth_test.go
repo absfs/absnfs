@@ -707,10 +707,11 @@ func TestR3_AccessPermissionChecking(t *testing.T) {
 		// Create a file with mode 0700 (owner rwx only)
 		server.handler.fs.Create("/ownerfile")
 		server.handler.fs.Chmod("/ownerfile", 0700)
-		fileHandle := getFileHandle(server, "/ownerfile")
 
-		// Make UID 1000 the file's owner; memfs records no OS owner, so the export's owner is reported
+		// Make UID 1000 the file's owner; memfs records no OS owner, so the
+		// export's owner is reported. Set before the attributes are cached.
 		server.handler.owner = FileOwner{UID: 1000, GID: 2000}
+		fileHandle := getFileHandle(server, "/ownerfile")
 
 		// Auth context: owner (UID 1000)
 		authCtx := &AuthContext{

@@ -41,6 +41,27 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Fixed
 
+- The attribute cache never answered GETATTR (or ACCESS, or any procedure
+  reporting pre- or post-operation attributes): it dropped the validity time
+  when handing out a copy, so every request stat'ed the filesystem. It now
+  serves entries within `AttrCacheTimeout`, and a client's GETATTR, ACCESS
+  and LOOKUP traffic for a cached file costs no filesystem stat at all.
+- Cached attributes, misses and listings could outlive the change they
+  describe. RENAME of a directory left everything cached below the old and
+  new names (a file looked up under the old name was still found, a miss
+  below the new name hid the moved files, and listings stayed stale); MKDIR
+  invalidated nothing, so with negative caching it failed with
+  `NFS3ERR_NOENT` after creating the directory, and with the directory
+  cache the parent's listing lacked it; a SETATTR or WRITE that failed
+  partway kept the old attributes; and a LOOKUP, GETATTR or listing that
+  read the filesystem just before a concurrent change cached the old answer
+  after it. Every procedure now invalidates exactly what it changed (the
+  whole subtree for RENAME), after changing it, and a result read before an
+  invalidation is not cached.
+- LOOKUP replies carried the directory's attributes from when its handle was
+  made, never refreshed, so clients could keep a stale directory mtime.
+- Lowering `AttrCacheTimeout`, `NegativeCacheTimeout` or `DirCacheTimeout`
+  now also bounds entries cached under the old value.
 - READLINK refused (`NFS3ERR_IO`) any relative target with a `..` component,
   so a link such as `docs/up -> ../README.md` read as EIO through a mount, and
   `git add`, `git status` and `rg` failed on trees containing one. Targets are

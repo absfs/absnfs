@@ -92,7 +92,7 @@ Changes the maximum number of cached directories. Evicts LRU entries if the new 
 func (c *DirCache) UpdateTTL(newTimeout time.Duration)
 ```
 
-Changes the TTL for new entries. Does not retroactively update existing entries. Defaults to 10 seconds if `newTimeout <= 0`.
+Changes the TTL. It applies to every entry, including those already cached. Defaults to 10 seconds if `newTimeout <= 0`.
 
 ### Size
 

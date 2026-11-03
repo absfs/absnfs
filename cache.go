@@ -3,11 +3,22 @@
 // Provides two cache types -- AttrCache (LRU file attributes with TTL)
 // and DirCache (LRU directory listings) -- each with configurable size
 // limits and eviction.
+//
+// Coherence. Every procedure that changes the filesystem invalidates what
+// it changed (invalidate, invalidateTree), so the server's own changes are
+// visible to the next request. A reader that consulted the filesystem
+// before such an invalidation must not store its result after it: readers
+// take the cache's generation before reading and store with putAt, which
+// drops the result when anything was invalidated in between. Changes made
+// to the filesystem by anything other than this server are not seen until
+// the entry's TTL has passed; the TTL in force when an entry is read
+// applies, so lowering it also bounds entries stored under the old one.
 package absnfs
 
 import (
 	"container/list"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,13 +33,14 @@ type AttrCache struct {
 	maxSize        int           // Maximum number of entries in the cache
 	accessList     *list.List    // Doubly-linked list for O(1) LRU tracking
 	enableNegative bool          // Enable negative caching
+	gen            uint64        // Incremented by every invalidation (see putAt)
 }
 
 // CachedAttrs represents cached file attributes with expiration
 // When attrs is nil, this represents a negative cache entry (file not found)
 type CachedAttrs struct {
 	attrs       *NFSAttrs
-	expireAt    time.Time
+	storedAt    time.Time
 	listElement *list.Element // Reference to position in LRU list for O(1) access
 	isNegative  bool          // True if this is a negative cache entry
 }
@@ -60,7 +72,17 @@ func (c *AttrCache) ConfigureNegativeCaching(enable bool, ttl time.Duration) {
 	}
 }
 
-// Get retrieves cached attributes if they exist and are not expired.
+// expiry returns when e stops being served under the TTL in force now.
+// The caller holds c.mu.
+func (c *AttrCache) expiry(e *CachedAttrs) time.Time {
+	if e.isNegative {
+		return e.storedAt.Add(c.negativeTTL)
+	}
+	return e.storedAt.Add(c.ttl)
+}
+
+// Get retrieves cached attributes if they exist and are not expired. The
+// attributes returned are a copy, valid (IsValid) until the entry expires.
 // Returns:
 //   - (attrs, true) = positive cache hit (attrs found)
 //   - (nil, true)   = negative cache hit (path confirmed non-existent)
@@ -73,90 +95,71 @@ func (c *AttrCache) Get(path string, server ...*AbsfsNFS) (*NFSAttrs, bool) {
 
 	c.mu.RLock()
 	cached, ok := c.cache[path]
-	if ok && time.Now().Before(cached.expireAt) {
-		// Handle negative cache entry
-		if cached.isNegative {
-			c.mu.RUnlock()
-
-			// Update access log (LRU tracking)
-			c.mu.Lock()
-			if _, stillExists := c.cache[path]; stillExists {
-				c.updateAccessLog(path)
-			}
-			c.mu.Unlock()
-
-			// Record negative cache hit for metrics
-			if s != nil {
-				s.RecordNegativeCacheHit()
-
-				// Log negative cache hit if debug logging is enabled
-				if logger := s.getStructuredLogger(); logger != nil && s.tuning.Load().Log != nil && s.tuning.Load().Log.Level == "debug" {
-					logger.Debug("negative cache hit",
-						LogField{Key: "path", Value: path})
-				}
-			}
-
-			// Return (nil, true) to indicate negative cache hit
-			return nil, true
+	live, negative := false, false
+	var attrs *NFSAttrs
+	if ok {
+		expiry := c.expiry(cached)
+		live = time.Now().Before(expiry)
+		negative = cached.isNegative
+		if live && !negative {
+			// Copy while holding the lock: the entry may be replaced.
+			cp := *cached.attrs
+			cp.validUntil = expiry
+			attrs = &cp
 		}
+	}
+	c.mu.RUnlock()
 
-		// Copy attributes while holding RLock to prevent data races
-		attrs := &NFSAttrs{
-			Mode:   cached.attrs.Mode,
-			Size:   cached.attrs.Size,
-			FileId: cached.attrs.FileId,
-			Uid:    cached.attrs.Uid,
-			Gid:    cached.attrs.Gid,
-		}
-		attrs.SetMtime(cached.attrs.Mtime())
-		attrs.SetAtime(cached.attrs.Atime())
-		c.mu.RUnlock()
-
-		// Update access log (LRU tracking)
+	if live {
+		// Update access log (LRU tracking) if the entry is still there
 		c.mu.Lock()
-		// Revalidate that entry still exists before updating access log
-		// This prevents race condition where entry could be deleted between locks
 		if _, stillExists := c.cache[path]; stillExists {
 			c.updateAccessLog(path)
 		}
 		c.mu.Unlock()
 
-		// Record cache hit for metrics
 		if s != nil {
-			s.RecordAttrCacheHit()
-
-			// Log cache hit if debug logging is enabled
-			if logger := s.getStructuredLogger(); logger != nil && s.tuning.Load().Log != nil && s.tuning.Load().Log.Level == "debug" {
-				logger.Debug("attribute cache hit",
-					LogField{Key: "path", Value: path})
+			if negative {
+				s.RecordNegativeCacheHit()
+			} else {
+				s.RecordAttrCacheHit()
 			}
+			s.logCacheEvent("attribute cache hit", path, negative)
 		}
-
 		return attrs, true
 	}
-	c.mu.RUnlock()
 
 	// Record cache miss for metrics
 	if s != nil {
 		s.RecordAttrCacheMiss()
-
-		// Log cache miss if debug logging is enabled
-		if logger := s.getStructuredLogger(); logger != nil && s.tuning.Load().Log != nil && s.tuning.Load().Log.Level == "debug" {
-			logger.Debug("attribute cache miss",
-				LogField{Key: "path", Value: path})
-		}
+		s.logCacheEvent("attribute cache miss", path, false)
 	}
 
 	if ok {
 		// Expired entry, remove it with re-check after lock upgrade
 		c.mu.Lock()
-		if entry, exists := c.cache[path]; exists && time.Now().After(entry.expireAt) {
+		if entry, exists := c.cache[path]; exists && !time.Now().Before(c.expiry(entry)) {
 			c.removeFromAccessLog(path)
 			delete(c.cache, path)
 		}
 		c.mu.Unlock()
 	}
 	return nil, false
+}
+
+// logCacheEvent logs an attribute cache hit or miss at debug level.
+func (s *AbsfsNFS) logCacheEvent(msg, path string, negative bool) {
+	logger := s.getStructuredLogger()
+	if logger == nil {
+		return
+	}
+	if tuning := s.tuning.Load(); tuning.Log == nil || tuning.Log.Level != "debug" {
+		return
+	}
+	if negative {
+		msg = "negative cache hit"
+	}
+	logger.Debug(msg, LogField{Key: "path", Value: path})
 }
 
 // updateAccessLog moves the path to the front of the access list (most recently used)
@@ -189,107 +192,81 @@ func (c *AttrCache) removeFromAccessLog(path string) {
 	cached.listElement = nil
 }
 
+// evictLRU removes the least recently used entry. The caller holds c.mu.
+func (c *AttrCache) evictLRU() {
+	lru := c.accessList.Back()
+	if lru == nil {
+		return
+	}
+	if lruPath, ok := lru.Value.(string); ok {
+		delete(c.cache, lruPath)
+	}
+	c.accessList.Remove(lru)
+}
+
+// store adds or replaces the entry for path. nil attrs records that path
+// does not exist. The caller holds c.mu.
+func (c *AttrCache) store(path string, attrs *NFSAttrs) {
+	existing, exists := c.cache[path]
+	if !exists && len(c.cache) >= c.maxSize {
+		c.evictLRU()
+	}
+
+	entry := &CachedAttrs{storedAt: time.Now(), isNegative: attrs == nil}
+	if attrs != nil {
+		cp := *attrs // copy, so the caller cannot modify the cached value
+		entry.attrs = &cp
+	}
+	if exists {
+		entry.listElement = existing.listElement
+	}
+	c.cache[path] = entry
+	c.updateAccessLog(path)
+}
+
+// generation returns the invalidation count. A reader takes it before
+// consulting the filesystem and passes it to putAt.
+func (c *AttrCache) generation() uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.gen
+}
+
 // Put adds or updates cached attributes
 func (c *AttrCache) Put(path string, attrs *NFSAttrs) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.store(path, attrs)
+}
 
-	// Check if entry already exists
-	existing, exists := c.cache[path]
-
-	// Check if we need to evict entries to make room
-	if len(c.cache) >= c.maxSize && !exists {
-		// Need to evict the least recently used entry - O(1) using list.Back()
-		if c.accessList.Len() > 0 {
-			// Get LRU element from back of list - O(1)
-			lruElement := c.accessList.Back()
-			if lruElement != nil {
-				lruPath, ok := lruElement.Value.(string)
-				if ok {
-					delete(c.cache, lruPath)
-				}
-				c.accessList.Remove(lruElement) // O(1)
-			}
-		}
+// putAt caches attributes read from the filesystem after generation
+// returned gen, unless something was invalidated since: the attributes may
+// have been read before that change.
+func (c *AttrCache) putAt(path string, attrs *NFSAttrs, gen uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen == gen {
+		c.store(path, attrs)
 	}
-
-	// Deep copy the attributes to prevent modification
-	attrsCopy := &NFSAttrs{
-		Mode:   attrs.Mode,
-		Size:   attrs.Size,
-		FileId: attrs.FileId,
-		Uid:    attrs.Uid,
-		Gid:    attrs.Gid,
-	}
-	attrsCopy.SetMtime(attrs.Mtime())
-	attrsCopy.SetAtime(attrs.Atime())
-
-	// Preserve the listElement reference when updating existing entry
-	var listElem *list.Element
-	if exists && existing != nil {
-		listElem = existing.listElement
-	}
-
-	c.cache[path] = &CachedAttrs{
-		attrs:       attrsCopy,
-		expireAt:    time.Now().Add(c.ttl),
-		listElement: listElem,
-		isNegative:  false,
-	}
-
-	// Update access log to mark this as most recently used - O(1)
-	c.updateAccessLog(path)
 }
 
 // PutNegative adds a negative cache entry (file not found)
 func (c *AttrCache) PutNegative(path string) {
-	// Only store negative entries if enabled
-	c.mu.RLock()
-	enabled := c.enableNegative
-	negativeTTL := c.negativeTTL
-	c.mu.RUnlock()
-
-	if !enabled {
-		return
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	// Check if entry already exists
-	existing, exists := c.cache[path]
-
-	// Check if we need to evict entries to make room
-	if len(c.cache) >= c.maxSize && !exists {
-		// Need to evict the least recently used entry - O(1) using list.Back()
-		if c.accessList.Len() > 0 {
-			// Get LRU element from back of list - O(1)
-			lruElement := c.accessList.Back()
-			if lruElement != nil {
-				lruPath, ok := lruElement.Value.(string)
-				if ok {
-					delete(c.cache, lruPath)
-				}
-				c.accessList.Remove(lruElement) // O(1)
-			}
-		}
+	if c.enableNegative {
+		c.store(path, nil)
 	}
+}
 
-	// Preserve the listElement reference when updating existing entry
-	var listElem *list.Element
-	if exists && existing != nil {
-		listElem = existing.listElement
+// putNegativeAt is PutNegative for a miss observed after generation
+// returned gen (see putAt).
+func (c *AttrCache) putNegativeAt(path string, gen uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.enableNegative && c.gen == gen {
+		c.store(path, nil)
 	}
-
-	c.cache[path] = &CachedAttrs{
-		attrs:       nil, // No attributes for negative entry
-		expireAt:    time.Now().Add(negativeTTL),
-		listElement: listElem,
-		isNegative:  true,
-	}
-
-	// Update access log to mark this as most recently used - O(1)
-	c.updateAccessLog(path)
 }
 
 // Invalidate removes an entry from the cache
@@ -297,8 +274,45 @@ func (c *AttrCache) Invalidate(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.gen++
 	c.removeFromAccessLog(path)
 	delete(c.cache, path)
+}
+
+// invalidateTree removes the entries for each of roots and everything
+// below them, in one pass over the cache.
+func (c *AttrCache) invalidateTree(roots ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.gen++
+	prefixes := treePrefixes(roots)
+	for p := range c.cache {
+		if inAnyTree(p, roots, prefixes) {
+			c.removeFromAccessLog(p)
+			delete(c.cache, p)
+		}
+	}
+}
+
+// treePrefixes returns the prefix of the paths below each root. Cached
+// paths are slash-separated (sanitizePath).
+func treePrefixes(roots []string) []string {
+	prefixes := make([]string, len(roots))
+	for i, root := range roots {
+		prefixes[i] = strings.TrimSuffix(root, "/") + "/"
+	}
+	return prefixes
+}
+
+// inAnyTree reports whether p is one of roots or lies below one of them.
+func inAnyTree(p string, roots, prefixes []string) bool {
+	for i, root := range roots {
+		if p == root || strings.HasPrefix(p, prefixes[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 // Clear removes all entries from the cache
@@ -306,6 +320,7 @@ func (c *AttrCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.gen++
 	c.cache = make(map[string]*CachedAttrs)
 	c.accessList = list.New()
 }
@@ -348,12 +363,14 @@ func (c *AttrCache) NegativeStats() int {
 	return count
 }
 
-// InvalidateNegativeInDir invalidates all negative cache entries in a directory
-// This is called when a file is created in the directory
+// InvalidateNegativeInDir invalidates all negative cache entries in a
+// directory (its direct children). The server itself invalidates only the
+// names a procedure changes.
 func (c *AttrCache) InvalidateNegativeInDir(dirPath string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.gen++
 	// Find all negative entries that are children of this directory
 	toDelete := make([]string, 0)
 	for path, cached := range c.cache {
@@ -429,20 +446,12 @@ func (c *AttrCache) Resize(newSize int) {
 
 	// If the new size is smaller than current entries, evict LRU entries
 	for len(c.cache) > c.maxSize && c.accessList.Len() > 0 {
-		lruElement := c.accessList.Back()
-		if lruElement == nil {
-			break
-		}
-		lruPath, ok := lruElement.Value.(string)
-		if ok {
-			delete(c.cache, lruPath)
-		}
-		c.accessList.Remove(lruElement)
+		c.evictLRU()
 	}
 }
 
-// UpdateTTL changes the time-to-live for cached attributes
-// This affects new entries and does not retroactively change existing entries
+// UpdateTTL changes the time-to-live for cached attributes. It applies to
+// every entry, including those already cached.
 func (c *AttrCache) UpdateTTL(newTTL time.Duration) {
 	if newTTL <= 0 {
 		newTTL = 5 * time.Second // Default TTL if invalid
@@ -462,6 +471,7 @@ type DirCache struct {
 	timeout    time.Duration
 	maxEntries int
 	maxDirSize int
+	gen        uint64 // Incremented by every invalidation (see putAt)
 	hits       uint64
 	misses     uint64
 }
@@ -469,7 +479,7 @@ type DirCache struct {
 // CachedDirEntry represents cached directory entries with expiration
 type CachedDirEntry struct {
 	entries     []os.FileInfo
-	validUntil  time.Time
+	storedAt    time.Time
 	listElement *list.Element
 }
 
@@ -494,6 +504,12 @@ func NewDirCache(timeout time.Duration, maxEntries int, maxDirSize int) *DirCach
 	}
 }
 
+// expired reports whether e is past the timeout in force now. The caller
+// holds c.mu.
+func (c *DirCache) expired(e *CachedDirEntry) bool {
+	return !time.Now().Before(e.storedAt.Add(c.timeout))
+}
+
 // Get retrieves cached directory entries if they exist and are not expired
 func (c *DirCache) Get(path string) ([]os.FileInfo, bool) {
 	c.mu.RLock()
@@ -505,13 +521,13 @@ func (c *DirCache) Get(path string) ([]os.FileInfo, bool) {
 	}
 
 	// Check if expired
-	if time.Now().After(cached.validUntil) {
+	if c.expired(cached) {
 		c.mu.RUnlock()
 		atomic.AddUint64(&c.misses, 1)
 
 		// Remove expired entry with re-check after lock upgrade
 		c.mu.Lock()
-		if entry, exists := c.entries[path]; exists && time.Now().After(entry.validUntil) {
+		if entry, exists := c.entries[path]; exists && c.expired(entry) {
 			c.removeFromAccessList(path)
 			delete(c.entries, path)
 		}
@@ -541,7 +557,28 @@ func (c *DirCache) Get(path string) ([]os.FileInfo, bool) {
 func (c *DirCache) Put(path string, entries []os.FileInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.store(path, entries)
+}
 
+// generation returns the invalidation count (see AttrCache.generation).
+func (c *DirCache) generation() uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.gen
+}
+
+// putAt caches a listing read after generation returned gen, unless
+// something was invalidated since (see AttrCache.putAt).
+func (c *DirCache) putAt(path string, entries []os.FileInfo, gen uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen == gen {
+		c.store(path, entries)
+	}
+}
+
+// store adds or replaces the listing for path. The caller holds c.mu.
+func (c *DirCache) store(path string, entries []os.FileInfo) {
 	// Don't cache directories that exceed the maximum size
 	if len(entries) > c.maxDirSize {
 		return
@@ -552,17 +589,7 @@ func (c *DirCache) Put(path string, entries []os.FileInfo) {
 
 	// Check if we need to evict entries to make room
 	if len(c.entries) >= c.maxEntries && !exists {
-		// Need to evict the least recently used entry
-		if c.accessList.Len() > 0 {
-			lruElement := c.accessList.Back()
-			if lruElement != nil {
-				lruPath, ok := lruElement.Value.(string)
-				if ok {
-					delete(c.entries, lruPath)
-				}
-				c.accessList.Remove(lruElement)
-			}
-		}
+		c.evictLRU()
 	}
 
 	// Make a copy of the entries to prevent external modification
@@ -577,12 +604,24 @@ func (c *DirCache) Put(path string, entries []os.FileInfo) {
 
 	c.entries[path] = &CachedDirEntry{
 		entries:     entriesCopy,
-		validUntil:  time.Now().Add(c.timeout),
+		storedAt:    time.Now(),
 		listElement: listElem,
 	}
 
 	// Update access log to mark this as most recently used
 	c.updateAccessLog(path)
+}
+
+// evictLRU removes the least recently used listing. The caller holds c.mu.
+func (c *DirCache) evictLRU() {
+	lru := c.accessList.Back()
+	if lru == nil {
+		return
+	}
+	if lruPath, ok := lru.Value.(string); ok {
+		delete(c.entries, lruPath)
+	}
+	c.accessList.Remove(lru)
 }
 
 // updateAccessLog moves the path to the front of the access list (most recently used)
@@ -615,8 +654,25 @@ func (c *DirCache) Invalidate(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.gen++
 	c.removeFromAccessList(path)
 	delete(c.entries, path)
+}
+
+// invalidateTree removes the listings of each of roots and of every
+// directory below them.
+func (c *DirCache) invalidateTree(roots ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.gen++
+	prefixes := treePrefixes(roots)
+	for p := range c.entries {
+		if inAnyTree(p, roots, prefixes) {
+			c.removeFromAccessList(p)
+			delete(c.entries, p)
+		}
+	}
 }
 
 // Clear removes all entries from the cache
@@ -624,6 +680,7 @@ func (c *DirCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.gen++
 	c.entries = make(map[string]*CachedDirEntry)
 	c.accessList = list.New()
 }
@@ -663,20 +720,12 @@ func (c *DirCache) Resize(newMaxEntries int) {
 
 	// If the new size is smaller than current entries, evict LRU entries
 	for len(c.entries) > c.maxEntries && c.accessList.Len() > 0 {
-		lruElement := c.accessList.Back()
-		if lruElement == nil {
-			break
-		}
-		lruPath, ok := lruElement.Value.(string)
-		if ok {
-			delete(c.entries, lruPath)
-		}
-		c.accessList.Remove(lruElement)
+		c.evictLRU()
 	}
 }
 
-// UpdateTTL changes the timeout duration for directory cache entries
-// This affects new entries and does not retroactively change existing entries
+// UpdateTTL changes the timeout for directory cache entries. It applies
+// to every entry, including those already cached.
 func (c *DirCache) UpdateTTL(newTimeout time.Duration) {
 	if newTimeout <= 0 {
 		newTimeout = 10 * time.Second // Default timeout if invalid
@@ -686,4 +735,25 @@ func (c *DirCache) UpdateTTL(newTimeout time.Duration) {
 	defer c.mu.Unlock()
 
 	c.timeout = newTimeout
+}
+
+// invalidate drops what the caches hold for the objects at paths: their
+// attributes or a cached miss, and their listing if they are directories.
+// Procedures call it for every object they change, after changing it.
+func (s *AbsfsNFS) invalidate(paths ...string) {
+	for _, p := range paths {
+		s.attrCache.Invalidate(p)
+		if s.dirCache != nil {
+			s.dirCache.Invalidate(p)
+		}
+	}
+}
+
+// invalidateTree drops what the caches hold for each of roots and
+// everything below them, for a directory that moved or was replaced.
+func (s *AbsfsNFS) invalidateTree(roots ...string) {
+	s.attrCache.invalidateTree(roots...)
+	if s.dirCache != nil {
+		s.dirCache.invalidateTree(roots...)
+	}
 }

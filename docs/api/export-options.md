@@ -108,6 +108,14 @@ passed back.
 | `DirCacheMaxEntries`   | `int`           | `1000`  | Max directories in cache                        |
 | `DirCacheMaxDirSize`   | `int`           | `10000` | Max entries per directory before skipping cache |
 
+Changes made through the server are seen by the next request: every
+procedure invalidates what it changed, including everything below a renamed
+directory. Changes made to the exported filesystem by anything else (another
+process, another server over the same files) are seen once the relevant
+timeout has passed: `AttrCacheTimeout` for attributes, `NegativeCacheTimeout`
+for a name that did not exist, `DirCacheTimeout` for listings. A changed
+timeout applies to entries already cached.
+
 ## Connection Fields
 
 | Field            | Type            | Default                | Description                                     |

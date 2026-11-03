@@ -133,6 +133,9 @@ func TestHandlersReportVanishedDirectory(t *testing.T) {
 	e.nfs.fs = &faHookFS{SymlinkFileSystem: e.fs, lstatErr: map[string]error{
 		"/dir": os.ErrNotExist, "/dir/file.txt": os.ErrNotExist, "/dir/link": os.ErrNotExist,
 	}}
+	// The objects vanished behind the server's back, which it sees once the
+	// attributes it cached have expired.
+	e.nfs.attrCache.Clear()
 	read := func() []byte {
 		var b bytes.Buffer
 		xdrEncodeFileHandle(&b, file)
