@@ -79,8 +79,10 @@ Files from the operating system's own filesystem (osfs on unix, and wrappers
 such as basefs that pass `Sys()` through) report their real owner. Everything
 else reports `DefaultOwner`, so by default the user who runs the server owns
 the export, which keeps clients such as git ("detected dubious ownership")
-working. Both fields are fixed by `New()`: `UpdateExportOptions` ignores them,
-and `GetExportOptions` reports the values in effect.
+working. Both fields are fixed by `New()`: `UpdateExportOptions` returns an
+error if either is changed (a nil `DefaultOwner` means "unchanged"), and
+`GetExportOptions` reports the values in effect, so its result can always be
+passed back.
 
 `FileOwner` is `struct { UID, GID uint32 }`.
 

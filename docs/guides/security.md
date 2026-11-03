@@ -33,7 +33,9 @@ nfs, err := absnfs.New(fs, absnfs.ExportOptions{
 })
 ```
 
-macOS mounts use the `resvport` option to comply with this requirement.
+macOS clients then have to mount with `resvport`, which needs `sudo`. Leave
+`Secure` false to let users mount as themselves with `noresvport` (see the
+README section "Mounting on macOS as a normal user").
 
 ## Read-Only Export
 

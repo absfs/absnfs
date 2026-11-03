@@ -38,12 +38,15 @@ func main() {
     }
     defer server.Close()
 
-    // Start serving on port 2049
-    if err := server.Export("/export", 2049); err != nil {
+    // Serve NFS and MOUNT on one unprivileged port
+    if err := server.Export("/", 12049); err != nil {
         log.Fatal(err)
     }
 
-    // Mount from a client: mount -t nfs localhost:/export /mnt/test
+    // Mount from macOS, as yourself:
+    //   mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,nolocks,soft,intr localhost:/ ~/nfs
+    // Linux (as root):
+    //   mount -t nfs -o vers=3,tcp,port=12049,mountport=12049,nolock localhost:/ /mnt/test
     select {} // block forever
 }
 ```

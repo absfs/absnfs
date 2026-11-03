@@ -98,7 +98,8 @@ func main() {
 		fmt.Println("  showmount -e localhost")
 		fmt.Println("  sudo mount -t nfs localhost:/ /mnt/test")
 	} else {
-		fmt.Printf("  sudo mount_nfs -o resvport,nolocks,vers=3,tcp,port=%d,mountport=%d localhost:/ /mnt/test\n", *port, *port)
+		fmt.Printf("  mkdir -p ~/nfs && mount_nfs -o vers=3,tcp,port=%d,mountport=%d,noresvport,nolocks,soft,intr localhost:/ ~/nfs\n", *port, *port)
+		fmt.Println("  (unmount with umount ~/nfs before stopping the server)")
 	}
 	fmt.Println()
 	fmt.Println("Press Ctrl+C to stop")

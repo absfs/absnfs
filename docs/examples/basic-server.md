@@ -59,7 +59,7 @@ func main() {
 	}
 	fmt.Println("NFS server running on localhost:2049")
 	fmt.Println("Mount with:")
-	fmt.Println("  macOS:  sudo mount_nfs -o resvport,nolocks,vers=3,tcp,port=2049,mountport=2049 localhost:/ /Volumes/test")
+	fmt.Println("  macOS:  mount_nfs -o vers=3,tcp,port=2049,mountport=2049,noresvport,nolocks,soft,intr localhost:/ ~/nfs")
 	fmt.Println("  Linux:  sudo mount -t nfs -o vers=3,tcp,port=2049,mountport=2049,nolock localhost:/ /mnt/test")
 
 	// Graceful shutdown on Ctrl+C

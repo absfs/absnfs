@@ -64,15 +64,51 @@ Returns an error only if the structured logger fails to close.
 func (s *AbsfsNFS) Export(mountPath string, port int) error
 ```
 
-Starts serving the NFS export on the given TCP port. The `mountPath` is the path clients use when mounting (e.g., `/export/data`).
+Starts serving the export on `localhost` at the given TCP port, in the form
+kernel NFS clients (Linux, macOS `mount_nfs`) expect:
 
-- `mountPath` must not be empty.
-- `port` must be >= 0. Use 0 for a random port, 2049 for the standard NFS port.
-- Creates an internal `Server`, sets the handler, and begins accepting connections.
+- **One port for NFS and MOUNT.** The MOUNT protocol is served on the same
+  listener as NFS.
+- **RPC record marking** on the TCP stream (RFC 5531), which kernel clients
+  require.
+- **No portmapper.** Clients name the port explicitly:
+  `mount_nfs -o vers=3,tcp,port=P,mountport=P,noresvport,nolocks localhost:/ ~/nfs`.
+  See the README section "Mounting on macOS as a normal user".
+- **TLS** from `ExportOptions.TLS` applies, as with `Server.Listen`.
+
+Arguments:
+
+- `mountPath` must not be empty, but is otherwise informational. Clients
+  mount filesystem paths: `localhost:/` for the whole tree, `localhost:/sub`
+  for a subdirectory.
+- `port` must be >= 0. Use 0 to pick a free port and read it back with
+  `ExportPort`. Ports below 1024 need root.
 - Only one export can be active at a time per `AbsfsNFS` instance.
 
+For another bind address or a portmapper, create a `Server` with
+`NewServer`, call `SetHandler`, then `Listen`.
+
 ```go
-err := server.Export("/export/myfs", 2049)
+if err := server.Export("/", 12049); err != nil {
+    log.Fatal(err)
+}
+```
+
+## ExportPort
+
+```go
+func (s *AbsfsNFS) ExportPort() int
+```
+
+Returns the TCP port of the export started by `Export`, or 0 when none is
+running. Use it after `Export(path, 0)` to learn the port to mount.
+
+```go
+if err := server.Export("/", 0); err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("mount_nfs -o vers=3,tcp,port=%[1]d,mountport=%[1]d,noresvport,nolocks localhost:/ ~/nfs\n",
+    server.ExportPort())
 ```
 
 ## Unexport
@@ -131,7 +167,7 @@ func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error
 
 Updates both tuning and policy settings at runtime. Tuning changes apply immediately via atomic swap. Policy changes use drain-and-swap.
 
-- Returns an error if `Squash` differs from the current value (immutable at runtime).
+- Returns an error, and applies nothing, if `Squash`, `DefaultOwner` or `ForceOwner` differs from the current value (immutable at runtime). An empty `Squash` and a nil `DefaultOwner` mean "unchanged", so the result of `GetExportOptions` can always be passed back.
 - If `newOptions.Timeouts` or `newOptions.Log` is nil, current values are preserved.
 
 See [TuningOptions / PolicyOptions](tuning-policy.md) for the drain-and-swap mechanism.

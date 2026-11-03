@@ -6,8 +6,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Fixes found serving workspaces to the macOS NFS client, which is stricter than
-Linux's.
+Planned as v1.2.0: it adds exported API (below) and changes two behaviours
+existing deployments can see (see "Changed"). Fixes found serving workspaces
+to the macOS NFS client, which is stricter than Linux's.
 
 ### Added
 
@@ -17,6 +18,8 @@ Linux's.
 - `ExportOptions.ForceOwner`: report `DefaultOwner` for every file, even those
   with a real owner.
 - `FileOwner` type. `GetExportOptions` reports the owner in effect.
+- `AbsfsNFS.ExportPort`, the port an `Export` listens on, so a caller that
+  passed port 0 can tell clients where to mount.
 - Owner override for WRITE: the owner of a file may write it even when its
   mode denies writing, so a client that creates a file read-only and then
   writes it (git's 0444 object files) works over a stateless protocol.
@@ -24,7 +27,8 @@ Linux's.
 - A macOS end-to-end test, `TestMacOSUserMount`, run with
   `ABSNFS_MACOS_MOUNT=1`: mounts osfs and memfs exports as the current user
   and checks listing, ownership, symlinks, file operations, locking with
-  `locallocks`, and a git commit.
+  `locallocks`, removing a large directory while listing it, and a git
+  commit.
 - README sections on mounting from macOS as a normal user and on file
   ownership.
 
@@ -58,12 +62,37 @@ Linux's.
   stores the client's verifier in the new file's times, so a retransmitted
   request still succeeds (RFC 1813 section 3.3.8).
 - `ENOTEMPTY` maps to `NFS3ERR_NOTEMPTY` instead of `NFS3ERR_EXIST`.
-- `Export` now uses RPC record marking and serves MOUNT on the same port, so
-  kernel NFS clients can mount it; before, mount_nfs got "connection reset".
+- RENAME of a directory into its own subtree (`/a` to `/a/b`) returns
+  `NFS3ERR_INVAL`. On memfs it used to succeed and detach the whole subtree.
+- READDIR and READDIRPLUS cookies were list positions, so a client that
+  removed entries while paging through a directory (an incremental `rm -rf`)
+  skipped entries and left a non-empty directory. Cookies are now derived
+  from entry paths and entries are returned in cookie order, so resuming
+  after a cookie is unaffected by removals.
+- An UNCHECKED CREATE of an existing file no longer changes its mode or
+  owner (it still truncates it, as `open(O_CREAT|O_TRUNC)` does), and a
+  failure after opening it no longer deletes it.
+- `UpdateExportOptions` returns an error when asked to change `DefaultOwner`
+  or `ForceOwner` instead of silently ignoring the change, and validates
+  `Squash` before applying anything rather than after the tuning update.
+  `syscall.EINVAL` now maps to `NFS3ERR_INVAL`.
 
 ### Changed
 
-- The macOS mount instructions no longer use `sudo` or `resvport`.
+- **Default owner.** Files whose filesystem records no owner (memfs, virtual
+  filesystems, Windows) are reported as owned by the user running the server
+  rather than by root (0/0), and osfs on unix reports real owners. An export
+  served by a non-root process therefore shows clients different permission
+  bits than before. Set `DefaultOwner: &absnfs.FileOwner{}` (and
+  `ForceOwner: true`) to keep reporting 0/0.
+- **`Export` speaks RPC record marking** on its TCP stream, as RFC 5531 and
+  every kernel NFS client require; before, mount_nfs got "connection reset".
+  A raw-RPC client written against the old unframed `Export` stream must now
+  frame its messages (or use `NewServer` without `UseRecordMarking`).
+- **Directory listing order** is by cookie (a hash of the entry path), not
+  the filesystem's order.
+- The macOS mount instructions (README, docs, `cmd/testserver` and the
+  examples) no longer use `sudo` or `resvport`.
 
 ## [1.1.0]
 

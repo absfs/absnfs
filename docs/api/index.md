@@ -19,6 +19,7 @@
 | `TLSConfig` | tls_config.go | TLS/mTLS certificate and version settings |
 | `RateLimiterConfig` | rate_limiter.go | Token bucket rate limiting parameters |
 | `ServerOptions` | server.go | Low-level TCP server configuration |
+| `FileOwner` | fileattrs.go | uid/gid reported to NFS clients (`ExportOptions.DefaultOwner`) |
 
 ## Node and Attribute Types
 

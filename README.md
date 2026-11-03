@@ -71,16 +71,18 @@ Then mount it, as yourself, into a folder you own:
 ```bash
 # macOS
 mkdir -p ~/nfs
-mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,nolocks localhost:/ ~/nfs
+mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,nolocks,soft,intr localhost:/ ~/nfs
 ls -l ~/nfs
-umount ~/nfs
+umount ~/nfs   # before pressing Ctrl-C in the server
 
 # Linux (mounting needs root there)
 sudo mount -t nfs -o vers=3,tcp,port=12049,mountport=12049,nolock localhost:/ /mnt/test
 ```
 
-For a different bind address, a portmapper, or TLS, create the server yourself
-with `NewServer(ServerOptions{...})`, `SetHandler`, and `Listen`; see the
+`Export("/", 0)` picks a free port, and `nfs.ExportPort()` tells you which.
+TLS configured in `ExportOptions.TLS` applies to `Export` as well. For a
+different bind address or a portmapper, create the server yourself with
+`NewServer(ServerOptions{...})`, `SetHandler`, and `Listen`; see the
 [quick start guide](docs/guides/quick-start.md).
 
 ## Mounting on macOS as a normal user
@@ -132,10 +134,12 @@ absnfs.ExportOptions{
 }
 ```
 
-Both are fixed when the export is created. `SETATTR` (chown) is passed to the
-filesystem; on filesystems without an OS owner the reported owner stays
-`DefaultOwner`. `CREATE`, `MKDIR` and `SYMLINK` try to give new objects the
-caller's uid and gid; a server not running as root can only give them its own.
+Both are fixed when the export is created; `UpdateExportOptions` returns an
+error if asked to change them. `SETATTR` (chown) is passed to the filesystem;
+on filesystems without an OS owner the reported owner stays `DefaultOwner`.
+`CREATE`, `MKDIR` and `SYMLINK` try to give new objects the caller's uid and
+gid; a server not running as root can only give them its own. An UNCHECKED
+`CREATE` of an existing file keeps that file's owner and mode.
 
 ## Features
 
@@ -152,7 +156,11 @@ caller's uid and gid; a server not running as root can only give them its own.
   not allow writing, as with a local open file descriptor. A client that
   creates a file read-only and then writes it (git's 0444 object files) works.
 - **POSIX rename**: RENAME replaces an existing target, even on filesystems
-  whose own Rename refuses to.
+  whose own Rename refuses to, and refuses (`NFS3ERR_INVAL`) to move a
+  directory inside itself.
+- **Stable directory cookies**: READDIR and READDIRPLUS cookies are derived
+  from entry names, not positions, so a client that deletes entries while
+  paging through a large directory (`rm -rf`) does not skip any.
 - **Exclusive create**: GUARDED and EXCLUSIVE CREATE fail on an existing name
   without touching the file, so `O_EXCL` lock files work; a retransmitted
   EXCLUSIVE CREATE is recognised by its verifier.
@@ -170,8 +178,12 @@ caller's uid and gid; a server not running as root can only give them its own.
   to limit who can connect.
 - **No NLM lock manager.** Mount with `nolocks` or `locallocks`.
 - **No hard links** (LINK returns `NFS3ERR_NOTSUPP`).
-- **UNCHECKED CREATE truncates an existing file.** Clients send it only after a
-  lookup found no file, so this matters only when a create races another.
+- **UNCHECKED CREATE truncates an existing file** (keeping its owner and
+  mode), as `open(O_CREAT|O_TRUNC)` does. Clients send it only after a lookup
+  found no file, so this matters only when a create races another.
+- **Directory listings come in hash order**, not name order (`ls` sorts
+  anyway). An entry added while a client pages through a directory may be
+  missed by that listing, as on local filesystems with hashed directories.
 - **Owner override briefly changes the mode.** To let the owner write a 0444
   file, absnfs adds owner write permission while it opens the file. A chmod
   arriving in that instant is undone.
@@ -199,8 +211,8 @@ go test -race ./...
 ```
 
 The macOS end-to-end test mounts real exports with the kernel NFS client, as
-the current user, and checks listing, ownership, symlinks, file operations and
-a git commit. It is skipped unless asked for:
+the current user, and checks listing, ownership, symlinks, file operations,
+removing a large directory while listing it, and a git commit. It is skipped unless asked for:
 
 ```bash
 ABSNFS_MACOS_MOUNT=1 go test -run TestMacOSUserMount -v
