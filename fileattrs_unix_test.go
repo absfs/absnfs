@@ -41,7 +41,7 @@ func TestSysOwner(t *testing.T) {
 }
 
 // newOSExport serves a fresh temporary directory through basefs over osfs,
-// the way C4 roots each workspace layer at a host folder.
+// the way a development workspace roots each layer at a host folder.
 func newOSExport(t *testing.T, opts ExportOptions) (*AbsfsNFS, string) {
 	t.Helper()
 	dir, err := filepath.EvalSymlinks(t.TempDir())

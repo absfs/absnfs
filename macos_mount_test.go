@@ -3,7 +3,7 @@
 package absnfs
 
 // macOS end-to-end test: serve a tree and mount it with the kernel NFS client
-// as a normal user, the way C4's workspaces are mounted.
+// as a normal user, the way a development workspace is mounted.
 //
 // It is skipped unless ABSNFS_MACOS_MOUNT=1 and the test runs on darwin, so CI
 // and ordinary `go test` runs never mount anything. Run it with:
@@ -137,11 +137,12 @@ func runMacOSMount(t *testing.T, backend, extraOpts string, viaExport bool) {
 		t.Fatal(err)
 	}
 	var srv *Server
+	var port int
 	if viaExport {
 		if err := nfs.Export("/", 0); err != nil {
 			t.Fatal(err)
 		}
-		srv = nfs.exportServer
+		srv, port = nfs.exportServer, nfs.ExportPort()
 	} else {
 		if srv, err = NewServer(ServerOptions{Hostname: "127.0.0.1", UseRecordMarking: true}); err != nil {
 			t.Fatal(err)
@@ -150,8 +151,8 @@ func runMacOSMount(t *testing.T, backend, extraOpts string, viaExport bool) {
 		if err := srv.Listen(); err != nil {
 			t.Fatal(err)
 		}
+		port = srv.GetPort()
 	}
-	port := srv.GetPort()
 
 	// Deferred in this order so the unmount below always runs before the
 	// server stops: a server gone under a live mount hangs its clients.
@@ -363,6 +364,40 @@ func runMacOSMount(t *testing.T, backend, extraOpts string, viaExport bool) {
 		}
 	})
 
+	t.Run("removing a large directory while listing it", func(t *testing.T) {
+		// Hundreds of entries span many READDIR pages; removing each batch
+		// before reading the next must not make the client skip entries.
+		for _, how := range []string{"batches", "rm -rf"} {
+			big := filepath.Join(mnt, "big")
+			if err := os.Mkdir(big, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			const n = 400
+			for i := 0; i < n; i++ {
+				name := fmt.Sprintf("entry-with-a-reasonably-long-name-%04d", i)
+				if err := os.WriteFile(filepath.Join(big, name), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := len(readDirNames(t, big)); got != n {
+				t.Fatalf("%s: listing shows %d entries, want %d", how, got, n)
+			}
+			if how == "rm -rf" {
+				if out, err := runWithTimeout(60*time.Second, mnt, os.Environ(), "rm", "-rf", "big"); err != nil {
+					t.Fatalf("rm -rf: %v\n%s", err, out)
+				}
+			} else {
+				removeInBatches(t, big)
+				if err := os.Remove(big); err != nil {
+					t.Fatalf("%s: rmdir after removing every listed entry: %v (%d entries were skipped)", how, err, len(readDirNames(t, big)))
+				}
+			}
+			if _, err := os.Lstat(big); !os.IsNotExist(err) {
+				t.Fatalf("%s: big still exists: %v", how, err)
+			}
+		}
+	})
+
 	if locking == "" {
 		t.Run("locallocks lets the client lock files", func(t *testing.T) {
 			f, err := os.Create(filepath.Join(mnt, "lockme"))
@@ -493,4 +528,27 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// removeInBatches lists dir a few entries at a time through one open handle,
+// removing each batch before reading the next, the way an incremental
+// cleanup walks a directory.
+func removeInBatches(t *testing.T, dir string) {
+	t.Helper()
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	for {
+		batch, err := f.ReadDir(25)
+		for _, e := range batch {
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err != nil {
+			return // io.EOF, or an error the rmdir check reports
+		}
+	}
 }
