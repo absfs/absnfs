@@ -346,3 +346,82 @@ func TestHandleOptions(t *testing.T) {
 		t.Error("HandleStateDir changed at runtime")
 	}
 }
+
+// A compacted log replays rename records after the coarse array; their
+// tombstones are older than what a fold put in the slot, and must not
+// hide it: a handle to an object removed after the rename stays stale.
+func TestSnapshotReplayKeepsFoldedTombstones(t *testing.T) {
+	defer func(a, b int) { tombLimit, coarseSlots = a, b }(tombLimit, coarseSlots)
+	tombLimit, coarseSlots = 64, 1<<12
+	ctx := context.Background()
+	l := testLog()
+	rename(l, "a", "b")
+	g := l.effective(ctx, "a") // a new object at a
+	remove(l, "a")
+	for i := 0; i < 70; i++ {
+		remove(l, fmt.Sprintf("x%d", i))
+	}
+	if _, exact := l.tombs.get(l.hash("a")); exact {
+		t.Fatal("setup: a's tombstone was not folded")
+	}
+	follows(t, l, "a", g, "")
+
+	l2 := testLog()
+	l2.replay(l.snapshotRecords())
+	if got, want := l2.lookup("a"), l.lookup("a"); got < want {
+		t.Errorf("after replay lookup(a) = %d, below %d before", got, want)
+	}
+	follows(t, l2, "a", g, "")
+	follows(t, l2, "a", 0, "b") // the renamed object still follows
+}
+
+// End to end: the handle of an object removed after a rename at its path
+// stays stale across a compaction and a restart, with a third object at
+// the path.
+func TestRestartAfterCompactionKeepsRemovedStale(t *testing.T) {
+	defer func(n int64) { journalSlack = n }(journalSlack)
+	journalSlack = 256
+	defer func(a, b int) { tombLimit, coarseSlots = a, b }(tombLimit, coarseSlots)
+	tombLimit, coarseSlots = 64, 1<<12
+
+	fs := newMemFS(t)
+	mustMkdir(t, fs, "/d")
+	writeFile(t, fs, "/d/a", 1)
+	r := &restartEnv{t: t, fs: fs, dir: t.TempDir()}
+	os.WriteFile(filepath.Join(r.dir, handleKeyFile), bytes.Repeat([]byte{3}, handleKeySize), 0o600)
+	os.WriteFile(filepath.Join(r.dir, handleLogFile), nil, 0o600)
+	e := r.start(ExportOptions{})
+	root := e.mount("/")
+	d := e.walk(root, "d")
+	if st := e.rename(d, "a", d, "b"); st != NFS_OK {
+		t.Fatal(st)
+	}
+	writeFile(t, fs, "/d/a", 2)
+	a2 := e.walk(root, "d/a")
+	if st := e.remove(d, "a"); st != NFS_OK {
+		t.Fatal(st)
+	}
+	for i := 0; i < 90; i++ {
+		name := fmt.Sprintf("f%d", i)
+		writeFile(t, fs, "/d/"+name, 1)
+		if st := e.remove(d, name); st != NFS_OK {
+			t.Fatal(st)
+		}
+	}
+	l := e.nfs.fileMap.log
+	if l.folds.Load() == 0 {
+		t.Fatal("setup: no fold")
+	}
+	// Compact now, so the log on disk is a snapshot taken after the fold.
+	l.mu.Lock()
+	l.journal.mu.Lock()
+	l.journal.compact()
+	l.journal.mu.Unlock()
+	l.mu.Unlock()
+	e.stale(a2, "removed object before the restart")
+	e.nfs.Close()
+	writeFile(t, fs, "/d/a", 3)
+	e = r.start(ExportOptions{})
+	defer e.nfs.Close()
+	e.stale(a2, "removed object after the restart, another at its path")
+}

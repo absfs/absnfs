@@ -9,9 +9,9 @@
 // moves the handle to the new path, and anything else makes it stale.
 //
 // Memory is bounded: tombstones (path hash -> epoch) live in an
-// open-addressing table of at most 2^20 entries; when it is full the oldest
-// tenth folds into a coarse array indexed by the hash's low bits, which only
-// ever raises what lookup returns. Rename records live in an LRU of
+// open-addressing table of at most tombLimit entries (2^20 slots); when it
+// is full the oldest tenth folds into a coarse array indexed by the hash's
+// low bits, which only ever raises what lookup returns. Rename records live in an LRU of
 // redirectLimit paths; dropping one leaves the tombstone, so the handle goes
 // stale instead of following the rename. Every approximation errs towards a
 // spurious NFS3ERR_STALE, never a wrong object.
@@ -34,7 +34,7 @@ const (
 
 // Bounds of the change log; variables so tests can make them small.
 var (
-	tombLimit     = 1 << 20 // exact tombstones before the oldest fold
+	tombLimit     = 3 << 18 // exact tombstones before the oldest fold: 3/4 of 2^20 slots (16 MiB)
 	coarseSlots   = 1 << 20 // the coarse array (8 MiB, made on first fold); a power of 2
 	redirectLimit = 16384   // paths with rename records
 )
@@ -110,16 +110,18 @@ func (l *changeLog) nextEpoch() uint64 {
 
 // lookup returns the newest epoch at which p was removed, replaced or
 // renamed away (0 if never, as far as the log knows). Collisions and folds
-// only ever make it larger. The caller holds l.mu.
+// only ever make it larger: it is the larger of p's exact tombstone and
+// its coarse slot, since an exact tombstone can be older than what a fold
+// put in the slot (replaying a rename record sets tombstones at the
+// rename's epoch, after the snapshot's coarse array). The caller holds
+// l.mu.
 func (l *changeLog) lookup(p string) uint64 {
-	h := l.hash(p)
-	if e, ok := l.tombs.get(h); ok {
-		return e
-	}
+	h := tombKey(l.hash(p))
+	e, _ := l.tombs.get(h)
 	if l.coarse != nil {
-		return l.coarse[h&uint64(len(l.coarse)-1)]
+		e = max(e, l.coarse[h&uint64(len(l.coarse)-1)])
 	}
-	return 0
+	return e
 }
 
 // setTomb records that p changed at epoch e. The caller holds l.mu.
@@ -127,9 +129,15 @@ func (l *changeLog) setTomb(p string, e uint64) {
 	l.setTombHash(l.hash(p), e)
 }
 
+// setTombHash raises the tombstone of hash h to e; it never lowers what
+// lookup returns.
 func (l *changeLog) setTombHash(h, e uint64) {
+	h = tombKey(h)
 	if old, ok := l.tombs.get(h); ok && old >= e {
 		return
+	}
+	if l.coarse != nil && l.coarse[h&uint64(len(l.coarse)-1)] >= e {
+		return // the coarse slot already says as much
 	}
 	if l.tombs.n >= tombLimit {
 		l.fold()
@@ -158,7 +166,8 @@ func (l *changeLog) fold() {
 		slot := t.h & uint64(len(l.coarse)-1)
 		l.coarse[slot] = max(l.coarse[slot], t.e)
 	}
-	l.tombs = tombTable{}
+	// The same number of slots: the rest fit without growing.
+	l.tombs = tombTable{slots: make([]tombEntry, len(l.tombs.slots))}
 	for _, t := range entries[n:] {
 		l.tombs.put(t.h, t.e)
 	}
@@ -439,10 +448,16 @@ type tombTable struct {
 	n     int
 }
 
-func (t *tombTable) get(h uint64) (uint64, bool) {
+// tombKey is the key hash h is stored under (see tombTable).
+func tombKey(h uint64) uint64 {
 	if h == 0 {
-		h = 1
+		return 1
 	}
+	return h
+}
+
+func (t *tombTable) get(h uint64) (uint64, bool) {
+	h = tombKey(h)
 	if len(t.slots) == 0 {
 		return 0, false
 	}
@@ -458,9 +473,7 @@ func (t *tombTable) get(h uint64) (uint64, bool) {
 }
 
 func (t *tombTable) put(h, e uint64) {
-	if h == 0 {
-		h = 1
-	}
+	h = tombKey(h)
 	if 4*(t.n+1) > 3*len(t.slots) {
 		t.grow()
 	}
