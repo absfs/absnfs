@@ -8,11 +8,56 @@ package absnfs
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/binary"
 	"io"
 	"os"
 	"path"
+	"slices"
 )
+
+// dirEntry is one directory entry as READDIR and READDIRPLUS report it.
+type dirEntry struct {
+	node   *NFSNode
+	name   string
+	attrs  NFSAttrs // copied under the node's lock
+	cookie uint64
+}
+
+// dirCookie returns the READDIR cookie for the entry at p.
+//
+// Cookies are derived from the entry's path, not its position in the
+// listing, and entries are returned in cookie order. A client that resumes
+// after a cookie therefore continues where it left off even when entries
+// before it were removed in the meantime (an incremental rm -rf), the way
+// hash-ordered directories on local filesystems behave. The value is kept
+// below 2^62 so clients that store cookies as signed offsets are safe, and it
+// is never 0, which means "start of directory".
+func dirCookie(p string) uint64 {
+	return fileID(p)>>2 + 1
+}
+
+// entriesAfter returns the entries of a listing whose cookie is greater than
+// cookie, in cookie order. Entries without attributes are left out.
+func entriesAfter(nodes []*NFSNode, cookie uint64) []dirEntry {
+	out := make([]dirEntry, 0, len(nodes))
+	for _, n := range nodes {
+		n.mu.RLock()
+		if n.attrs == nil {
+			n.mu.RUnlock()
+			continue
+		}
+		e := dirEntry{node: n, name: path.Base(n.path), attrs: *n.attrs, cookie: dirCookie(n.path)}
+		n.mu.RUnlock()
+		if e.cookie > cookie {
+			out = append(out, e)
+		}
+	}
+	slices.SortFunc(out, func(a, b dirEntry) int {
+		return cmp.Or(cmp.Compare(a.cookie, b.cookie), cmp.Compare(a.name, b.name))
+	})
+	return out
+}
 
 // handleReaddir handles NFSPROC3_READDIR - read directory entries
 func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
@@ -86,43 +131,20 @@ func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, aut
 	}
 	reachedLimit := false
 
-	for i, entry := range entries {
-		if uint64(i) < cookie {
-			continue
-		}
-
+	for _, entry := range entriesAfter(entries, cookie) {
 		if buf.Len() >= maxReplySize {
 			reachedLimit = true
 			break
 		}
 
-		// Skip entries with nil attrs
-		entry.mu.RLock()
-		if entry.attrs == nil {
-			entry.mu.RUnlock()
-			continue
-		}
-		fileId := entry.attrs.FileId
-		entry.mu.RUnlock()
-
 		xdrEncodeUint32(&buf, 1)
-
-		// R4: Copy fileId under RLock
-		if err := xdrEncodeUint64(&buf, fileId); err != nil {
+		if err := xdrEncodeUint64(&buf, entry.attrs.FileId); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 		}
-
-		// M1: Use path.Base() for name extraction
-		name := path.Base(entry.path)
-		if entry.path == "/" {
-			name = "/"
-		}
-		if err := xdrEncodeString(&buf, name); err != nil {
+		if err := xdrEncodeString(&buf, entry.name); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 		}
-
-		entryCookie := uint64(i + 1)
-		if err := xdrEncodeUint64(&buf, entryCookie); err != nil {
+		if err := xdrEncodeUint64(&buf, entry.cookie); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 		}
 
@@ -216,53 +238,30 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 		maxReplySize = 256
 	}
 
-	for i, entry := range entries {
-		if uint64(i) < cookie {
-			continue
-		}
-
+	for _, entry := range entriesAfter(entries, cookie) {
 		if buf.Len() >= maxReplySize && entryCount > 0 {
 			reachedLimit = true
 			break
 		}
 
-		// Skip entries with nil attrs
-		entry.mu.RLock()
-		if entry.attrs == nil {
-			entry.mu.RUnlock()
-			continue
-		}
-		entryAttrsCopy := *entry.attrs
-		entry.mu.RUnlock()
-
 		xdrEncodeUint32(&buf, 1)
-
-		entryCookie := uint64(i + 1)
-
-		if err := xdrEncodeUint64(&buf, entryAttrsCopy.FileId); err != nil {
+		if err := xdrEncodeUint64(&buf, entry.attrs.FileId); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 		}
-
-		// M1: Use path.Base() for name extraction
-		name := path.Base(entry.path)
-		if entry.path == "/" {
-			name = "/"
-		}
-		if err := xdrEncodeString(&buf, name); err != nil {
+		if err := xdrEncodeString(&buf, entry.name); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 		}
-
-		if err := xdrEncodeUint64(&buf, entryCookie); err != nil {
+		if err := xdrEncodeUint64(&buf, entry.cookie); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 		}
 
 		xdrEncodeUint32(&buf, 1)
-		if err := encodeFileAttributes(&buf, &entryAttrsCopy); err != nil {
+		if err := encodeFileAttributes(&buf, &entry.attrs); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 		}
 
 		// C3: Allocate handle only for the post_op_fh3 field in READDIRPLUS
-		entryHandle := h.server.handler.fileMap.Allocate(entry)
+		entryHandle := h.server.handler.fileMap.Allocate(entry.node)
 		xdrEncodeUint32(&buf, 1)
 		xdrEncodeFileHandle(&buf, entryHandle)
 

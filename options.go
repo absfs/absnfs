@@ -444,7 +444,8 @@ type ExportOptions struct {
 	// than root matters to clients such as git, which refuses to work in a
 	// directory owned by someone else ("dubious ownership").
 	//
-	// Fixed when the export is created; UpdateExportOptions ignores it.
+	// Fixed when the export is created: UpdateExportOptions rejects a
+	// different non-nil value, and nil there means "unchanged".
 	DefaultOwner *FileOwner
 
 	// ForceOwner reports DefaultOwner (or the serving user, when
@@ -452,7 +453,8 @@ type ExportOptions struct {
 	// known. Use it to present a tree owned by another account as the
 	// mounting user's own. Default: false.
 	//
-	// Fixed when the export is created; UpdateExportOptions ignores it.
+	// Fixed when the export is created: UpdateExportOptions rejects a
+	// different value.
 	ForceOwner bool
 }
 

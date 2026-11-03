@@ -329,9 +329,26 @@ func (n *AbsfsNFS) GetExportOptions() ExportOptions {
 // Internally splits the incoming ExportOptions into tuning and policy changes.
 // Tuning changes apply immediately via atomic swap.
 // Policy changes use drain-and-swap to ensure in-flight requests complete first.
+//
+// Squash, DefaultOwner and ForceOwner are fixed when the export is created.
+// An update that changes one of them is rejected with an error and nothing is
+// applied; an empty Squash and a nil DefaultOwner mean "unchanged", so the
+// result of GetExportOptions can always be passed back.
 func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
 	if n == nil {
 		return fmt.Errorf("nil server")
+	}
+
+	// Validate immutable fields before applying anything.
+	currentPolicy := n.policy.Load()
+	if newOptions.Squash != "" && newOptions.Squash != currentPolicy.Squash {
+		return fmt.Errorf("cannot change Squash mode at runtime (requires restart)")
+	}
+	if newOptions.DefaultOwner != nil && *newOptions.DefaultOwner != n.owner {
+		return fmt.Errorf("cannot change DefaultOwner at runtime (requires restart)")
+	}
+	if newOptions.ForceOwner != n.forceOwner {
+		return fmt.Errorf("cannot change ForceOwner at runtime (requires restart)")
 	}
 
 	// Apply tuning changes (lock-free, immediate).
@@ -348,13 +365,6 @@ func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
 		}
 		*t = *newTuning
 	})
-
-	// Validate immutable fields before attempting policy update.
-	// Squash cannot be changed at runtime.
-	currentPolicy := n.policy.Load()
-	if newOptions.Squash != "" && newOptions.Squash != currentPolicy.Squash {
-		return fmt.Errorf("cannot change Squash mode at runtime (requires restart)")
-	}
 
 	// Apply policy changes (drain-and-swap)
 	newPolicy := PolicyOptions{

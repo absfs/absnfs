@@ -313,9 +313,14 @@ func TestOwnerOptions(t *testing.T) {
 			t.Errorf("GetExportOptions owner = %v force=%v", opts.DefaultOwner, opts.ForceOwner)
 		}
 
-		// The owner is fixed at New: UpdateExportOptions leaves it alone.
-		if err := e.nfs.UpdateExportOptions(ExportOptions{}); err != nil {
+		// The owner is fixed at New: an update that keeps it (nil
+		// DefaultOwner means unchanged) applies, one that drops ForceOwner
+		// is refused.
+		if err := e.nfs.UpdateExportOptions(ExportOptions{ForceOwner: true}); err != nil {
 			t.Fatal(err)
+		}
+		if err := e.nfs.UpdateExportOptions(ExportOptions{}); err == nil {
+			t.Error("UpdateExportOptions dropped ForceOwner without an error")
 		}
 		if e.nfs.owner != want || !e.nfs.forceOwner {
 			t.Errorf("UpdateExportOptions changed the owner to %+v force=%v", e.nfs.owner, e.nfs.forceOwner)
@@ -392,18 +397,20 @@ func TestFileIdConsistentAcrossProcedures(t *testing.T) {
 		if len(entries) != len(wantEntries) {
 			t.Fatalf("READDIR returned %d entries, want %d", len(entries), len(wantEntries))
 		}
-		for i, en := range entries {
+		var last uint64
+		for _, en := range entries {
 			if en.FileId != fileID("/dir/"+en.Name) {
 				t.Errorf("READDIR %s: fileid %d, want %d", en.Name, en.FileId, fileID("/dir/"+en.Name))
 			}
-			if en.Cookie != uint64(i+1) {
-				t.Errorf("READDIR %s: cookie %d, want %d", en.Name, en.Cookie, i+1)
+			if en.Cookie != dirCookie("/dir/"+en.Name) || en.Cookie <= last {
+				t.Errorf("READDIR %s: cookie %d, want %d, increasing", en.Name, en.Cookie, dirCookie("/dir/"+en.Name))
 			}
+			last = en.Cookie
 		}
 	})
 
 	t.Run("READDIRPLUS", func(t *testing.T) {
-		// Twice: the second pass is served after attributes were cached.
+		// Twice: the second pass runs after LOOKUP cached every entry.
 		for pass := 0; pass < 2; pass++ {
 			r, _ := h.handleReaddirplus(bytes.NewReader(buildReaddirplusRequest(dir, 0, 8192, 65536)), &RPCReply{}, auth)
 			f := newFaReader(t, r)
@@ -416,14 +423,16 @@ func TestFileIdConsistentAcrossProcedures(t *testing.T) {
 			if len(entries) != len(wantEntries) {
 				t.Fatalf("READDIRPLUS returned %d entries, want %d", len(entries), len(wantEntries))
 			}
-			for i, en := range entries {
+			var last uint64
+			for _, en := range entries {
 				p := "/dir/" + en.Name
 				if en.FileId != fileID(p) {
 					t.Errorf("READDIRPLUS %s: entry fileid %d, want %d", en.Name, en.FileId, fileID(p))
 				}
-				if en.Cookie != uint64(i+1) {
-					t.Errorf("READDIRPLUS %s: cookie %d, want %d", en.Name, en.Cookie, i+1)
+				if en.Cookie != dirCookie(p) || en.Cookie <= last {
+					t.Errorf("READDIRPLUS %s: cookie %d, want %d, increasing", en.Name, en.Cookie, dirCookie(p))
 				}
+				last = en.Cookie
 				e.checkAttr(t, "READDIRPLUS attrs", p, *en.Attr)
 				if en.Attr.Type != wantEntries[en.Name] {
 					t.Errorf("READDIRPLUS %s: type %d, want %d", en.Name, en.Attr.Type, wantEntries[en.Name])
@@ -682,7 +691,6 @@ type faHookFS struct {
 	chownErr   error
 	chmodErr   []error // returned by successive Chmod calls; nil entries pass through
 	chtimesErr error
-	createErr  error
 	removeErr  error
 	lchownErr  error
 	openErr    map[string]error
@@ -781,13 +789,6 @@ func (f *faHookFS) Chtimes(name string, atime, mtime time.Time) error {
 		return f.chtimesErr
 	}
 	return f.SymlinkFileSystem.Chtimes(name, atime, mtime)
-}
-
-func (f *faHookFS) Create(name string) (absfs.File, error) {
-	if f.createErr != nil {
-		return nil, &os.PathError{Op: "create", Path: name, Err: f.createErr}
-	}
-	return f.SymlinkFileSystem.Create(name)
 }
 
 func (f *faHookFS) Remove(name string) error {

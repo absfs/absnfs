@@ -258,7 +258,7 @@ func TestCreateModes(t *testing.T) {
 	t.Run("unchecked failure returns wcc data", func(t *testing.T) {
 		e := newFaEnv(t, ExportOptions{})
 		dir := e.handle(t, "/dir")
-		e.nfs.fs = &faHookFS{SymlinkFileSystem: e.fs, createErr: syscall.ENOSPC}
+		e.nfs.fs = &faHookFS{SymlinkFileSystem: e.fs, openErr: map[string]error{"/dir/c": syscall.ENOSPC}}
 		r, _ := e.handler.handleCreate(bytes.NewReader(faDirOp(dir, "c", faU32(0), faNoSattr)), &RPCReply{}, e.auth)
 		f := newFaReader(t, r)
 		if st := f.status(); st != NFSERR_NOSPC {

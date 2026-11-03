@@ -47,7 +47,7 @@ func mapError(err error) uint32 {
 		return NFSERR_NOTEMPTY
 	case errors.Is(err, os.ErrExist) || errors.Is(err, syscall.EEXIST):
 		return NFSERR_EXIST
-	case errors.Is(err, os.ErrInvalid):
+	case errors.Is(err, os.ErrInvalid) || errors.Is(err, syscall.EINVAL):
 		return NFSERR_INVAL
 	case errors.Is(err, syscall.ENOTDIR):
 		return NFSERR_NOTDIR
@@ -572,32 +572,29 @@ func (s *AbsfsNFS) createWithContext(ctx context.Context, dir *NFSNode, name str
 		return nil, fmt.Errorf("create: failed to sanitize path: %w", err)
 	}
 
-	var f absfs.File
-	if exclusive {
-		f, err = s.fs.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, attrs.Mode&os.ModePerm)
-	} else {
-		f, err = s.fs.Create(path)
+	// Try to make a new file first. Only a file this call created gets the
+	// requested mode and owner, and only such a file is removed on failure:
+	// UNCHECKED on an existing file truncates it but keeps its mode and owner,
+	// as open(O_CREAT|O_TRUNC) does.
+	created := true
+	f, err := s.fs.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, attrs.Mode&os.ModePerm)
+	if err != nil && !exclusive && errors.Is(err, os.ErrExist) {
+		created = false
+		f, err = s.fs.OpenFile(path, os.O_RDWR|os.O_TRUNC, 0)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("create: failed to create %s: %w", path, err)
 	}
 	if err := f.Close(); err != nil {
-		s.fs.Remove(path)
+		if created {
+			s.fs.Remove(path)
+		}
 		return nil, fmt.Errorf("create: failed to close %s: %w", path, err)
 	}
 
-	if err := s.fs.Chmod(path, attrs.Mode&os.ModePerm); err != nil {
-		s.fs.Remove(path)
-		return nil, fmt.Errorf("create: failed to chmod %s: %w", path, err)
-	}
-
-	// Give the file the requested owner, as MKDIR and SYMLINK do. This is
-	// best effort: a server not running as root can only chown to itself.
-	if err := s.fs.Chown(path, int(attrs.Uid), int(attrs.Gid)); err != nil {
-		if slog := s.getStructuredLogger(); slog != nil {
-			slog.Debug("CREATE: chown failed",
-				LogField{Key: "path", Value: path},
-				LogField{Key: "error", Value: err})
+	if created {
+		if err := s.applyNewFileAttrs(path, attrs); err != nil {
+			return nil, err
 		}
 	}
 
@@ -609,6 +606,26 @@ func (s *AbsfsNFS) createWithContext(ctx context.Context, dir *NFSNode, name str
 		s.dirCache.Invalidate(dir.path)
 	}
 	return s.Lookup(path)
+}
+
+// applyNewFileAttrs gives a file CREATE just made its requested mode and
+// owner. If the mode cannot be set the file is removed again.
+func (s *AbsfsNFS) applyNewFileAttrs(path string, attrs *NFSAttrs) error {
+	if err := s.fs.Chmod(path, attrs.Mode&os.ModePerm); err != nil {
+		s.fs.Remove(path)
+		return fmt.Errorf("create: failed to chmod %s: %w", path, err)
+	}
+
+	// Give the file the requested owner, as MKDIR and SYMLINK do. This is
+	// best effort: a server not running as root can only chown to itself.
+	if err := s.fs.Chown(path, int(attrs.Uid), int(attrs.Gid)); err != nil {
+		if slog := s.getStructuredLogger(); slog != nil {
+			slog.Debug("CREATE: chown failed",
+				LogField{Key: "path", Value: path},
+				LogField{Key: "error", Value: err})
+		}
+	}
+	return nil
 }
 
 // Remove implements the REMOVE operation
@@ -730,6 +747,12 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 		return fmt.Errorf("rename: failed to sanitize new path: %w", err)
 	}
 
+	// A directory cannot be moved inside itself (POSIX and RFC 1813 require
+	// EINVAL). Some filesystems (memfs) would otherwise detach the subtree.
+	if isWithin(newPath, oldPath) {
+		return fmt.Errorf("rename: cannot move %s inside itself to %s: %w", oldPath, newPath, syscall.EINVAL)
+	}
+
 	err = s.fs.Rename(oldPath, newPath)
 	if err != nil && errors.Is(err, os.ErrExist) {
 		err = s.replaceByRename(oldPath, newPath, err)
@@ -750,6 +773,18 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 		s.dirCache.Invalidate(newDir.path)
 	}
 	return nil
+}
+
+// isWithin reports whether p lies strictly below dir. Both are cleaned paths
+// as sanitizePath returns them.
+func isWithin(p, dir string) bool {
+	for _, sep := range []string{"/", string(filepath.Separator)} {
+		prefix := strings.TrimSuffix(dir, sep) + sep
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // replaceByRename gives RENAME its NFS (and POSIX) meaning on filesystems whose
@@ -919,11 +954,11 @@ func (s *AbsfsNFS) ReadDirPlus(dir *NFSNode) ([]*NFSNode, error) {
 		return nil, err
 	}
 
-	// Pre-cache attributes for all entries
+	// Re-read every entry's attributes: ReadDir's lookups may have been
+	// answered from the attribute cache, and READDIRPLUS replaces the
+	// client's GETATTRs, so it reports what the filesystem holds now. An
+	// entry that vanished in between keeps the attributes LOOKUP gave it.
 	for _, node := range nodes {
-		if attrs, found := s.attrCache.Get(node.path, s); found && attrs != nil && attrs.IsValid() {
-			continue
-		}
 		attrs, err := s.statAttrs(node.path)
 		if err != nil {
 			continue
@@ -939,10 +974,16 @@ func (s *AbsfsNFS) ReadDirPlus(dir *NFSNode) ([]*NFSNode, error) {
 	return nodes, nil
 }
 
-// Export starts serving the NFS export on localhost at port (0 picks a free
-// port), with the MOUNT protocol on the same port and RPC record marking, as
-// kernel NFS clients expect. Stop it with Unexport or Close. For another bind
-// address or a portmapper, build a Server with NewServer instead.
+// Export starts serving the NFS export on localhost at port, with the MOUNT
+// protocol on the same port and RPC record marking, as kernel NFS clients
+// expect. Port 0 picks a free port; ExportPort reports it. No portmapper is
+// started, so clients pass the port explicitly (mount_nfs -o
+// port=P,mountport=P). Stop it with Unexport or Close. For another bind
+// address, a portmapper or more listener options, build a Server with
+// NewServer instead. ExportOptions.TLS applies here too.
+//
+// mountPath is informational: clients mount filesystem paths (localhost:/
+// for the whole tree, localhost:/sub for a subdirectory), whatever it is.
 func (s *AbsfsNFS) Export(mountPath string, port int) error {
 	if mountPath == "" {
 		return fmt.Errorf("empty mount path")
@@ -958,8 +999,7 @@ func (s *AbsfsNFS) Export(mountPath string, port int) error {
 		UID:              0,
 		GID:              0,
 		ReadOnly:         s.policy.Load().ReadOnly,
-		Port:             port,
-		MountPort:        port,
+		Port:             port, // MOUNT is served on the same listener
 		Hostname:         "localhost",
 		UseRecordMarking: true,
 	})
@@ -973,6 +1013,16 @@ func (s *AbsfsNFS) Export(mountPath string, port int) error {
 	}
 	s.exportServer = server
 	return nil
+}
+
+// ExportPort returns the TCP port the export started by Export listens on,
+// which is how a caller that passed port 0 learns which port to mount. It
+// returns 0 when no export is running.
+func (s *AbsfsNFS) ExportPort() int {
+	if s.exportServer == nil {
+		return 0
+	}
+	return s.exportServer.GetPort()
 }
 
 // Symlink implements the SYMLINK operation
