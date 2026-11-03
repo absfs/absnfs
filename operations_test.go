@@ -747,50 +747,32 @@ func TestOperationsAdvanced(t *testing.T) {
 			t.Fatalf("Failed to create handle test NFS: %v", err)
 		}
 
-		// Test sequential handle allocation
-		f1, err := handleFS.Create("/file1")
-		if err != nil {
-			t.Fatalf("Failed to create first test file: %v", err)
+		// Handles name paths: distinct files get distinct handles, the same
+		// file the same handle, also once the cache forgot it.
+		var handles [][]byte
+		for _, name := range []string{"/file1", "/file2", "/file3"} {
+			f, err := handleFS.Create(name)
+			if err != nil {
+				t.Fatalf("Failed to create %s: %v", name, err)
+			}
+			f.Close()
+			node, err := handleNFS.Lookup(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := handleNFS.fileMap.issue(node)
+			for _, other := range handles {
+				if bytes.Equal(h, other) {
+					t.Errorf("%s got the handle of another file", name)
+				}
+			}
+			handles = append(handles, h)
 		}
-		handle1 := handleNFS.fileMap.Allocate(f1)
-		if handle1 == 0 {
-			t.Error("First handle should not be 0")
+		handleNFS.fileMap.ReleaseAll()
+		node, _ := handleNFS.Lookup("/file2")
+		if again := handleNFS.fileMap.issue(node); !bytes.Equal(again, handles[1]) {
+			t.Errorf("/file2's handle changed after the cache was emptied: %x, was %x", again, handles[1])
 		}
-
-		f2, err := handleFS.Create("/file2")
-		if err != nil {
-			t.Fatalf("Failed to create second test file: %v", err)
-		}
-		handle2 := handleNFS.fileMap.Allocate(f2)
-		if handle2 != handle1+1 {
-			t.Errorf("Second handle should be %d, got %d", handle1+1, handle2)
-		}
-
-		// A released handle's number is not reused
-		handleNFS.fileMap.Release(handle1) // Release first handle
-		f3, err := handleFS.Create("/file3")
-		if err != nil {
-			t.Fatalf("Failed to create third test file: %v", err)
-		}
-		handle3 := handleNFS.fileMap.Allocate(f3)
-		if handle3 != handle2+1 {
-			t.Errorf("Handle after releasing %d should be %d, got %d", handle1, handle2+1, handle3)
-		}
-
-		// Release remaining handles
-		handleNFS.fileMap.Release(handle2)
-		handleNFS.fileMap.Release(handle3)
-
-		// Test handle allocation after all releases
-		f4, err := handleFS.Create("/file4")
-		if err != nil {
-			t.Fatalf("Failed to create fourth test file: %v", err)
-		}
-		handle4 := handleNFS.fileMap.Allocate(f4)
-		if handle4 != handle3+1 {
-			t.Errorf("After all releases, next handle should be %d, got %d", handle3+1, handle4)
-		}
-		handleNFS.fileMap.Release(handle4)
 
 		// Clean up test files
 		handleFS.Remove("/file1")
@@ -1201,21 +1183,21 @@ func TestAdditionalNFSOperations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to lookup root directory: %v", err)
 		}
-		rootHandle := server.handler.fileMap.Allocate(rootNode)
+		rootHandle := server.handler.fileMap.issue(rootNode)
 
 		// Get file handle
 		fileNode, err := server.handler.Lookup("/testfile.txt")
 		if err != nil {
 			t.Fatalf("Failed to lookup test file: %v", err)
 		}
-		fileHandle := server.handler.fileMap.Allocate(fileNode)
+		fileHandle := server.handler.fileMap.issue(fileNode)
 
 		// Get directory handle
 		dirNode, err := server.handler.Lookup("/testdir")
 		if err != nil {
 			t.Fatalf("Failed to lookup test directory: %v", err)
 		}
-		dirHandle := server.handler.fileMap.Allocate(dirNode)
+		dirHandle := server.handler.fileMap.issue(dirNode)
 
 		t.Run("READDIR operation", func(t *testing.T) {
 			call := &RPCCall{
@@ -1543,7 +1525,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to lookup test file: %v", err)
 	}
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("binary.Read errors", func(t *testing.T) {
 		// Test with invalid reader that always returns error
@@ -1604,7 +1586,7 @@ func TestNFSOperationsErrorPaths(t *testing.T) {
 	})
 
 	t.Run("invalid file handles", func(t *testing.T) {
-		invalidHandle := uint64(999999) // Non-existent handle
+		invalidHandle := legacyHandle(999999) // Not a handle this server issued
 
 		testCases := []struct {
 			name      string

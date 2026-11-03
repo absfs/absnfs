@@ -32,6 +32,7 @@ type ExportOptions struct {
     TCPNoDelay           bool
     SendBufferSize       int
     ReceiveBufferSize    int
+    MaxHandles           int
 
     // Logging and Timeouts
     Log      *LogConfig
@@ -40,6 +41,9 @@ type ExportOptions struct {
     // Ownership (fixed at New)
     DefaultOwner *FileOwner
     ForceOwner   bool
+
+    // File handles across restarts (fixed at New)
+    HandleStateDir string
 }
 ```
 
@@ -118,6 +122,34 @@ process, another server over the same files) are seen once the relevant
 timeout has passed: `AttrCacheTimeout` for attributes, `NegativeCacheTimeout`
 for a name that did not exist, `DirCacheTimeout` for listings. A changed
 timeout applies to entries already cached.
+
+## File Handle Fields
+
+| Field            | Type     | Default            | Description                                                  |
+| ---------------- | -------- | ------------------ | ------------------------------------------------------------ |
+| `MaxHandles`     | `int`    | `100000` (if <= 0) | Capacity of the file handle cache; changeable at runtime     |
+| `HandleStateDir` | `string` | `""` (none)        | Directory keeping the handle key and journal across restarts |
+
+File handles name their objects by path and are checked against a log of the
+server's own REMOVEs, RMDIRs and RENAMEs, so the server resolves any handle it
+issued whether or not it is cached (see
+[File Handle System](../internals/file-handles.md)). `MaxHandles` therefore
+bounds memory (about 300 bytes a handle) and the cost of misses (a decode, a
+tag check and a stat), never correctness: a client does not see
+`NFS3ERR_STALE` for an object that still exists, however many handles it
+holds. Size it above the number of files and directories clients keep using,
+so their requests stay cache hits; four `git` workspaces of the Kubernetes
+tree use about 200,000. A smaller value set with `UpdateExportOptions` evicts
+at once. `GetExportOptions` reports the value in effect.
+
+Without `HandleStateDir`, handles are valid for the life of the server, and
+clients remount after a restart. With it, the server keeps its key
+(`handle.key`) and a journal of its REMOVEs, RMDIRs and RENAMEs
+(`handle.log`, written before each reply and synced every second) in the
+directory, locked against a second server, so handles mean exactly what they
+did after a restart and clients carry on. Deleting the directory, or giving a
+new one, invalidates every handle. It is fixed at `New`: `UpdateExportOptions`
+rejects a different non-empty value (empty means unchanged).
 
 ## Connection Fields
 

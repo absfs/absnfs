@@ -52,7 +52,7 @@ func newTestServerNoRateLimit() (*Server, error) {
 }
 
 // Helper to build READDIR request
-func buildReaddirRequest(handle uint64, cookie uint64, count uint32) []byte {
+func buildReaddirRequest(handle []byte, cookie uint64, count uint32) []byte {
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, handle)
 	binary.Write(&buf, binary.BigEndian, cookie)
@@ -62,7 +62,7 @@ func buildReaddirRequest(handle uint64, cookie uint64, count uint32) []byte {
 }
 
 // Helper to build READDIRPLUS request
-func buildReaddirplusRequest(handle uint64, cookie uint64, dirCount, maxCount uint32) []byte {
+func buildReaddirplusRequest(handle []byte, cookie uint64, dirCount, maxCount uint32) []byte {
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, handle)
 	binary.Write(&buf, binary.BigEndian, cookie)
@@ -86,21 +86,21 @@ func TestHandleReaddir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to lookup root: %v", err)
 	}
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	// Get a subdirectory handle
 	dirNode, err := server.handler.Lookup("/testdir")
 	if err != nil {
 		t.Fatalf("Failed to lookup testdir: %v", err)
 	}
-	dirHandle := server.handler.fileMap.Allocate(dirNode)
+	dirHandle := server.handler.fileMap.issue(dirNode)
 
 	// Get a file handle (not a directory)
 	fileNode, err := server.handler.Lookup("/testfile.txt")
 	if err != nil {
 		t.Fatalf("Failed to lookup testfile.txt: %v", err)
 	}
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("successful root directory read", func(t *testing.T) {
 		body := buildReaddirRequest(rootHandle, 0, 4096)
@@ -204,7 +204,7 @@ func TestHandleReaddir(t *testing.T) {
 	})
 
 	t.Run("non-existent handle", func(t *testing.T) {
-		body := buildReaddirRequest(999999, 0, 4096)
+		body := buildReaddirRequest(legacyHandle(999999), 0, 4096)
 		reply := &RPCReply{}
 
 		result, err := handler.handleReaddir(bytes.NewReader(body), reply, authCtx)
@@ -305,21 +305,21 @@ func TestHandleReaddirplus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to lookup root: %v", err)
 	}
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	// Get a subdirectory handle
 	dirNode, err := server.handler.Lookup("/testdir")
 	if err != nil {
 		t.Fatalf("Failed to lookup testdir: %v", err)
 	}
-	dirHandle := server.handler.fileMap.Allocate(dirNode)
+	dirHandle := server.handler.fileMap.issue(dirNode)
 
 	// Get a file handle (not a directory)
 	fileNode, err := server.handler.Lookup("/testfile.txt")
 	if err != nil {
 		t.Fatalf("Failed to lookup testfile.txt: %v", err)
 	}
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("successful root directory read", func(t *testing.T) {
 		body := buildReaddirplusRequest(rootHandle, 0, 1024, 8192)
@@ -406,7 +406,7 @@ func TestHandleReaddirplus(t *testing.T) {
 	})
 
 	t.Run("non-existent handle", func(t *testing.T) {
-		body := buildReaddirplusRequest(999999, 0, 1024, 8192)
+		body := buildReaddirplusRequest(legacyHandle(999999), 0, 1024, 8192)
 		reply := &RPCReply{}
 
 		result, err := handler.handleReaddirplus(bytes.NewReader(body), reply, authCtx)

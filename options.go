@@ -32,6 +32,7 @@ type TuningOptions struct {
 	SendBufferSize       int
 	ReceiveBufferSize    int
 	Async                bool
+	MaxHandles           int // file handle cache capacity (see ExportOptions.MaxHandles)
 	Log                  *LogConfig
 	Timeouts             *TimeoutConfig
 }
@@ -87,6 +88,7 @@ func tuningFromExportOptions(opts *ExportOptions) *TuningOptions {
 		SendBufferSize:       opts.SendBufferSize,
 		ReceiveBufferSize:    opts.ReceiveBufferSize,
 		Async:                opts.Async,
+		MaxHandles:           opts.MaxHandles,
 	}
 	if opts.Log != nil {
 		logCopy := *opts.Log
@@ -150,6 +152,7 @@ func exportOptionsFromSnapshots(t *TuningOptions, p *PolicyOptions) ExportOption
 		TCPNoDelay:            t.TCPNoDelay,
 		SendBufferSize:        t.SendBufferSize,
 		ReceiveBufferSize:     t.ReceiveBufferSize,
+		MaxHandles:            t.MaxHandles,
 	}
 	if len(p.AllowedIPs) > 0 {
 		opts.AllowedIPs = make([]string, len(p.AllowedIPs))
@@ -192,6 +195,9 @@ func (n *AbsfsNFS) UpdateTuningOptions(fn func(*TuningOptions)) {
 		updated.Timeouts = &tCopy
 	}
 	fn(&updated)
+	if updated.MaxHandles <= 0 {
+		updated.MaxHandles = DefaultMaxHandles
+	}
 	n.tuning.Store(&updated)
 	n.applyTuningSideEffects(old, &updated)
 }
@@ -283,6 +289,11 @@ func (n *AbsfsNFS) applyTuningSideEffects(old, updated *TuningOptions) {
 		if n.dirCache != nil {
 			n.dirCache.UpdateTTL(updated.DirCacheTimeout)
 		}
+	}
+
+	// Resize the file handle cache
+	if updated.MaxHandles != old.MaxHandles && n.fileMap != nil {
+		n.fileMap.Resize(updated.MaxHandles)
 	}
 
 	// Update worker pool
@@ -466,6 +477,33 @@ type ExportOptions struct {
 	// Fixed when the export is created: UpdateExportOptions rejects a
 	// different value.
 	ForceOwner bool
+
+	// MaxHandles caps the file handle cache: how many handles the server
+	// keeps resolved, each with its NFSNode (about 300 bytes). It bounds
+	// memory and the cost of misses, not correctness: a handle no longer
+	// cached is decoded, checked and resolved again (one stat), so a
+	// client never sees NFS3ERR_STALE for an object that still exists.
+	// Size it above the number of files and directories clients keep
+	// using, so their requests stay cache hits. Changeable at runtime; a
+	// smaller value evicts at once.
+	// Default (<= 0): DefaultMaxHandles (100000)
+	MaxHandles int
+
+	// HandleStateDir keeps file handles valid across a server restart. The
+	// server keeps its handle key and a journal of its REMOVEs, RMDIRs and
+	// RENAMEs there (the journal records only those, before replying), and
+	// locks it: a second server cannot use the same directory. After a
+	// restart with the same directory, handles mean exactly what they did:
+	// clients carry on without remounting.
+	//
+	// When empty (the default), handles are valid for the life of the
+	// server: every handle from before a restart is stale, and clients
+	// remount. Deleting or changing the directory has the same effect. The
+	// files hold paths of the exported filesystem and are made mode 0600.
+	//
+	// Fixed when the export is created: UpdateExportOptions rejects a
+	// different non-empty value, and empty there means "unchanged".
+	HandleStateDir string
 
 	// AllowAnySymlinkTarget lets clients create symbolic links with any
 	// target, including absolute ones and ones with ".." components, such

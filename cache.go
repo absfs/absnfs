@@ -759,6 +759,7 @@ func (s *AbsfsNFS) invalidate(paths ...string) {
 		if s.dirCache != nil {
 			s.dirCache.Invalidate(p)
 		}
+		s.fileMap.dirs.forget(p)
 	}
 }
 

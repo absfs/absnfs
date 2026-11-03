@@ -92,12 +92,18 @@ func (f *faReader) str() string {
 
 func (f *faReader) status() uint32 { return f.u32() }
 
-func (f *faReader) fh() uint64 {
+func (f *faReader) fh() []byte {
 	f.t.Helper()
-	if n := f.u32(); n != 8 {
+	n := int(f.u32())
+	if n == 0 || n > fhMaxSize {
 		f.t.Fatalf("handle length %d", n)
 	}
-	return f.u64()
+	b := make([]byte, n)
+	if _, err := io.ReadFull(f.r, b); err != nil {
+		f.t.Fatalf("short reply: %v", err)
+	}
+	f.skip((4 - n%4) % 4)
+	return b
 }
 
 func (f *faReader) fattr() faFattr {
@@ -210,13 +216,13 @@ func newFaEnv(t *testing.T, opts ExportOptions) *faEnv {
 	}
 }
 
-func (e *faEnv) handle(t *testing.T, p string) uint64 {
+func (e *faEnv) handle(t *testing.T, p string) []byte {
 	t.Helper()
 	node, err := e.nfs.Lookup(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return e.nfs.fileMap.Allocate(node)
+	return e.nfs.fileMap.issue(node)
 }
 
 func faSattr(buf *bytes.Buffer, mode *uint32) {
@@ -526,7 +532,7 @@ func TestFileIdConsistentAcrossProcedures(t *testing.T) {
 	t.Run("SYMLINK", func(t *testing.T) { create(t, "SYMLINK", "made-link") })
 }
 
-func faWriteRequest(handle uint64, offset uint64, data []byte) []byte {
+func faWriteRequest(handle []byte, offset uint64, data []byte) []byte {
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, handle)
 	binary.Write(&buf, binary.BigEndian, offset)

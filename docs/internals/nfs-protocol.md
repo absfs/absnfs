@@ -24,7 +24,7 @@ via the `nfsHandlers` map, which maps procedure numbers to handler functions.
 
 | # | Procedure | Handler | Description |
 |---|-----------|---------|-------------|
-| 3 | LOOKUP | `handleLookup` | Resolves a filename within a directory to a file handle. Validates the filename, performs path join, calls `Lookup`, and allocates a handle via `fileMap.Allocate` (which deduplicates by path). |
+| 3 | LOOKUP | `handleLookup` | Resolves a filename within a directory to a file handle. Validates the filename, performs path join, calls `Lookup`, and issues a handle via `fileMap.issue` (the same bytes for the same object). |
 | 5 | READLINK | `handleReadlink` | Reads the target of a symbolic link. Validates the node is a symlink before reading. |
 
 ### Data Transfer
@@ -58,7 +58,7 @@ via the `nfsHandlers` map, which maps procedure numbers to handler functions.
 | # | Procedure | Handler | Description |
 |---|-----------|---------|-------------|
 | 16 | READDIR | `handleReaddir` | Lists directory entries (fileId + name + cookie). Respects the client's `count` limit for reply size. Uses cookie-based pagination. |
-| 17 | READDIRPLUS | `handleReaddirplus` | Like READDIR but also returns full `fattr3` and file handles for each entry, reducing follow-up LOOKUP/GETATTR round trips. Allocates handles for each entry via `fileMap.Allocate`. |
+| 17 | READDIRPLUS | `handleReaddirplus` | Like READDIR but also returns full `fattr3` and file handles for each entry, reducing follow-up LOOKUP/GETATTR round trips. Issues handles for each entry via `fileMap.issue`, counting each entry's real size against `maxcount`. |
 
 ## Error Reply Formats
 
@@ -94,7 +94,7 @@ RPC calls and replies are encoded using XDR (External Data Representation):
 
 - All integers are big-endian, 4-byte aligned.
 - Strings and opaque data are length-prefixed and padded to 4-byte boundaries.
-- File handles are 8-byte opaque values (length prefix + uint64 handle ID).
+- File handles are opaque values of 10 to 64 bytes (length prefix, bytes, padding); see [File Handle System](file-handles.md).
 
 An RPC call contains:
 ```

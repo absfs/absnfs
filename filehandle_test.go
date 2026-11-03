@@ -1,467 +1,204 @@
 package absnfs
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
-	"sync"
+	"os"
 	"testing"
-
-	"github.com/absfs/memfs"
 )
 
-func TestFileHandleMap(t *testing.T) {
-	fs, err := memfs.NewFS()
-	if err != nil {
-		t.Fatalf("Failed to create memfs: %v", err)
-	}
+func fileNode(p string) *NFSNode {
+	return &NFSNode{path: p, attrs: &NFSAttrs{Mode: 0o644}}
+}
 
-	// Create test files
-	files := make([]string, 5)
-	for i := range files {
-		name := fmt.Sprintf("/test%d.txt", i)
-		f, err := fs.Create(name)
-		if err != nil {
-			t.Fatalf("Failed to create test file %s: %v", name, err)
-		}
-		f.Close()
-		files[i] = name
-	}
+func dirNode(p string) *NFSNode {
+	return &NFSNode{path: p, attrs: &NFSAttrs{Mode: os.ModeDir | 0o755}, children: map[string]*NFSNode{}}
+}
 
-	// Create file handle map
+func TestIssueGivesOneHandlePerObject(t *testing.T) {
 	fm := newFileHandleMap(0)
-
-	// Test Allocate
-	t.Run("allocate", func(t *testing.T) {
-		var handles []uint64
-		for _, name := range files {
-			f, err := fs.OpenFile(name, 0, 0)
-			if err != nil {
-				t.Fatalf("Failed to open file %s: %v", name, err)
-			}
-			handle := fm.Allocate(f)
-			if handle == 0 {
-				t.Error("Expected non-zero handle")
-			}
-			handles = append(handles, handle)
-		}
-
-		// Verify handle count
-		if count := fm.Count(); count != len(files) {
-			t.Errorf("Expected %d handles, got %d", len(files), count)
-		}
-
-		// Verify each handle is above the one before
-		for i := 1; i < len(handles); i++ {
-			if handles[i] <= handles[i-1] {
-				t.Errorf("handle %d after %d, want increasing numbers", handles[i], handles[i-1])
-			}
-		}
-	})
-
-	// Test Get
-	t.Run("get", func(t *testing.T) {
-		f, err := fs.OpenFile(files[0], 0, 0)
-		if err != nil {
-			t.Fatalf("Failed to open file: %v", err)
-		}
-		handle := fm.Allocate(f)
-
-		// Test valid handle
-		if got, exists := fm.Get(handle); !exists {
-			t.Error("Expected handle to exist")
-		} else if got != f {
-			t.Error("Got wrong file for handle")
-		}
-
-		// Test invalid handle
-		if _, exists := fm.Get(99999); exists {
-			t.Error("Expected handle to not exist")
-		}
-	})
-
-	// Test Release
-	t.Run("release", func(t *testing.T) {
-		f, err := fs.OpenFile(files[0], 0, 0)
-		if err != nil {
-			t.Fatalf("Failed to open file: %v", err)
-		}
-		handle := fm.Allocate(f)
-
-		// Release the handle
-		fm.Release(handle)
-
-		// Verify handle is gone
-		if _, exists := fm.Get(handle); exists {
-			t.Error("Expected handle to be released")
-		}
-
-		// Test releasing non-existent handle (should not panic)
-		fm.Release(99999)
-	})
-
-	// Test ReleaseAll
-	t.Run("release all", func(t *testing.T) {
-		// Allocate several handles
-		var handles []uint64
-		for _, name := range files {
-			f, err := fs.OpenFile(name, 0, 0)
-			if err != nil {
-				t.Fatalf("Failed to open file %s: %v", name, err)
-			}
-			handle := fm.Allocate(f)
-			handles = append(handles, handle)
-		}
-
-		// Release all handles
-		fm.ReleaseAll()
-
-		// Verify all handles are gone
-		if count := fm.Count(); count != 0 {
-			t.Errorf("Expected 0 handles after ReleaseAll, got %d", count)
-		}
-
-		// Verify each handle is gone
-		for _, handle := range handles {
-			if _, exists := fm.Get(handle); exists {
-				t.Errorf("Handle %d still exists after ReleaseAll", handle)
-			}
-		}
-	})
-
-	// Test concurrent operations
-	t.Run("concurrent operations", func(t *testing.T) {
-		// Create test files first
-		testFiles := make([]string, 5)
-		for i := range testFiles {
-			name := fmt.Sprintf("/concurrent%d.txt", i)
-			f, err := fs.Create(name)
-			if err != nil {
-				t.Fatalf("Failed to create test file %s: %v", name, err)
-			}
-			f.Close()
-			testFiles[i] = name
-		}
-
-		var wg sync.WaitGroup
-		errChan := make(chan error, 10)
-
-		// Run concurrent operations on existing files
-		for i := 0; i < 10; i++ {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				// Use modulo to cycle through available files
-				name := testFiles[i%len(testFiles)]
-
-				f, err := fs.OpenFile(name, 0, 0)
-				if err != nil {
-					errChan <- fmt.Errorf("Failed to open file %s: %v", name, err)
-					return
-				}
-
-				// Allocate handle
-				handle := fm.Allocate(f)
-
-				// Get file
-				if _, exists := fm.Get(handle); !exists {
-					errChan <- fmt.Errorf("Failed to get handle %d", handle)
-					return
-				}
-
-				// Release handle
-				fm.Release(handle)
-			}(i)
-		}
-
-		// Wait for all operations to complete
-		wg.Wait()
-		close(errChan)
-
-		// Check for any errors
-		for err := range errChan {
-			t.Error(err)
-		}
-
-		// Verify all handles are cleaned up
-		if count := fm.Count(); count != 0 {
-			t.Errorf("Expected 0 handles after concurrent operations, got %d", count)
-		}
-	})
-}
-
-// TestR3_FileHandleMapEviction verifies that the FileHandleMap evicts
-// the oldest handles when the maximum is exceeded.
-func TestR3_FileHandleMapEviction(t *testing.T) {
-	fs, err := memfs.NewFS()
-	if err != nil {
-		t.Fatal(err)
+	a := fm.issue(fileNode("/a"))
+	if again := fm.issue(fileNode("/a")); !bytes.Equal(a, again) {
+		t.Errorf("second issue for /a: %x, want %x", again, a)
 	}
-
-	nfs, err := New(fs, ExportOptions{})
-	if err != nil {
-		t.Fatal(err)
+	if b := fm.issue(fileNode("/b")); bytes.Equal(a, b) {
+		t.Error("/a and /b got the same handle")
 	}
-	defer nfs.Close()
-
-	// Create a FileHandleMap with a very small maximum
-	fhMap := newFileHandleMap(10)
-
-	// Create test files and allocate handles for them
-	for i := 0; i < 10; i++ {
-		fname := fmt.Sprintf("/evictfile%d", i)
-		f, err := fs.Create(fname)
-		if err != nil {
-			t.Fatalf("Failed to create file %s: %v", fname, err)
-		}
-		fhMap.Allocate(f)
+	// The same path as another type is another object.
+	if d := fm.issue(dirNode("/a")); bytes.Equal(a, d) {
+		t.Error("a file and a directory at /a got the same handle")
 	}
-
-	if fhMap.Count() != 10 {
-		t.Fatalf("Expected 10 handles, got %d", fhMap.Count())
+	if fm.Count() != 3 {
+		t.Errorf("Count = %d, want 3", fm.Count())
 	}
-
-	// Allocate one more to trigger eviction
-	extraFile, err := fs.Create("/extra")
-	if err != nil {
-		t.Fatal(err)
+	// The cache keeps the newest node for the path (its attributes).
+	newer := fileNode("/b")
+	fm.issue(newer)
+	fm.RLock()
+	got := fm.handles[fm.paths["b"]].node
+	fm.RUnlock()
+	if got != newer {
+		t.Error("issue did not keep the newer node")
 	}
-	fhMap.Allocate(extraFile)
-
-	// After eviction, count should be <= maxHandles
-	count := fhMap.Count()
-	if count > 10 {
-		t.Errorf("Expected count <= 10 after eviction, got %d", count)
-	}
-
-	// Should have evicted at least 1 (maxH/10 = 1)
-	if count > 10 {
-		t.Errorf("Eviction did not reduce handle count below max")
+	// Two maps (two servers, or one restarted) issue different handles.
+	if other := newFileHandleMap(0).issue(fileNode("/a")); bytes.Equal(a, other) {
+		t.Error("two keys gave the same handle")
 	}
 }
 
-// ================================================================
-// Coverage boost: filehandle.go Allocate – eviction path
-// ================================================================
-
-func TestCovBoost_AllocateEviction(t *testing.T) {
-	fm := newFileHandleMap(5)
-
-	fs, err := memfs.NewFS()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 5; i++ {
-		name := "/" + string(rune('a'+i)) + ".txt"
-		f, _ := fs.Create(name)
-		f.Close()
-	}
-
-	// Fill up to max
-	for i := 0; i < 5; i++ {
-		name := "/" + string(rune('a'+i)) + ".txt"
-		f, _ := fs.OpenFile(name, 0, 0)
-		fm.Allocate(f)
-	}
-	if fm.Count() != 5 {
-		t.Fatalf("expected 5, got %d", fm.Count())
-	}
-
-	// Allocate one more – should trigger eviction of oldest
-	f, _ := fs.Create("/extra.txt")
-	f.Close()
-	f2, _ := fs.OpenFile("/extra.txt", 0, 0)
-	fm.Allocate(f2)
-
-	// After eviction of maxHandles/10 = 0 (rounds up to 1), count should be 5
-	if fm.Count() > 5 {
-		t.Errorf("expected count <= 5 after eviction, got %d", fm.Count())
-	}
-}
-
-func TestCovBoost_AllocateEvictionSmallMax(t *testing.T) {
-	// maxHandles=1: evictCount = 1/10 = 0 -> clamped to 1
-	fm := newFileHandleMap(1)
-
-	fs, err := memfs.NewFS()
-	if err != nil {
-		t.Fatal(err)
-	}
-	fs.Create("/a.txt")
-	fs.Create("/b.txt")
-
-	f1, _ := fs.OpenFile("/a.txt", 0, 0)
-	fm.Allocate(f1)
-	f2, _ := fs.OpenFile("/b.txt", 0, 0)
-	fm.Allocate(f2)
-
-	if fm.Count() != 1 {
-		t.Errorf("expected 1 after eviction with maxHandles=1, got %d", fm.Count())
-	}
-}
-
-func TestFileHandleMapGetOrErrorZeroCoverage(t *testing.T) {
+// An unspellable path (a NUL byte, which no NFS name has) still gets a
+// handle, resolvable from the cache only.
+func TestIssueOpaqueForUnspellablePath(t *testing.T) {
 	fm := newFileHandleMap(0)
-
-	mfs, _ := memfs.NewFS()
-	f, _ := mfs.Create("/test.txt")
-
-	handle := fm.Allocate(f)
-
-	t.Run("get existing handle", func(t *testing.T) {
-		file, err := fm.GetOrError(handle)
-		if err != nil {
-			t.Errorf("Expected no error, got %v", err)
-		}
-		if file == nil {
-			t.Errorf("Expected file, got nil")
-		}
-	})
-
-	t.Run("get non-existent handle", func(t *testing.T) {
-		_, err := fm.GetOrError(999999)
-		if err == nil {
-			t.Errorf("Expected error for non-existent handle")
-		}
-		if _, ok := err.(*InvalidFileHandleError); !ok {
-			t.Errorf("Expected InvalidFileHandleError, got %T", err)
-		}
-	})
-}
-
-// Tests for file handle map operations
-func TestFileHandleMapCoverage(t *testing.T) {
-	nfs, mfs := createTestServer(t)
-	defer nfs.Close()
-
-	// Create test file
-	f, _ := mfs.Create("/fhtest.txt")
-	f.Write([]byte("test"))
-	f.Close()
-
-	t.Run("allocate and release handles", func(t *testing.T) {
-		node, _ := nfs.Lookup("/fhtest.txt")
-
-		// Allocate handle
-		handle := nfs.fileMap.Allocate(node)
-		if handle == 0 {
-			t.Error("Expected non-zero handle")
-		}
-
-		// Get handle
-		retrieved, ok := nfs.fileMap.Get(handle)
-		if !ok {
-			t.Error("Expected to retrieve file")
-		}
-		_ = retrieved
-
-		// Release handle
-		nfs.fileMap.Release(handle)
-
-		// After release, Get should return false
-		_, ok = nfs.fileMap.Get(handle)
-		if ok {
-			t.Error("Expected handle to be released")
-		}
-	})
-
-	t.Run("count handles", func(t *testing.T) {
-		node, _ := nfs.Lookup("/fhtest.txt")
-		initialCount := nfs.fileMap.Count()
-
-		handle := nfs.fileMap.Allocate(node)
-		newCount := nfs.fileMap.Count()
-
-		if newCount <= initialCount {
-			t.Error("Count should increase after allocate")
-		}
-
-		nfs.fileMap.Release(handle)
-	})
-
-	t.Run("release all", func(t *testing.T) {
-		node, _ := nfs.Lookup("/fhtest.txt")
-		nfs.fileMap.Allocate(node)
-		nfs.fileMap.Allocate(node)
-		nfs.fileMap.Allocate(node)
-
-		nfs.fileMap.ReleaseAll()
-
-		if nfs.fileMap.Count() != 0 {
-			t.Error("Count should be 0 after ReleaseAll")
-		}
-	})
-}
-
-// Tests for GetOrError in FileHandleMap - additional coverage
-func TestFileHandleMapGetOrErrorCoverage(t *testing.T) {
-	nfs, mfs := createTestServer(t)
-	defer nfs.Close()
-
-	f, _ := mfs.Create("/getortest.txt")
-	f.Write([]byte("test"))
-	f.Close()
-
-	t.Run("valid handle", func(t *testing.T) {
-		node, _ := nfs.Lookup("/getortest.txt")
-		handle := nfs.fileMap.Allocate(node)
-
-		_, err := nfs.fileMap.GetOrError(handle)
-		if err != nil {
-			t.Errorf("Expected no error for valid handle: %v", err)
-		}
-
-		nfs.fileMap.Release(handle)
-	})
-
-	t.Run("invalid handle", func(t *testing.T) {
-		_, err := nfs.fileMap.GetOrError(999999)
-		if err == nil {
-			t.Error("Expected error for invalid handle")
-		}
-	})
-}
-
-// TestAllocateDeduplicatesByPath verifies that allocating handles for the
-// same path returns the same handle (path deduplication prevents handle leak).
-func TestAllocateDeduplicatesByPath(t *testing.T) {
-	fm := newFileHandleMap(1000)
-
-	node1 := &NFSNode{path: "/test/file"}
-	node2 := &NFSNode{path: "/test/file"} // same path, different instance
-
-	h1 := fm.Allocate(node1)
-	h2 := fm.Allocate(node2)
-
-	if h1 != h2 {
-		t.Errorf("same path should return same handle: got h1=%d, h2=%d", h1, h2)
+	fh := fm.issue(fileNode("/a\x00b"))
+	ph, ok := parseHandle(fh)
+	if !ok || ph.kind != fhKindOpaque {
+		t.Fatalf("handle %x: kind %d, ok %v; want opaque", fh, ph.kind, ok)
 	}
-	if fm.Count() != 1 {
-		t.Errorf("should have 1 handle, got %d", fm.Count())
+	if again := fm.issue(fileNode("/a\x00b")); !bytes.Equal(fh, again) {
+		t.Error("the opaque handle is not reissued while cached")
 	}
 }
 
-// TestAllocateEvictionDropsOldest verifies that eviction drops the oldest
-// (unused) handles, and that their numbers are not given out again.
-func TestAllocateEvictionDropsOldest(t *testing.T) {
-	fm := newFileHandleMap(5)
-
-	// Allocate 6 handles (triggers eviction at 6th)
-	var hs []uint64
-	for i := 0; i < 6; i++ {
-		hs = append(hs, fm.Allocate(&NFSNode{path: fmt.Sprintf("/file%d", i)}))
-	}
-
-	if _, ok := fm.Get(hs[0]); ok {
-		t.Error("the oldest handle survived eviction")
-	}
-	for _, h := range hs[1:] {
-		if _, ok := fm.Get(h); !ok {
-			t.Errorf("handle %d was evicted, want only the oldest", h)
+func TestCacheEvictsLeastRecentlyUsed(t *testing.T) {
+	fm := newFileHandleMap(10)
+	busy := fm.issue(fileNode("/busy"))
+	for i := 0; i < 100; i++ {
+		fm.issue(fileNode(fmt.Sprintf("/f%d", i)))
+		fm.cached(busy) // a client keeps using it
+		if fm.Count() > 10 {
+			t.Fatalf("%d handles cached, limit 10", fm.Count())
 		}
 	}
-	if h, ok := fm.pathHandles["/file0"]; ok {
-		t.Errorf("evicted /file0 still maps to handle %d", h)
+	if e, _, _, _ := fm.cached(busy); e == nil {
+		t.Error("the handle in use was evicted")
 	}
-	if h := fm.Allocate(&NFSNode{path: "/file0"}); h == hs[0] {
-		t.Errorf("evicted handle %d was given out again", h)
+	if e, _, _, _ := fm.cached(fm.codec.encode(fhTypeRegular, 0, "f0")); e != nil {
+		t.Error("the oldest unused handle is still cached")
+	}
+	fm.RLock()
+	if len(fm.clock)-fm.hand > 2*len(fm.handles)+64 {
+		t.Errorf("clock queue of %d for %d handles", len(fm.clock)-fm.hand, len(fm.handles))
+	}
+	fm.RUnlock()
+}
+
+func TestHandleCacheResize(t *testing.T) {
+	fm := newFileHandleMap(100)
+	for i := 0; i < 100; i++ {
+		fm.issue(fileNode(fmt.Sprintf("/f%d", i)))
+	}
+	fm.Resize(10)
+	if n := fm.Count(); n > 10 {
+		t.Errorf("Count after Resize(10) = %d", n)
+	}
+	fm.Resize(0)
+	if fm.limit() != DefaultMaxHandles {
+		t.Errorf("limit after Resize(0) = %d", fm.limit())
+	}
+	fm.RLock()
+	for p, key := range fm.paths {
+		if e := fm.handles[key]; e == nil || e.path != p {
+			t.Errorf("path %s maps to a dropped handle", p)
+		}
+	}
+	fm.RUnlock()
+}
+
+func TestCacheRenamedAndRemoved(t *testing.T) {
+	fm := newFileHandleMap(0)
+	src := fm.issue(fileNode("/d/src"))
+	dst := fm.issue(fileNode("/d/dst"))
+	e := fm.log.commitRename(fm.log.begin("d/src", "d/dst"), true, false, "d/src", "d/dst")
+	fm.renamed("d/src", "d/dst", e)
+
+	// LOOKUP of the new name gives the bytes the client holds.
+	if got := fm.issue(fileNode("/d/dst")); !bytes.Equal(got, src) {
+		t.Errorf("handle of /d/dst after the rename: %x, want the moved %x", got, src)
+	}
+	if ent, node, p, _ := fm.cached(src); ent == nil || p != "d/dst" || node.path != "/d/dst" {
+		t.Errorf("moved entry: %v %v %q", ent, node, p)
+	}
+	if ent, _, _, _ := fm.cached(dst); ent != nil {
+		t.Error("the replaced target's handle is still cached")
+	}
+	// The new object at the old name gets a new handle.
+	if got := fm.issue(fileNode("/d/src")); bytes.Equal(got, src) {
+		t.Error("a new /d/src got the moved handle")
+	}
+
+	fm.log.commitRemove(fm.log.begin("d/dst"), true, "d/dst")
+	fm.removed("d/dst")
+	if ent, _, _, _ := fm.cached(src); ent != nil {
+		t.Error("the removed object's handle is still cached")
+	}
+	fm.renamed("none", "other", 1) // nothing cached: nothing happens
+}
+
+func TestCacheReleaseAll(t *testing.T) {
+	fm := newFileHandleMap(0)
+	a := fm.issue(fileNode("/a"))
+	fm.ReleaseAll()
+	if fm.Count() != 0 {
+		t.Errorf("Count after ReleaseAll = %d", fm.Count())
+	}
+	if again := fm.issue(fileNode("/a")); !bytes.Equal(a, again) {
+		t.Error("the handle changed after ReleaseAll")
+	}
+}
+
+// The uint64 methods are deprecated shims over the byte handles.
+func TestDeprecatedUint64Methods(t *testing.T) {
+	fm := newFileHandleMap(0)
+	node := fileNode("/a")
+	id := fm.Allocate(node)
+	fh := fm.issue(node)
+	if id != binary.BigEndian.Uint64(fh[:8]) {
+		t.Errorf("Allocate = %x, want the handle's first 8 bytes %x", id, fh[:8])
+	}
+	if f, ok := fm.Get(id); !ok || f != node {
+		t.Errorf("Get = %v, %v", f, ok)
+	}
+	if f, err := fm.GetOrError(id); err != nil || f != node {
+		t.Errorf("GetOrError = %v, %v", f, err)
+	}
+	fm.Release(id)
+	if _, ok := fm.Get(id); ok {
+		t.Error("Get finds a released handle")
+	}
+	_, err := fm.GetOrError(id)
+	if ie, ok := err.(*InvalidFileHandleError); !ok || ie.Handle != id {
+		t.Errorf("GetOrError of a released handle: %v", err)
+	}
+	if fm.Allocate(nil) != 0 || fm.Allocate(&NFSNode{}) != 0 {
+		t.Error("Allocate of a non-node is not 0")
+	}
+}
+
+func BenchmarkIssueCached(b *testing.B) {
+	fm := newFileHandleMap(0)
+	node := fileNode("/staging/src/k8s.io/client-go/tools/cache/shared_informer.go")
+	fm.issue(node)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fm.issue(node)
+	}
+}
+
+// BenchmarkIssuePastLimit issues handles for new paths in a cache held at
+// DefaultMaxHandles, so every issue evicts.
+func BenchmarkIssuePastLimit(b *testing.B) {
+	fm := newFileHandleMap(0)
+	for i := 0; i < DefaultMaxHandles; i++ {
+		fm.issue(fileNode(fmt.Sprintf("/pre%d", i)))
+	}
+	nodes := make([]*NFSNode, b.N)
+	for i := range nodes {
+		nodes[i] = fileNode(fmt.Sprintf("/n%d", i))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fm.issue(nodes[i])
 	}
 }

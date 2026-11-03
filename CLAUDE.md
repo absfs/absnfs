@@ -72,7 +72,7 @@ Key subsystems:
 - **nfs_proc_*.go**: NFS3 procedure handlers split by RFC 1813 category
 - **operations.go**: Filesystem operations bridging NFS to absfs
 - **cache.go**: AttrCache (LRU + TTL), DirCache
-- **filehandle.go**: Handle allocation with path deduplication
+- **fh_*.go, filehandle.go**: Path handles (codec, change log, journal, resolution) and the handle cache
 - **auth.go**: IP filtering, UID/GID squash, TLS cert verification
 - **options.go**: TuningOptions (atomic swap) vs PolicyOptions (drain-and-swap)
 

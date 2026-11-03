@@ -140,50 +140,42 @@ func xdrEncodeString(w io.Writer, s string) error {
 	return nil
 }
 
-// xdrEncodeFileHandle encodes an NFS3 file handle (opaque<FHSIZE3>)
-// File handles are encoded as: [4-byte length][8-byte handle data]
-func xdrEncodeFileHandle(w io.Writer, handle uint64) error {
-	// Write length (8 bytes for our handle format)
-	if err := xdrEncodeUint32(w, 8); err != nil {
+// xdrEncodeFileHandle encodes an NFS3 file handle (opaque<FHSIZE3>): its
+// length, its bytes, and zero bytes to a multiple of 4.
+func xdrEncodeFileHandle(w io.Writer, fh []byte) error {
+	if err := xdrEncodeUint32(w, uint32(len(fh))); err != nil {
 		return err
 	}
-	// Write the 8-byte handle value
-	return binary.Write(w, binary.BigEndian, handle)
+	var pad [3]byte
+	if _, err := w.Write(fh); err != nil {
+		return err
+	}
+	_, err := w.Write(pad[:(4-len(fh)%4)%4])
+	return err
 }
 
-// xdrDecodeFileHandle decodes an NFS3 file handle (opaque<FHSIZE3>)
-// Returns the 8-byte handle value
-func xdrDecodeFileHandle(r io.Reader) (uint64, error) {
-	// First read the length
+// xdrFileHandleSize is the encoded size of handle fh.
+func xdrFileHandleSize(fh []byte) int {
+	return 4 + (len(fh)+3)&^3
+}
+
+// xdrDecodeFileHandle decodes an NFS3 file handle (opaque<FHSIZE3>). Any
+// length up to FHSIZE3 (64) decodes; whether the bytes are a handle this
+// server issued is resolveHandle's question, and a handle that is not one
+// is stale. A longer length is an error (GARBAGE_ARGS), and is not read.
+func xdrDecodeFileHandle(r io.Reader) ([]byte, error) {
 	length, err := xdrDecodeUint32(r)
 	if err != nil {
-		return 0, fmt.Errorf("failed to read handle length: %w", err)
+		return nil, fmt.Errorf("failed to read handle length: %w", err)
 	}
-
-	// Reject lengths exceeding the NFS3 maximum to prevent DoS via huge allocations.
-	if length > 64 {
-		return 0, fmt.Errorf("file handle length %d exceeds NFS3 maximum of 64 bytes", length)
+	if length > fhMaxSize {
+		return nil, fmt.Errorf("file handle length %d exceeds NFS3 maximum of %d bytes", length, fhMaxSize)
 	}
-
-	if length != 8 {
-		// Read and discard the handle data to keep the stream in sync.
-		if length > 0 {
-			paddedLen := (int(length) + 3) &^ 3 // round up to 4-byte boundary
-			discard := make([]byte, paddedLen)
-			if _, err := io.ReadFull(r, discard); err != nil {
-				return 0, fmt.Errorf("failed to discard handle data: %w", err)
-			}
-		}
-		return 0, fmt.Errorf("invalid handle length: %d (expected 8)", length)
+	buf := make([]byte, (length+3)&^3)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return nil, fmt.Errorf("failed to read handle data: %w", err)
 	}
-
-	// Read the 8-byte handle
-	var handle uint64
-	if err := binary.Read(r, binary.BigEndian, &handle); err != nil {
-		return 0, fmt.Errorf("failed to read handle data: %w", err)
-	}
-
-	return handle, nil
+	return buf[:length], nil
 }
 
 func xdrDecodeString(r io.Reader) (string, error) {

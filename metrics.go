@@ -44,6 +44,15 @@ type NFSMetrics struct {
 	NegativeCacheSize    int     // Number of negative cache entries
 	NegativeCacheHitRate float64 // Hit rate for negative cache lookups
 
+	// File handle metrics. Handles resolve without the handle cache; a
+	// miss costs a decode, a tag check and a stat.
+	HandleCacheSize        int    // Handles cached
+	HandleCacheCapacity    int    // ExportOptions.MaxHandles in effect
+	HandleCacheMisses      uint64 // Handles resolved without the cache
+	HandleTailWalkFailures uint64 // Hashed-tail handles no directory walk resolved (reported stale)
+	HandleTombstoneFolds   uint64 // Times the oldest change records were folded (may cause spurious stale)
+	HandleRedirectsDropped uint64 // Rename records dropped (handles to such renamed objects go stale)
+
 	// Connection metrics
 	ActiveConnections   int
 	TotalConnections    uint64
@@ -430,6 +439,17 @@ func (m *MetricsCollector) updateCacheMetrics() {
 	m.metrics.AttrCacheSize = attrSize
 	m.metrics.AttrCacheCapacity = attrCapacity
 	m.metrics.NegativeCacheSize = negativeSize
+
+	if fm := m.server.fileMap; fm != nil {
+		fm.RLock()
+		m.metrics.HandleCacheSize = len(fm.handles)
+		m.metrics.HandleCacheCapacity = fm.limit()
+		fm.RUnlock()
+		m.metrics.HandleCacheMisses = fm.misses.Load()
+		m.metrics.HandleTailWalkFailures = fm.tailFailures.Load()
+		m.metrics.HandleTombstoneFolds = fm.log.folds.Load()
+		m.metrics.HandleRedirectsDropped = fm.log.redirDrops.Load()
+	}
 }
 
 // GetMetrics returns a snapshot of the current metrics

@@ -719,14 +719,18 @@ func (s *AbsfsNFS) RemoveWithContext(ctx context.Context, dir *NFSNode, name str
 		return fmt.Errorf("remove: failed to sanitize path: %w", err)
 	}
 
+	// Handles of path wait while it is removed, then are stale.
+	canon, _ := canonicalPath(path)
+	op := s.fileMap.log.begin(canon)
 	err = s.fs.Remove(path)
+	s.fileMap.log.commitRemove(op, err == nil, canon)
 	if err != nil {
 		return fmt.Errorf("remove: failed to remove %s: %w", path, err)
 	}
 	// Only an empty directory can be removed, so nothing below path needs
 	// forgetting: a cached miss there stays true.
 	s.invalidate(dir.path, path)
-	s.fileMap.removed(path)
+	s.fileMap.removed(canon)
 	return nil
 }
 
@@ -788,13 +792,22 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 		return fmt.Errorf("rename: cannot rename %s over %s: %w", oldPath, newPath, err)
 	}
 
+	// Handles of both names, and of everything below them, wait while
+	// they change; then the source's follow it and the target's are stale.
+	src, _ := canonicalPath(oldPath)
+	dst, _ := canonicalPath(newPath)
+	op := s.fileMap.log.begin(src, dst)
 	err = s.fs.Rename(oldPath, newPath)
 	// Go's os.Rename refuses an existing directory target on every host
 	// (EEXIST on unix, ERROR_ACCESS_DENIED on Windows), so a directory over
 	// an empty directory is replaced whatever the backend said.
+	replaced := false
 	if err != nil && (bothDirs || errors.Is(err, os.ErrExist)) {
+		replaced = true
 		err = s.replaceByRename(oldPath, newPath, err)
 	}
+	// replaceByRename may have removed the target even when it failed.
+	epoch := s.fileMap.log.commitRename(op, err == nil, replaced, src, dst)
 	// Both names and everything below them (when a directory moved or was
 	// replaced) are forgotten, also after a failure: replaceByRename may
 	// have removed the target first.
@@ -803,7 +816,7 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 	if err != nil {
 		return fmt.Errorf("rename: failed to rename %s to %s: %w", oldPath, newPath, err)
 	}
-	s.fileMap.renamed(oldPath, newPath)
+	s.fileMap.renamed(src, dst, epoch)
 	return nil
 }
 

@@ -129,7 +129,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to lookup test file: %v", err)
 		}
-		handle := fs.fileMap.Allocate(node)
+		handle := fs.fileMap.issue(node)
 
 		handler := &NFSProcedureHandler{
 			server: &Server{
@@ -240,7 +240,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to lookup test file: %v", err)
 		}
-		handle := fs.fileMap.Allocate(node)
+		handle := fs.fileMap.issue(node)
 
 		handler := &NFSProcedureHandler{
 			server: &Server{
@@ -363,7 +363,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to lookup test file: %v", err)
 		}
-		handle := fs.fileMap.Allocate(node)
+		handle := fs.fileMap.issue(node)
 
 		handler := &NFSProcedureHandler{
 			server: &Server{
@@ -476,7 +476,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to lookup root directory: %v", err)
 		}
-		dirHandle := server.handler.fileMap.Allocate(dirNode)
+		dirHandle := server.handler.fileMap.issue(dirNode)
 
 		handler := &NFSProcedureHandler{
 			server: server,
@@ -629,7 +629,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to lookup root directory: %v", err)
 		}
-		dirHandle := server.handler.fileMap.Allocate(dirNode)
+		dirHandle := server.handler.fileMap.issue(dirNode)
 
 		handler := &NFSProcedureHandler{
 			server: server,
@@ -773,7 +773,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to lookup test directory: %v", err)
 		}
-		dirHandle := server.handler.fileMap.Allocate(dirNode)
+		dirHandle := server.handler.fileMap.issue(dirNode)
 
 		handler := &NFSProcedureHandler{
 			server: server,
@@ -941,7 +941,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to lookup symlink: %v", err)
 		}
-		symlinkHandle := server.handler.fileMap.Allocate(symlinkNode)
+		symlinkHandle := server.handler.fileMap.issue(symlinkNode)
 
 		handler := &NFSProcedureHandler{
 			server: server,
@@ -1034,7 +1034,7 @@ func TestNFSOperationsErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to lookup test file: %v", err)
 		}
-		fileHandle := server.handler.fileMap.Allocate(fileNode)
+		fileHandle := server.handler.fileMap.issue(fileNode)
 
 		buf.Reset()
 		xdrEncodeFileHandle(&buf, fileHandle) // Properly encode handle with length prefix

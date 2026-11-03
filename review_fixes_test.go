@@ -318,7 +318,7 @@ func TestUpdateExportOptionsRejectsOwnerChanges(t *testing.T) {
 }
 
 // readdirPage reads one READDIR (or READDIRPLUS) page after cookie.
-func readdirPage(t *testing.T, e *faEnv, dir, cookie uint64, plus bool) ([]faEntry, bool) {
+func readdirPage(t *testing.T, e *faEnv, dir []byte, cookie uint64, plus bool) ([]faEntry, bool) {
 	t.Helper()
 	var r *RPCReply
 	var err error

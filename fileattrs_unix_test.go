@@ -120,7 +120,7 @@ func TestParallelOwnerWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file := nfs.fileMap.Allocate(node)
+	file := nfs.fileMap.issue(node)
 	owner := processOwner()
 	handler := &NFSProcedureHandler{server: &Server{handler: nfs}}
 	const writers = 16

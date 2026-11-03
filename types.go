@@ -51,7 +51,7 @@ import (
 )
 
 // Version represents the current version of the absnfs package
-const Version = "1.1.0"
+const Version = "1.2.0"
 
 // AbsfsNFS represents an NFS server that exports an absfs filesystem
 type AbsfsNFS struct {
@@ -73,6 +73,9 @@ type AbsfsNFS struct {
 	// every file when forceOwner is set. Fixed at New.
 	owner      FileOwner
 	forceOwner bool
+
+	// handleStateDir is ExportOptions.HandleStateDir. Fixed at New.
+	handleStateDir string
 
 	// ownerWriteMu serializes owner-override opens (see openForOwnerWrite).
 	ownerWriteMu sync.Mutex
@@ -97,15 +100,23 @@ type AbsfsNFS struct {
 	loggerMu sync.RWMutex
 }
 
-// FileHandleMap manages the mapping between NFS file handles and absfs files
+// FileHandleMap caches file handles: the NFSNode each recently used handle
+// resolved to, and the handle issued for each path. Handles do not depend
+// on it to resolve (see filehandle.go).
 type FileHandleMap struct {
 	sync.RWMutex
-	handles     map[uint64]*handleEntry
-	pathHandles map[string]uint64 // Reverse map: path -> handle for deduplication
-	clock       []uint64          // Eviction candidates in clock order; clock[hand] comes next
-	hand        int               // Index in clock of the next eviction candidate
-	pinned      int               // Number of pinned (never evicted) handles
-	maxHandles  int               // Maximum handles before eviction (0 = DefaultMaxHandles)
+	handles    map[string]*handleEntry // handle bytes -> entry
+	paths      map[string]string       // canonical path -> handle bytes issued for it
+	clock      []string                // eviction candidates in clock order; clock[hand] comes next
+	hand       int                     // index in clock of the next eviction candidate
+	maxHandles int                     // capacity (<= 0 means DefaultMaxHandles)
+
+	codec *handleCodec  // encodes and verifies handles with the server's key
+	log   *changeLog    // the server's REMOVEs, RMDIRs and RENAMEs
+	dirs  *dirHashIndex // name hashes of directories, for tail handles
+
+	misses       atomic.Uint64 // handles resolved without the cache
+	tailFailures atomic.Uint64 // tail handles no walk resolved
 }
 
 // NFSNode represents a file or directory in the NFS tree. Its absfs.File

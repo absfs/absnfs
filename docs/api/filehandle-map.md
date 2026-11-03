@@ -1,6 +1,15 @@
 # FileHandleMap
 
-Maps NFS file handles (uint64) to `absfs.File` objects with path deduplication and eviction of the handles least recently used. Handle numbers are never reused, so a stale handle reports `NFS3ERR_STALE` and never reaches another object.
+The file handle cache. File handles are byte strings of 10 to 64 bytes that
+name their objects by path, carry a keyed tag, and are checked against the
+server's change log, so the server resolves any handle it issued without the
+cache (see [File Handle System](../internals/file-handles.md)).
+`FileHandleMap` maps the bytes of handles used recently to the `NFSNode` they
+resolved to, and each path to the bytes issued for it, so the same object
+keeps getting the same bytes.
+
+No `FileHandleMap` can be made outside the package; it is exported for its
+methods' documentation and for `AbsfsNFS` internals.
 
 ## Types
 
@@ -9,16 +18,10 @@ Maps NFS file handles (uint64) to `absfs.File` objects with path deduplication a
 ```go
 type FileHandleMap struct {
     sync.RWMutex
-    handles     map[uint64]*handleEntry // file, used mark, pinned flag
-    pathHandles map[string]uint64       // path -> handle deduplication
-    clock       []uint64                // eviction candidates in clock order
-    hand        int                     // index in clock of the next candidate
-    pinned      int                     // number of pinned handles
-    maxHandles  int                     // 0 means DefaultMaxHandles (100,000)
+    // handle bytes -> {node, path, epoch}, path -> handle bytes,
+    // the clock eviction queue, the capacity, the codec and the change log
 }
 ```
-
-The struct embeds `sync.RWMutex` directly, so callers use `fm.Lock()`/`fm.RLock()` etc.
 
 ### DefaultMaxHandles
 
@@ -26,47 +29,37 @@ The struct embeds `sync.RWMutex` directly, so callers use `fm.Lock()`/`fm.RLock(
 const DefaultMaxHandles = 100000
 ```
 
-The maximum number of file handles before eviction occurs, used when `maxHandles` is 0.
+The cache's capacity when `ExportOptions.MaxHandles` is not set (<= 0).
+
+## Behaviour
+
+- **Issue.** LOOKUP, READDIRPLUS, CREATE, MKDIR, SYMLINK and MNT return the
+  bytes cached for the object's path while they still name it, otherwise new
+  bytes for the path and its change-log epoch.
+- **Resolve.** A cached handle costs a map lookup (and, once the server has
+  removed or renamed anything, a change-log check of its path). A handle not
+  cached is decoded, its tag checked, the change log consulted, and the
+  object stat'ed; then it is cached.
+- **Eviction.** Above the capacity, a tenth of it is evicted by the clock
+  (second-chance) algorithm: entries used since the hand last passed get
+  another round, others are dropped. A new entry is never evicted by its own
+  insertion. Each step is amortized O(1). Eviction costs the next request
+  with the handle a miss, never `NFS3ERR_STALE`.
+- **RENAME** moves the source's cached entry to the destination, so a LOOKUP
+  of the new name returns the bytes the client holds. **REMOVE** and
+  **RMDIR** drop the removed object's entry.
 
 ## Functions
 
-### Allocate
+### Resize
 
 ```go
-func (fm *FileHandleMap) Allocate(f absfs.File) uint64
+func (fm *FileHandleMap) Resize(maxHandles int)
 ```
 
-Creates a new file handle for the given file and returns the handle ID.
-
-**Path deduplication**: If `f` is an `*NFSNode` with a non-empty path, and a handle already exists for that path, the existing handle's file reference is updated and the existing handle ID is returned. This prevents unbounded handle growth from repeated LOOKUP and READDIRPLUS calls on the same path.
-
-**Handle ID allocation**: IDs come from one process-wide counter that starts at the process's start time in nanoseconds and only goes up (O(1)). Released, evicted and retired IDs are never given out again, by this map or by any other map in the process, so a server closed and created again in the same process never repeats an ID either.
-
-**Eviction**: When the handle count exceeds `maxHandles` (or `DefaultMaxHandles` if unset), 10% of `maxHandles` handles are evicted, chosen by the clock (second-chance) algorithm: `Get`, `GetOrError` and a deduplicated `Allocate` mark a handle used; the eviction hand walks the handles from the oldest, clears the mark of a used one and moves it to the back, and evicts one not used. Handles given out by MNT are pinned (at most 10% of the limit) and never evicted; the export root's handle (path `/`) is pinned however it was allocated, even past that cap, so pins never exceed 10% of the limit plus one, and never fill the last place in the table (relevant only to a `maxHandles` below 3). A handle is never evicted by its own allocation: it joins the eviction order after that eviction. Evicted files are closed and their path mappings removed. Each eviction step is amortized O(1).
-
-### Get
-
-```go
-func (fm *FileHandleMap) Get(handle uint64) (absfs.File, bool)
-```
-
-Returns the `absfs.File` for the given handle. Returns `(nil, false)` if the handle does not exist. Uses a read lock.
-
-### GetOrError
-
-```go
-func (fm *FileHandleMap) GetOrError(handle uint64) (absfs.File, error)
-```
-
-Like `Get` but returns an `InvalidFileHandleError` instead of a boolean when the handle is not found.
-
-### Release
-
-```go
-func (fm *FileHandleMap) Release(handle uint64)
-```
-
-Closes the file associated with the handle, removes the handle from the map, and cleans up the path deduplication mapping. The handle ID is not reused.
+Sets the capacity (<= 0 means `DefaultMaxHandles`) and evicts down to it at
+once. `UpdateExportOptions` and `UpdateTuningOptions` call it when
+`MaxHandles` changes.
 
 ### ReleaseAll
 
@@ -74,7 +67,8 @@ Closes the file associated with the handle, removes the handle from the map, and
 func (fm *FileHandleMap) ReleaseAll()
 ```
 
-Closes all files, clears all handle mappings, resets the path deduplication map, and drops all pins. IDs given out afterwards are still new. Used during server shutdown.
+Empties the cache. Every handle still resolves. Used by `Unexport` and
+`Close`.
 
 ### Count
 
@@ -82,4 +76,33 @@ Closes all files, clears all handle mappings, resets the path deduplication map,
 func (fm *FileHandleMap) Count() int
 ```
 
-Returns the number of active file handles.
+Returns the number of cached handles.
+
+### Allocate, Get, GetOrError, Release (deprecated)
+
+```go
+func (fm *FileHandleMap) Allocate(f absfs.File) uint64
+func (fm *FileHandleMap) Get(handle uint64) (absfs.File, bool)
+func (fm *FileHandleMap) GetOrError(handle uint64) (absfs.File, error)
+func (fm *FileHandleMap) Release(handle uint64)
+```
+
+Kept from the 8-byte handle format. `Allocate` issues the handle of an
+`*NFSNode` and returns its first 8 bytes as an identifier (0 for anything
+else); `Get`, `GetOrError` and `Release` find a cached handle by that
+identifier, scanning the cache. `Release` only drops the cache entry: the
+handle still resolves.
+
+## Concurrency
+
+`FileHandleMap` embeds `sync.RWMutex`. Lookups take the read lock; issue,
+insertion, eviction and the RENAME/REMOVE updates take the write lock. The
+change log has its own lock, and filesystem I/O happens outside both.
+
+## Wire Format
+
+`xdrEncodeFileHandle` writes a handle as XDR `opaque<64>`.
+`xdrDecodeFileHandle` accepts any length up to 64 bytes; a longer one is a
+decode error (`GARBAGE_ARGS`) and is not read. Whether the bytes are a handle
+this server issued is decided when they are resolved: any that is not
+(including empty and legacy 8-byte handles) is `NFS3ERR_STALE`.

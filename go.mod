@@ -12,3 +12,5 @@ require (
 )
 
 require github.com/absfs/inode v1.1.0
+
+require github.com/absfs/unionfs v1.0.0

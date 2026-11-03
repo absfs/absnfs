@@ -155,12 +155,28 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		structuredLogger = NewNoopLogger()
 	}
 
+	if options.MaxHandles <= 0 {
+		options.MaxHandles = DefaultMaxHandles
+	}
+
 	server := &AbsfsNFS{
 		fs:               fs,
-		fileMap:          newFileHandleMap(0),
+		handleStateDir:   options.HandleStateDir,
 		logger:           log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
 		structuredLogger: structuredLogger,
 		attrCache:        NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
+	}
+
+	if options.HandleStateDir != "" {
+		fm, err := newFileHandleMapWithState(options.MaxHandles, options.HandleStateDir, func(err error) {
+			server.logger.Printf("file handle journal failed, handles will not survive a restart: %v", err)
+		})
+		if err != nil {
+			return nil, err
+		}
+		server.fileMap = fm
+	} else {
+		server.fileMap = newFileHandleMap(options.MaxHandles)
 	}
 
 	// Populate atomic option pointers from the fully-defaulted ExportOptions
@@ -206,6 +222,7 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 
 	attrs, err := server.statAttrs("/")
 	if err != nil {
+		server.fileMap.log.journal.close()
 		return nil, err
 	}
 	root.attrs = attrs
@@ -255,9 +272,12 @@ func (n *AbsfsNFS) Close() error {
 		n.workerPool.Stop()
 	}
 
-	// Release all file handles to prevent file descriptor leaks
+	// Empty the handle cache, and sync and unlock the handle journal
 	if n.fileMap != nil {
 		n.fileMap.ReleaseAll()
+		if err := n.fileMap.log.journal.close(); err != nil {
+			return fmt.Errorf("failed to close handle journal: %w", err)
+		}
 	}
 
 	// Clear caches to free memory
@@ -318,6 +338,7 @@ func (n *AbsfsNFS) GetExportOptions() ExportOptions {
 	owner := n.owner
 	opts.DefaultOwner = &owner
 	opts.ForceOwner = n.forceOwner
+	opts.HandleStateDir = n.handleStateDir
 	return opts
 }
 
@@ -326,10 +347,11 @@ func (n *AbsfsNFS) GetExportOptions() ExportOptions {
 // Tuning changes apply immediately via atomic swap.
 // Policy changes use drain-and-swap to ensure in-flight requests complete first.
 //
-// Squash, DefaultOwner and ForceOwner are fixed when the export is created.
-// An update that changes one of them is rejected with an error and nothing is
-// applied; an empty Squash and a nil DefaultOwner mean "unchanged", so the
-// result of GetExportOptions can always be passed back.
+// Squash, DefaultOwner, ForceOwner and HandleStateDir are fixed when the
+// export is created. An update that changes one of them is rejected with an
+// error and nothing is applied; an empty Squash or HandleStateDir and a nil
+// DefaultOwner mean "unchanged", so the result of GetExportOptions can
+// always be passed back.
 func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
 	if n == nil {
 		return fmt.Errorf("nil server")
@@ -345,6 +367,9 @@ func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
 	}
 	if newOptions.ForceOwner != n.forceOwner {
 		return fmt.Errorf("cannot change ForceOwner at runtime (requires restart)")
+	}
+	if newOptions.HandleStateDir != "" && newOptions.HandleStateDir != n.handleStateDir {
+		return fmt.Errorf("cannot change HandleStateDir at runtime (requires restart)")
 	}
 
 	// Apply tuning changes (lock-free, immediate).

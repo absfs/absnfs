@@ -193,7 +193,7 @@ func TestNFSHandlerOperations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to lookup test file: %v", err)
 		}
-		handle := fs.fileMap.Allocate(node)
+		handle := fs.fileMap.issue(node)
 
 		handler := &NFSProcedureHandler{
 			server: &Server{
@@ -414,15 +414,15 @@ func newReadOnlyTestServer() (*Server, *NFSProcedureHandler, *AuthContext, error
 }
 
 // getRootHandle allocates a handle for the root node
-func getRootHandle(server *Server) uint64 {
+func getRootHandle(server *Server) []byte {
 	rootNode, _ := server.handler.Lookup("/")
-	return server.handler.fileMap.Allocate(rootNode)
+	return server.handler.fileMap.issue(rootNode)
 }
 
 // getFileHandle allocates a handle for a specific path
-func getFileHandle(server *Server, path string) uint64 {
+func getFileHandle(server *Server, path string) []byte {
 	node, _ := server.handler.Lookup(path)
-	return server.handler.fileMap.Allocate(node)
+	return server.handler.fileMap.issue(node)
 }
 
 // readStatusFromReply reads the NFS status from reply data
@@ -483,7 +483,7 @@ func TestC2_ErrorReplyWithPostOp(t *testing.T) {
 	}
 
 	// Use an invalid handle to trigger NFSERR_STALE
-	invalidHandle := uint64(99999)
+	invalidHandle := legacyHandle(99999)
 
 	tests := []struct {
 		name    string
@@ -546,7 +546,7 @@ func TestC2_ErrorReplyWithWcc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	invalidHandle := uint64(99999)
+	invalidHandle := legacyHandle(99999)
 
 	// Test COMMIT with stale handle
 	var buf bytes.Buffer
@@ -667,7 +667,7 @@ func TestH2_MkdirReadOnlyCheck(t *testing.T) {
 
 	// Build minimal MKDIR request (handle doesn't matter since read-only check is first)
 	var buf bytes.Buffer
-	xdrEncodeFileHandle(&buf, uint64(1))
+	xdrEncodeFileHandle(&buf, legacyHandle(1))
 	xdrEncodeString(&buf, "newdir")
 	// Minimal sattr3: all "don't set" flags
 	for i := 0; i < 6; i++ {
@@ -748,7 +748,7 @@ func TestH4_StaleHandleError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	invalidHandle := uint64(99999)
+	invalidHandle := legacyHandle(99999)
 
 	tests := []struct {
 		name    string
@@ -992,7 +992,7 @@ func TestM13_SetattrGuardErrorCheck(t *testing.T) {
 
 	// Build SETATTR request with guard=1 but truncated (no ctime data)
 	var buf bytes.Buffer
-	xdrEncodeFileHandle(&buf, uint64(1))
+	xdrEncodeFileHandle(&buf, legacyHandle(1))
 	// sattr3: all "don't set"
 	for i := 0; i < 6; i++ {
 		binary.Write(&buf, binary.BigEndian, uint32(0))
@@ -1138,7 +1138,7 @@ func newTestServerForHandlers() (*Server, *NFSProcedureHandler, *AuthContext, er
 }
 
 // Helper to build a lookup request
-func buildLookupRequest(handle uint64, name string) []byte {
+func buildLookupRequest(handle []byte, name string) []byte {
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, handle)
 	xdrEncodeString(&buf, name)
@@ -1146,7 +1146,7 @@ func buildLookupRequest(handle uint64, name string) []byte {
 }
 
 // Helper to build an access request
-func buildAccessRequest(handle uint64, access uint32) []byte {
+func buildAccessRequest(handle []byte, access uint32) []byte {
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, handle)
 	binary.Write(&buf, binary.BigEndian, access)
@@ -1154,7 +1154,7 @@ func buildAccessRequest(handle uint64, access uint32) []byte {
 }
 
 // Helper to build a commit request
-func buildCommitRequest(handle uint64, offset uint64, count uint32) []byte {
+func buildCommitRequest(handle []byte, offset uint64, count uint32) []byte {
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, handle)
 	binary.Write(&buf, binary.BigEndian, offset)
@@ -1163,7 +1163,7 @@ func buildCommitRequest(handle uint64, offset uint64, count uint32) []byte {
 }
 
 // Helper to build a remove/rmdir request
-func buildRemoveRequest(handle uint64, name string) []byte {
+func buildRemoveRequest(handle []byte, name string) []byte {
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, handle)
 	xdrEncodeString(&buf, name)
@@ -1171,7 +1171,7 @@ func buildRemoveRequest(handle uint64, name string) []byte {
 }
 
 // Helper to build a rename request
-func buildRenameRequest(srcHandle uint64, srcName string, dstHandle uint64, dstName string) []byte {
+func buildRenameRequest(srcHandle []byte, srcName string, dstHandle []byte, dstName string) []byte {
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, srcHandle)
 	xdrEncodeString(&buf, srcName)
@@ -1181,7 +1181,7 @@ func buildRenameRequest(srcHandle uint64, srcName string, dstHandle uint64, dstN
 }
 
 // Helper to build a link request (file handle + dir handle + name)
-func buildLinkRequest(fileHandle uint64, dirHandle uint64, name string) []byte {
+func buildLinkRequest(fileHandle []byte, dirHandle []byte, name string) []byte {
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, fileHandle)
 	xdrEncodeFileHandle(&buf, dirHandle)
@@ -1190,7 +1190,7 @@ func buildLinkRequest(fileHandle uint64, dirHandle uint64, name string) []byte {
 }
 
 // Helper to build a pathconf request
-func buildPathconfRequest(handle uint64) []byte {
+func buildPathconfRequest(handle []byte) []byte {
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, handle)
 	return buf.Bytes()
@@ -1204,11 +1204,11 @@ func TestHandleLookup(t *testing.T) {
 
 	// Get root handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	// Get file handle (not a directory)
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("successful lookup", func(t *testing.T) {
 		body := buildLookupRequest(rootHandle, "testdir")
@@ -1259,7 +1259,7 @@ func TestHandleLookup(t *testing.T) {
 	})
 
 	t.Run("non-existent handle", func(t *testing.T) {
-		body := buildLookupRequest(999999, "testdir")
+		body := buildLookupRequest(legacyHandle(999999), "testdir")
 		reply := &RPCReply{}
 
 		result, err := handler.handleLookup(bytes.NewReader(body), reply, authCtx)
@@ -1333,15 +1333,15 @@ func TestHandleAccess(t *testing.T) {
 
 	// Get root handle (directory)
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	// Get file handle
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	// Get executable handle
 	execNode, _ := server.handler.Lookup("/executable")
-	execHandle := server.handler.fileMap.Allocate(execNode)
+	execHandle := server.handler.fileMap.issue(execNode)
 
 	t.Run("read access on file", func(t *testing.T) {
 		body := buildAccessRequest(fileHandle, 1) // ACCESS3_READ
@@ -1472,7 +1472,7 @@ func TestHandleAccess(t *testing.T) {
 	})
 
 	t.Run("non-existent handle", func(t *testing.T) {
-		body := buildAccessRequest(999999, 1)
+		body := buildAccessRequest(legacyHandle(999999), 1)
 		reply := &RPCReply{}
 
 		result, err := handler.handleAccess(bytes.NewReader(body), reply, authCtx)
@@ -1514,7 +1514,7 @@ func TestHandleCommit(t *testing.T) {
 
 	// Get file handle
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("successful commit", func(t *testing.T) {
 		body := buildCommitRequest(fileHandle, 0, 1024)
@@ -1565,7 +1565,7 @@ func TestHandleCommit(t *testing.T) {
 	})
 
 	t.Run("non-existent handle", func(t *testing.T) {
-		body := buildCommitRequest(999999, 0, 1024)
+		body := buildCommitRequest(legacyHandle(999999), 0, 1024)
 		reply := &RPCReply{}
 
 		result, err := handler.handleCommit(bytes.NewReader(body), reply, authCtx)
@@ -1626,11 +1626,11 @@ func TestHandlePathconf(t *testing.T) {
 
 	// Get root handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	// Get file handle
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("pathconf on directory", func(t *testing.T) {
 		body := buildPathconfRequest(rootHandle)
@@ -1681,7 +1681,7 @@ func TestHandlePathconf(t *testing.T) {
 	})
 
 	t.Run("non-existent handle", func(t *testing.T) {
-		body := buildPathconfRequest(999999)
+		body := buildPathconfRequest(legacyHandle(999999))
 		reply := &RPCReply{}
 
 		result, err := handler.handlePathconf(bytes.NewReader(body), reply, authCtx)
@@ -1705,11 +1705,11 @@ func TestHandleRemove(t *testing.T) {
 
 	// Get root handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	// Get file handle (not a directory)
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("successful remove", func(t *testing.T) {
 		// Create a file to remove
@@ -1748,7 +1748,7 @@ func TestHandleRemove(t *testing.T) {
 	})
 
 	t.Run("non-existent handle", func(t *testing.T) {
-		body := buildRemoveRequest(999999, "file.txt")
+		body := buildRemoveRequest(legacyHandle(999999), "file.txt")
 		reply := &RPCReply{}
 
 		result, err := handler.handleRemove(bytes.NewReader(body), reply, authCtx)
@@ -1823,11 +1823,11 @@ func TestHandleRmdir(t *testing.T) {
 
 	// Get root handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	// Get file handle (not a directory)
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("successful rmdir", func(t *testing.T) {
 		// Create a directory to remove
@@ -1865,7 +1865,7 @@ func TestHandleRmdir(t *testing.T) {
 	})
 
 	t.Run("non-existent handle", func(t *testing.T) {
-		body := buildRemoveRequest(999999, "somedir")
+		body := buildRemoveRequest(legacyHandle(999999), "somedir")
 		reply := &RPCReply{}
 
 		result, err := handler.handleRmdir(bytes.NewReader(body), reply, authCtx)
@@ -1971,15 +1971,15 @@ func TestHandleRename(t *testing.T) {
 
 	// Get root handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	// Get testdir handle
 	testdirNode, _ := server.handler.Lookup("/testdir")
-	testdirHandle := server.handler.fileMap.Allocate(testdirNode)
+	testdirHandle := server.handler.fileMap.issue(testdirNode)
 
 	// Get file handle (not a directory)
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("successful rename same directory", func(t *testing.T) {
 		// Create a file to rename
@@ -2038,7 +2038,7 @@ func TestHandleRename(t *testing.T) {
 	})
 
 	t.Run("non-existent source handle", func(t *testing.T) {
-		body := buildRenameRequest(999999, "file.txt", rootHandle, "newname.txt")
+		body := buildRenameRequest(legacyHandle(999999), "file.txt", rootHandle, "newname.txt")
 		reply := &RPCReply{}
 
 		result, err := handler.handleRename(bytes.NewReader(body), reply, authCtx)
@@ -2054,7 +2054,7 @@ func TestHandleRename(t *testing.T) {
 	})
 
 	t.Run("non-existent dest handle", func(t *testing.T) {
-		body := buildRenameRequest(rootHandle, "testfile.txt", 999999, "newname.txt")
+		body := buildRenameRequest(rootHandle, "testfile.txt", legacyHandle(999999), "newname.txt")
 		reply := &RPCReply{}
 
 		result, err := handler.handleRename(bytes.NewReader(body), reply, authCtx)
@@ -2154,11 +2154,11 @@ func TestHandleLink(t *testing.T) {
 
 	// Get root handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	// Get file handle
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("link not supported", func(t *testing.T) {
 		body := buildLinkRequest(fileHandle, rootHandle, "hardlink.txt")
@@ -2208,7 +2208,7 @@ func TestHandleRemoveReadOnly(t *testing.T) {
 
 	// Get root handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	t.Run("remove denied on read-only", func(t *testing.T) {
 		body := buildRemoveRequest(rootHandle, "testfile.txt")
@@ -2256,7 +2256,7 @@ func TestHandleRmdirReadOnly(t *testing.T) {
 
 	// Get root handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	t.Run("rmdir denied on read-only", func(t *testing.T) {
 		body := buildRemoveRequest(rootHandle, "testdir")
@@ -2305,7 +2305,7 @@ func TestHandleRenameReadOnly(t *testing.T) {
 
 	// Get root handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	t.Run("rename denied on read-only", func(t *testing.T) {
 		body := buildRenameRequest(rootHandle, "testfile.txt", rootHandle, "renamed.txt")
@@ -2354,7 +2354,7 @@ func TestHandleAccessReadOnly(t *testing.T) {
 
 	// Get file handle
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("write access denied on read-only", func(t *testing.T) {
 		// Request modify access (should be denied)
@@ -2393,7 +2393,7 @@ func TestHandleAccessReadOnly(t *testing.T) {
 }
 
 // Helper to build fsstat/fsinfo request (just a file handle)
-func buildFsRequest(handle uint64) []byte {
+func buildFsRequest(handle []byte) []byte {
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, handle)
 	return buf.Bytes()
@@ -2407,15 +2407,15 @@ func TestHandleFsstat(t *testing.T) {
 
 	// Get root handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	// Get file handle
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	// Get directory handle
 	dirNode, _ := server.handler.Lookup("/testdir")
-	dirHandle := server.handler.fileMap.Allocate(dirNode)
+	dirHandle := server.handler.fileMap.issue(dirNode)
 
 	t.Run("fsstat on root", func(t *testing.T) {
 		body := buildFsRequest(rootHandle)
@@ -2485,7 +2485,7 @@ func TestHandleFsstat(t *testing.T) {
 	})
 
 	t.Run("non-existent handle", func(t *testing.T) {
-		body := buildFsRequest(999999)
+		body := buildFsRequest(legacyHandle(999999))
 		reply := &RPCReply{}
 
 		result, err := handler.handleFsstat(bytes.NewReader(body), reply, authCtx)
@@ -2509,15 +2509,15 @@ func TestHandleFsinfo(t *testing.T) {
 
 	// Get root handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	// Get file handle
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	// Get directory handle
 	dirNode, _ := server.handler.Lookup("/testdir")
-	dirHandle := server.handler.fileMap.Allocate(dirNode)
+	dirHandle := server.handler.fileMap.issue(dirNode)
 
 	t.Run("fsinfo on root", func(t *testing.T) {
 		body := buildFsRequest(rootHandle)
@@ -2587,7 +2587,7 @@ func TestHandleFsinfo(t *testing.T) {
 	})
 
 	t.Run("non-existent handle", func(t *testing.T) {
-		body := buildFsRequest(999999)
+		body := buildFsRequest(legacyHandle(999999))
 		reply := &RPCReply{}
 
 		result, err := handler.handleFsinfo(bytes.NewReader(body), reply, authCtx)
@@ -2629,7 +2629,7 @@ func TestHandleFsinfoReadOnly(t *testing.T) {
 
 	// Get root handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	t.Run("fsinfo on read-only filesystem", func(t *testing.T) {
 		body := buildFsRequest(rootHandle)
@@ -2659,7 +2659,7 @@ func TestHandleReadCoverage(t *testing.T) {
 
 	// Get file handle
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("read success basic", func(t *testing.T) {
 		var buf bytes.Buffer
@@ -2701,7 +2701,7 @@ func TestHandleReadCoverage(t *testing.T) {
 
 	t.Run("read invalid handle", func(t *testing.T) {
 		var buf bytes.Buffer
-		xdrEncodeFileHandle(&buf, uint64(999999))
+		xdrEncodeFileHandle(&buf, legacyHandle(999999))
 		binary.Write(&buf, binary.BigEndian, uint64(0))
 		binary.Write(&buf, binary.BigEndian, uint32(100))
 
@@ -2779,7 +2779,7 @@ func TestHandleWriteCoverage(t *testing.T) {
 
 	// Get file handle
 	fileNode, _ := server.handler.Lookup("/testfile.txt")
-	fileHandle := server.handler.fileMap.Allocate(fileNode)
+	fileHandle := server.handler.fileMap.issue(fileNode)
 
 	t.Run("write success basic", func(t *testing.T) {
 		var buf bytes.Buffer
@@ -2829,7 +2829,7 @@ func TestHandleWriteCoverage(t *testing.T) {
 
 	t.Run("write invalid handle", func(t *testing.T) {
 		var buf bytes.Buffer
-		xdrEncodeFileHandle(&buf, uint64(999999))
+		xdrEncodeFileHandle(&buf, legacyHandle(999999))
 		binary.Write(&buf, binary.BigEndian, uint64(0))
 		writeData := []byte("data")
 		binary.Write(&buf, binary.BigEndian, uint32(len(writeData)))
@@ -2916,7 +2916,7 @@ func TestHandleCreateCoverage(t *testing.T) {
 
 	// Get directory handle
 	dirNode, _ := server.handler.Lookup("/testdir")
-	dirHandle := server.handler.fileMap.Allocate(dirNode)
+	dirHandle := server.handler.fileMap.issue(dirNode)
 
 	t.Run("create success unchecked", func(t *testing.T) {
 		var buf bytes.Buffer
@@ -3106,7 +3106,7 @@ func TestHandleCreateCoverage(t *testing.T) {
 
 	t.Run("create invalid handle", func(t *testing.T) {
 		var buf bytes.Buffer
-		xdrEncodeFileHandle(&buf, uint64(999999))
+		xdrEncodeFileHandle(&buf, legacyHandle(999999))
 		xdrEncodeString(&buf, "file.txt")
 		binary.Write(&buf, binary.BigEndian, uint32(0))
 		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mode = false
@@ -3153,7 +3153,7 @@ func TestHandleMkdirCoverage(t *testing.T) {
 
 	// Get directory handle
 	dirNode, _ := server.handler.Lookup("/testdir")
-	dirHandle := server.handler.fileMap.Allocate(dirNode)
+	dirHandle := server.handler.fileMap.issue(dirNode)
 
 	t.Run("mkdir success", func(t *testing.T) {
 		var buf bytes.Buffer
@@ -3236,7 +3236,7 @@ func TestHandleMkdirCoverage(t *testing.T) {
 
 	t.Run("mkdir invalid handle", func(t *testing.T) {
 		var buf bytes.Buffer
-		xdrEncodeFileHandle(&buf, uint64(999999))
+		xdrEncodeFileHandle(&buf, legacyHandle(999999))
 		xdrEncodeString(&buf, "newdir")
 		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mode
 		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_uid
@@ -3282,7 +3282,7 @@ func TestHandleSymlinkCoverage(t *testing.T) {
 
 	// Get directory handle
 	dirNode, _ := server.handler.Lookup("/testdir")
-	dirHandle := server.handler.fileMap.Allocate(dirNode)
+	dirHandle := server.handler.fileMap.issue(dirNode)
 
 	t.Run("symlink attempt", func(t *testing.T) {
 		// memfs may not support symlinks, so we test the handler path
@@ -3371,7 +3371,7 @@ func TestHandleSymlinkCoverage(t *testing.T) {
 
 	t.Run("symlink invalid handle", func(t *testing.T) {
 		var buf bytes.Buffer
-		xdrEncodeFileHandle(&buf, uint64(999999))
+		xdrEncodeFileHandle(&buf, legacyHandle(999999))
 		xdrEncodeString(&buf, "link")
 		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mode
 		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_uid
@@ -3419,7 +3419,7 @@ func TestDecodeAndLookupHandle(t *testing.T) {
 
 	// Get a valid handle
 	rootNode, _ := server.handler.Lookup("/")
-	rootHandle := server.handler.fileMap.Allocate(rootNode)
+	rootHandle := server.handler.fileMap.issue(rootNode)
 
 	t.Run("successful decode and lookup", func(t *testing.T) {
 		var buf bytes.Buffer
@@ -3430,8 +3430,8 @@ func TestDecodeAndLookupHandle(t *testing.T) {
 		if node == nil {
 			t.Errorf("Expected node, got nil")
 		}
-		if handle != rootHandle {
-			t.Errorf("Expected handle %d, got %d", rootHandle, handle)
+		if !bytes.Equal(handle, rootHandle) {
+			t.Errorf("Expected handle %x, got %x", rootHandle, handle)
 		}
 	})
 
@@ -3447,7 +3447,7 @@ func TestDecodeAndLookupHandle(t *testing.T) {
 
 	t.Run("non-existent handle", func(t *testing.T) {
 		var buf bytes.Buffer
-		xdrEncodeFileHandle(&buf, 999999)
+		xdrEncodeFileHandle(&buf, legacyHandle(999999))
 		reply := &RPCReply{}
 
 		node, _ := handler.decodeAndLookupHandle(bytes.NewReader(buf.Bytes()), reply)
@@ -3655,7 +3655,7 @@ func TestHandleWriteEdgeCases(t *testing.T) {
 		f.Close()
 
 		node, _ := nfs.Lookup("/testfile.txt")
-		handle := nfs.fileMap.Allocate(node)
+		handle := nfs.fileMap.issue(node)
 
 		// Try to write - should fail
 		_, err := nfs.Write(node, 0, []byte("new content"))

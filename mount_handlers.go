@@ -8,7 +8,6 @@ package absnfs
 
 import (
 	"bytes"
-	"encoding/binary"
 	"io"
 	"path"
 	"strings"
@@ -69,10 +68,10 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 			return reply, nil
 		}
 
-		// Allocate file handle for root
-		handle := h.server.handler.fileMap.allocateMount(node)
+		// The mount's handle resolves without the cache, like every handle.
+		handle := h.server.handler.fileMap.issue(node)
 		if h.server.options.Debug {
-			h.server.logger.Printf("MOUNT: Allocated handle %d for path '%s', fileMap count: %d", handle, mountPath, h.server.handler.fileMap.Count())
+			h.server.logger.Printf("MOUNT: handle %x for path '%s', fileMap count: %d", handle, mountPath, h.server.handler.fileMap.Count())
 		}
 
 		// Encode MNT3 response
@@ -80,10 +79,8 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 		// fhandle3 (variable length opaque handle)
 		// auth_flavors (list of supported auth flavors)
 		var buf bytes.Buffer
-		xdrEncodeUint32(&buf, 0) // MNT3_OK
-		// fhandle3 is opaque<FHSIZE3> - write length + data
-		xdrEncodeUint32(&buf, 8) // handle size
-		binary.Write(&buf, binary.BigEndian, handle)
+		xdrEncodeUint32(&buf, 0)          // MNT3_OK
+		xdrEncodeFileHandle(&buf, handle) // fhandle3 is opaque<FHSIZE3>
 		// auth_flavors - array of supported authentication flavors
 		xdrEncodeUint32(&buf, 1)        // 1 flavor
 		xdrEncodeUint32(&buf, AUTH_SYS) // AUTH_SYS

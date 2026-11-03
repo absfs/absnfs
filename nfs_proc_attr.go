@@ -26,13 +26,13 @@ func (h *NFSProcedureHandler) handleGetattr(body io.Reader, reply *RPCReply, aut
 	}
 
 	if h.server.options.Debug {
-		h.server.logger.Printf("GETATTR: Looking up handle %d, fileMap count: %d", handleVal, h.server.handler.fileMap.Count())
+		h.server.logger.Printf("GETATTR: Looking up handle %x, fileMap count: %d", handleVal, h.server.handler.fileMap.Count())
 	}
 
 	node, ok := h.lookupNode(handleVal)
 	if !ok {
 		if h.server.options.Debug {
-			h.server.logger.Printf("GETATTR: Handle %d not found in fileMap", handleVal)
+			h.server.logger.Printf("GETATTR: Handle %x is stale", handleVal)
 		}
 		return nfsErrorReply(reply, NFSERR_STALE), nil
 	}

@@ -26,7 +26,7 @@ func faCall(t *testing.T, e *faEnv, fn func(*bytes.Reader, *RPCReply, *AuthConte
 	return readStatusFromReply(r)
 }
 
-func faDirOp(dir uint64, name string, rest ...func(*bytes.Buffer)) []byte {
+func faDirOp(dir []byte, name string, rest ...func(*bytes.Buffer)) []byte {
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, dir)
 	xdrEncodeString(&buf, name)
@@ -59,7 +59,7 @@ func TestTruncatedRequestsAreGarbage(t *testing.T) {
 	file := e.handle(t, "/dir/file.txt")
 	link := e.handle(t, "/dir/link")
 
-	fh := func(v uint64) []byte {
+	fh := func(v []byte) []byte {
 		var b bytes.Buffer
 		xdrEncodeFileHandle(&b, v)
 		return b.Bytes()
@@ -174,7 +174,7 @@ func TestCreateModes(t *testing.T) {
 	var verfA, verfB [8]byte
 	copy(verfA[:], "verifA!!")
 	copy(verfB[:], "verifB!!")
-	exclusive := func(dir uint64, name string, verf [8]byte) []byte {
+	exclusive := func(dir []byte, name string, verf [8]byte) []byte {
 		return faDirOp(dir, name, faU32(2), func(b *bytes.Buffer) { b.Write(verf[:]) })
 	}
 	content := func(e *faEnv, p string) string {
@@ -239,8 +239,8 @@ func TestCreateModes(t *testing.T) {
 			t.Fatalf("retransmission: status %d, want NFS_OK", st)
 		}
 		f.u32()
-		if again := f.fh(); again != first {
-			t.Errorf("retransmission handle %d, want %d", again, first)
+		if again := f.fh(); !bytes.Equal(again, first) {
+			t.Errorf("retransmission handle %x, want %x", again, first)
 		}
 		e.checkAttr(t, "CREATE retransmission", "/dir/lock", f.postOpAttr())
 
@@ -413,7 +413,7 @@ func TestRenameErrors(t *testing.T) {
 func TestReadlinkErrors(t *testing.T) {
 	e := newFaEnv(t, ExportOptions{})
 	var stale, file bytes.Buffer
-	xdrEncodeFileHandle(&stale, 999999)
+	xdrEncodeFileHandle(&stale, legacyHandle(999999))
 	xdrEncodeFileHandle(&file, e.handle(t, "/dir/file.txt"))
 	readlink := wrap(e.handler.handleReadlink)
 	if st := faCall(t, e, readlink, stale.Bytes()); st != NFSERR_STALE {
@@ -733,7 +733,7 @@ func TestGetattrDebugLogging(t *testing.T) {
 	e := newFaEnv(t, ExportOptions{})
 	logs := e.withDebugLog()
 	var stale bytes.Buffer
-	xdrEncodeFileHandle(&stale, 987654)
+	xdrEncodeFileHandle(&stale, legacyHandle(987654))
 	getattr := wrap(e.handler.handleGetattr)
 	if st := faCall(t, e, getattr, []byte{0, 0}); st != GARBAGE_ARGS {
 		t.Errorf("GETATTR garbage: status %d", st)
@@ -741,7 +741,7 @@ func TestGetattrDebugLogging(t *testing.T) {
 	if st := faCall(t, e, getattr, stale.Bytes()); st != NFSERR_STALE {
 		t.Errorf("GETATTR stale: status %d", st)
 	}
-	for _, want := range []string{"GETATTR: Failed to decode handle", "GETATTR: Looking up handle 987654", "GETATTR: Handle 987654 not found"} {
+	for _, want := range []string{"GETATTR: Failed to decode handle", "GETATTR: Looking up handle 00000000000f1206", "GETATTR: Handle 00000000000f1206 is stale"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("log lacks %q", want)
 		}
@@ -800,7 +800,7 @@ func TestMountRateLimitAndDebugLog(t *testing.T) {
 	if !busy {
 		t.Error("MNT was never rate limited")
 	}
-	if !strings.Contains(logs.String(), "MOUNT: Allocated handle") {
+	if !strings.Contains(logs.String(), "MOUNT: handle ") {
 		t.Errorf("log lacks the mount: %q", logs.String())
 	}
 }

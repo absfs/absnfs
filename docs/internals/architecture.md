@@ -90,17 +90,17 @@ Two LRU caches with TTL expiration:
 
 Both caches deep-copy data on get/put to prevent shared mutation.
 
-### filehandle.go -- Handle Allocation
+### fh_*.go, filehandle.go -- File Handles
 
-`FileHandleMap` assigns sequential `uint64` handles to `NFSNode` references.
-Path deduplication via `pathHandles` prevents unbounded handle growth from
-repeated LOOKUP/READDIRPLUS calls on the same path. Handle IDs are never
-reused, within a process (one counter serves every map) or (the counter starts
-at the clock) across restarts, so a stale handle reports `NFSERR_STALE`. When
-`maxHandles` is exceeded, handles not used recently are evicted (clock
-algorithm); the export root's handle and the handles MNT gave out (up to
-10% of `maxHandles`, the root exempt from that cap) are pinned and never
-evicted.
+Handles are path handles (`fh_codec.go`): a keyed tag, the object's type,
+its path below the export root and a change-log epoch, at most 64 bytes. The
+change log (`fh_changelog.go`) records the server's own REMOVEs, RMDIRs and
+RENAMEs, so a handle of a removed object is stale and one of a renamed object
+follows it; `fh_journal.go` persists it with `HandleStateDir`.
+`resolveHandle` (`fh_resolve.go`) resolves any handle the server issued.
+`FileHandleMap` is only a cache of `MaxHandles` resolved handles, evicted by
+the clock algorithm: eviction costs a miss, never `NFSERR_STALE`. See
+[File Handle System](file-handles.md).
 
 ### auth.go -- Authentication and Access Control
 

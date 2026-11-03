@@ -18,3 +18,5 @@ github.com/absfs/memfs v1.1.0 h1:gH59FquOnsU+RyQ7tz83HlChdMjdvGoX0Cr5/DFWskU=
 github.com/absfs/memfs v1.1.0/go.mod h1:A5piR5vf4Yfj1K0SENl9mXLpv3dynQ9NJTxe/O5PRto=
 github.com/absfs/osfs v1.0.0 h1:zLunFKe9w8T9X3RIVs1dtbJviPgLUyrgWFKX1xIqwwg=
 github.com/absfs/osfs v1.0.0/go.mod h1:ncGyYbEw3lPputPpElJh0gOYRzjUIO4SzK1RgMjySK0=
+github.com/absfs/unionfs v1.0.0 h1:hASHga6ZXENNd7xMNukmgeK4DsDndiI79nE+EkyQwjY=
+github.com/absfs/unionfs v1.0.0/go.mod h1:35xm3ylXqMdmhq78IYUcznu1OUfKWqq4rzM8ugDfwIk=

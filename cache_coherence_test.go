@@ -192,9 +192,9 @@ func (e *cacheEnv) lookup(p string) *NFSNode {
 	return n
 }
 
-func (e *cacheEnv) handle(p string) uint64 {
+func (e *cacheEnv) handle(p string) []byte {
 	e.t.Helper()
-	return e.nfs.fileMap.Allocate(e.lookup(p))
+	return e.nfs.fileMap.issue(e.lookup(p))
 }
 
 func (e *cacheEnv) names(dir *NFSNode) []string {
@@ -433,7 +433,7 @@ func TestCreateRacingNegativeLookupLeavesNoStaleEntry(t *testing.T) {
 }
 
 // mkdirArgs encodes MKDIR3args with no attributes set.
-func mkdirArgs(dir uint64, name string) *bytes.Buffer {
+func mkdirArgs(dir []byte, name string) *bytes.Buffer {
 	var b bytes.Buffer
 	xdrEncodeFileHandle(&b, dir)
 	xdrEncodeString(&b, name)
@@ -639,7 +639,7 @@ func TestCacheCoherentUnderConcurrentMutation(t *testing.T) {
 				switch r.Intn(8) {
 				case 0, 1:
 					if n, err := e.nfs.Lookup(p); err == nil {
-						if held, ok := e.h.lookupNode(e.nfs.fileMap.Allocate(n)); ok {
+						if held, ok := e.h.lookupNode(e.nfs.fileMap.issue(n)); ok {
 							e.nfs.GetAttr(held)
 						}
 					}
@@ -693,9 +693,9 @@ func TestCacheCoherentUnderConcurrentMutation(t *testing.T) {
 		}
 	}
 	e.nfs.fileMap.RLock()
-	for p, h := range e.nfs.fileMap.pathHandles {
-		if n, ok := e.nfs.fileMap.handles[h].file.(*NFSNode); !ok || n.path != p {
-			t.Errorf("handle %d is recorded for %s but names %v", h, p, n)
+	for p, h := range e.nfs.fileMap.paths {
+		if ent := e.nfs.fileMap.handles[h]; ent == nil || ent.path != p || ent.node.path != nodePath(p) {
+			t.Errorf("handle %x is recorded for %s but names %v", h, p, ent)
 		}
 	}
 	e.nfs.fileMap.RUnlock()

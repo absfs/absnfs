@@ -156,7 +156,13 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 		return reply, nil
 	}
 
-	if err := h.server.handler.fs.Remove(targetPath); err != nil {
+	// Handles of the directory wait while it is removed, then are stale.
+	log := h.server.handler.fileMap.log
+	canon, _ := canonicalPath(targetPath)
+	op := log.begin(canon)
+	err = h.server.handler.fs.Remove(targetPath)
+	log.commitRemove(op, err == nil, canon)
+	if err != nil {
 		dirPostAttrs, _ := h.server.handler.GetAttr(node)
 		if dirPostAttrs == nil {
 			dirPostAttrs = dirPreAttrs
@@ -187,7 +193,7 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 
 	// The directory was empty, so nothing below it needs forgetting
 	h.server.handler.invalidate(node.path, targetPath)
-	h.server.handler.fileMap.removed(targetPath)
+	h.server.handler.fileMap.removed(canon)
 
 	dirPostAttrs, err := h.server.handler.GetAttr(node)
 	if err != nil {

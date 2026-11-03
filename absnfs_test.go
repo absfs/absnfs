@@ -531,13 +531,13 @@ func TestAbsfsNFSClose(t *testing.T) {
 		}
 
 		// Allocate a file handle
-		handle := nfs.fileMap.Allocate(node)
-		if handle == 0 {
+		handle := nfs.fileMap.issue(node)
+		if len(handle) == 0 {
 			t.Fatal("Failed to allocate file handle")
 		}
 
 		// Verify handle exists
-		if _, exists := nfs.fileMap.Get(handle); !exists {
+		if nfs.fileMap.Count() == 0 {
 			t.Fatal("File handle should exist before Close()")
 		}
 
@@ -638,7 +638,7 @@ func TestAbsfsNFSClose(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to lookup test file %d: %v", i, err)
 			}
-			nfs.fileMap.Allocate(node)
+			nfs.fileMap.issue(node)
 		}
 
 		// Verify multiple handles exist
@@ -728,7 +728,7 @@ func TestAbsfsNFSClose(t *testing.T) {
 		}
 
 		// Allocate file handle
-		nfs.fileMap.Allocate(node)
+		nfs.fileMap.issue(node)
 
 		// Populate caches
 		nfs.attrCache.Put("/test", &NFSAttrs{Mode: 0755})

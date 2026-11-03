@@ -79,7 +79,7 @@ func TestReadlinkHandlerParentTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	var req bytes.Buffer
-	xdrEncodeFileHandle(&req, server.handler.fileMap.Allocate(node))
+	xdrEncodeFileHandle(&req, server.handler.fileMap.issue(node))
 	result, err := handler.handleReadlink(&req, &RPCReply{}, authCtx)
 	if err != nil {
 		t.Fatal(err)
@@ -336,7 +336,7 @@ func TestR3_RenameErrorDoubleWcc(t *testing.T) {
 	}
 
 	// Send RENAME with an invalid (stale) source handle.
-	invalidHandle := uint64(99999)
+	invalidHandle := legacyHandle(99999)
 	var buf bytes.Buffer
 	xdrEncodeFileHandle(&buf, invalidHandle)
 	xdrEncodeString(&buf, "srcfile")
@@ -658,7 +658,7 @@ func TestR3_NilAttrsSafety(t *testing.T) {
 		path:              "/nonexistent",
 		attrs:             nil,
 	}
-	nilHandle := nfs.fileMap.Allocate(nilAttrsNode)
+	nilHandle := nfs.fileMap.issue(nilAttrsNode)
 
 	// GETATTR should not panic with nil attrs
 	var buf bytes.Buffer
@@ -1297,7 +1297,7 @@ func TestR3_NilAttrsSafetySetattr(t *testing.T) {
 		path:              "/nonexistent_file",
 		attrs:             nil,
 	}
-	nilHandle := nfs.fileMap.Allocate(nilAttrsNode)
+	nilHandle := nfs.fileMap.issue(nilAttrsNode)
 
 	// SETATTR with nil attrs node: the handler should return an error, not panic.
 	// The fix checks node.attrs == nil after taking RLock and returns NFSERR_IO.
@@ -1472,7 +1472,7 @@ func TestR3_NilAttrsSafetyConcurrent(t *testing.T) {
 		path:              "/doesnotexist",
 		attrs:             nil,
 	}
-	nilHandle := nfs.fileMap.Allocate(nilNode)
+	nilHandle := nfs.fileMap.issue(nilNode)
 
 	// Run concurrent GETATTR calls on the nil-attrs node
 	var wg sync.WaitGroup
@@ -1529,13 +1529,13 @@ func setupHandlerEnv(t *testing.T, opts ...func(*ExportOptions)) (*Server, *NFSP
 }
 
 // allocHandle looks up path and allocates a handle for it.
-func allocHandle(t *testing.T, srv *Server, path string) uint64 {
+func allocHandle(t *testing.T, srv *Server, path string) []byte {
 	t.Helper()
 	node, err := srv.handler.Lookup(path)
 	if err != nil {
 		t.Fatalf("Lookup(%s): %v", path, err)
 	}
-	return srv.handler.fileMap.Allocate(node)
+	return srv.handler.fileMap.issue(node)
 }
 
 // readStatus extracts the NFS status from the first 4 bytes of reply data.
@@ -1978,7 +1978,7 @@ func TestCovBoost_HandleWrite_StaleHandle(t *testing.T) {
 	_ = srv
 	data := []byte("hi")
 	var buf bytes.Buffer
-	xdrEncodeFileHandle(&buf, 99999)
+	xdrEncodeFileHandle(&buf, legacyHandle(99999))
 	binary.Write(&buf, binary.BigEndian, uint64(0))
 	binary.Write(&buf, binary.BigEndian, uint32(len(data)))
 	binary.Write(&buf, binary.BigEndian, uint32(0))
@@ -2325,7 +2325,7 @@ func TestCovBoost_HandleMkdir_InvalidMode(t *testing.T) {
 func TestCovBoost_HandleMkdir_StaleHandle(t *testing.T) {
 	_, handler, auth := setupHandlerEnv(t)
 	var buf bytes.Buffer
-	xdrEncodeFileHandle(&buf, 99999)
+	xdrEncodeFileHandle(&buf, legacyHandle(99999))
 	xdrEncodeString(&buf, "newdir")
 	buf.Write(encodeSattr3(true, 0755, false, 0, false, 0, false, 0, 0, 0, 0, 0, 0, 0))
 	reply := &RPCReply{}
@@ -2439,7 +2439,7 @@ func TestCovBoost_Symlink_ReadOnly(t *testing.T) {
 
 func TestCovBoost_XdrEncodeFileHandle(t *testing.T) {
 	var buf bytes.Buffer
-	if err := xdrEncodeFileHandle(&buf, 12345); err != nil {
+	if err := xdrEncodeFileHandle(&buf, legacyHandle(12345)); err != nil {
 		t.Fatalf("xdrEncodeFileHandle: %v", err)
 	}
 	if buf.Len() != 12 {
@@ -2449,14 +2449,14 @@ func TestCovBoost_XdrEncodeFileHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("xdrDecodeFileHandle: %v", err)
 	}
-	if handle != 12345 {
-		t.Errorf("expected 12345, got %d", handle)
+	if !bytes.Equal(handle, legacyHandle(12345)) {
+		t.Errorf("expected the encoded bytes back, got %x", handle)
 	}
 }
 
 func TestCovBoost_XdrEncodeFileHandle_ErrorWriter(t *testing.T) {
 	w := &limitedWriter{buf: make([]byte, 2), limit: 2}
-	if err := xdrEncodeFileHandle(w, 1); err == nil {
+	if err := xdrEncodeFileHandle(w, legacyHandle(1)); err == nil {
 		t.Error("expected error for limited writer")
 	}
 }
@@ -2464,7 +2464,7 @@ func TestCovBoost_XdrEncodeFileHandle_ErrorWriter(t *testing.T) {
 func TestCovBoost_HandleSetattr_StaleHandle(t *testing.T) {
 	_, handler, auth := setupHandlerEnv(t)
 	var buf bytes.Buffer
-	xdrEncodeFileHandle(&buf, 99999)
+	xdrEncodeFileHandle(&buf, legacyHandle(99999))
 	buf.Write(encodeSattr3(false, 0, false, 0, false, 0, false, 0, 0, 0, 0, 0, 0, 0))
 	binary.Write(&buf, binary.BigEndian, uint32(0))
 	reply := &RPCReply{}
@@ -2480,7 +2480,7 @@ func TestCovBoost_HandleSetattr_StaleHandle(t *testing.T) {
 func TestCovBoost_HandleCreate_StaleHandle(t *testing.T) {
 	_, handler, auth := setupHandlerEnv(t)
 	var buf bytes.Buffer
-	xdrEncodeFileHandle(&buf, 99999)
+	xdrEncodeFileHandle(&buf, legacyHandle(99999))
 	xdrEncodeString(&buf, "newfile")
 	binary.Write(&buf, binary.BigEndian, uint32(0))
 	buf.Write(encodeSattr3(true, 0644, false, 0, false, 0, false, 0, 0, 0, 0, 0, 0, 0))
@@ -2497,7 +2497,7 @@ func TestCovBoost_HandleCreate_StaleHandle(t *testing.T) {
 func TestCovBoost_HandleSymlink_StaleHandle(t *testing.T) {
 	_, handler, auth := setupHandlerEnv(t)
 	var buf bytes.Buffer
-	xdrEncodeFileHandle(&buf, 99999)
+	xdrEncodeFileHandle(&buf, legacyHandle(99999))
 	xdrEncodeString(&buf, "link")
 	buf.Write(encodeSattr3(false, 0, false, 0, false, 0, false, 0, 0, 0, 0, 0, 0, 0))
 	xdrEncodeString(&buf, "target")

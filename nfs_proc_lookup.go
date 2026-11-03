@@ -71,9 +71,9 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 		return reply, nil
 	}
 
-	handle := h.server.handler.fileMap.Allocate(lookupNode)
+	handle := h.server.handler.fileMap.issue(lookupNode)
 	if h.server.options.Debug {
-		h.server.logger.Printf("LOOKUP: Found '%s', allocated handle %d", lookupPath, handle)
+		h.server.logger.Printf("LOOKUP: Found '%s', handle %x", lookupPath, handle)
 	}
 
 	// R4: Copy attrs under RLock

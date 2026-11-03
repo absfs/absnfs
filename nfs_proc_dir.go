@@ -16,6 +16,10 @@ import (
 	"slices"
 )
 
+// fattr3Size is the encoded size of fattr3 (RFC 1813), as encodeFileAttributes
+// writes it.
+const fattr3Size = 84
+
 // dirEntry is one directory entry as READDIR and READDIRPLUS report it.
 type dirEntry struct {
 	node   *NFSNode
@@ -233,13 +237,16 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 
 	entryCount := 0
 	reachedLimit := false
-	maxReplySize := int(maxCount) - 200
-	if maxReplySize < 256 {
-		maxReplySize = 256
-	}
+	// Room for the entries: maxcount less the list's end and eof words.
+	// The first entry is always sent.
+	maxReplySize := int(maxCount) - 8
 
 	for _, entry := range entriesAfter(entries, cookie) {
-		if buf.Len() >= maxReplySize && entryCount > 0 {
+		// Handles are up to 64 bytes and names up to 255, so an entry's
+		// size is counted before it is added, not after.
+		entryHandle := h.server.handler.fileMap.issue(entry.node)
+		entrySize := 4 + 8 + 4 + (len(entry.name)+3)&^3 + 8 + 4 + fattr3Size + 4 + xdrFileHandleSize(entryHandle)
+		if buf.Len()+entrySize > maxReplySize && entryCount > 0 {
 			reachedLimit = true
 			break
 		}
@@ -260,8 +267,6 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 		}
 
-		// C3: Allocate handle only for the post_op_fh3 field in READDIRPLUS
-		entryHandle := h.server.handler.fileMap.Allocate(entry.node)
 		xdrEncodeUint32(&buf, 1)
 		xdrEncodeFileHandle(&buf, entryHandle)
 

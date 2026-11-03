@@ -232,33 +232,28 @@ func nfsErrorWithDoubleWcc(reply *RPCReply, status uint32) *RPCReply {
 	return reply
 }
 
-// lookupNode retrieves a node from the file handle map
-// Returns the node and true if found, nil and false otherwise
-func (h *NFSProcedureHandler) lookupNode(handle uint64) (*NFSNode, bool) {
-	file, ok := h.server.handler.fileMap.Get(handle)
-	if !ok {
-		return nil, false
-	}
-	node, ok := file.(*NFSNode)
-	return node, ok
+// lookupNode resolves a file handle to its node. It reports false when the
+// handle is stale (see resolveHandle).
+func (h *NFSProcedureHandler) lookupNode(fh []byte) (*NFSNode, bool) {
+	return h.server.handler.resolveHandle(fh)
 }
 
 // decodeAndLookupHandle decodes a file handle from the body and looks up the node
-// Returns the node and handle value, or nil if not found (reply.Data will be set with error)
-func (h *NFSProcedureHandler) decodeAndLookupHandle(body io.Reader, reply *RPCReply) (*NFSNode, uint64) {
-	handleVal, err := xdrDecodeFileHandle(body)
+// Returns the node and handle, or nil if not found (reply.Data will be set with error)
+func (h *NFSProcedureHandler) decodeAndLookupHandle(body io.Reader, reply *RPCReply) (*NFSNode, []byte) {
+	fh, err := xdrDecodeFileHandle(body)
 	if err != nil {
 		nfsErrorReply(reply, GARBAGE_ARGS)
-		return nil, 0
+		return nil, nil
 	}
 
-	node, ok := h.lookupNode(handleVal)
+	node, ok := h.lookupNode(fh)
 	if !ok {
 		nfsErrorReply(reply, NFSERR_STALE)
-		return nil, 0
+		return nil, nil
 	}
 
-	return node, handleVal
+	return node, fh
 }
 
 // encodeWccData encodes wcc_data (pre_op_attr + post_op_attr) to the buffer

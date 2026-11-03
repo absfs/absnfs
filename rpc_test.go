@@ -974,7 +974,8 @@ func TestM6_XdrDecodeFileHandleOversizedConsumption(t *testing.T) {
 		}
 	})
 
-	// Test: wrong-size handle (e.g., 16 bytes, valid range but not 8) followed by sentinel
+	// Test: a 16-byte handle decodes (whether it is one this server issued is
+	// resolveHandle's question) and the stream stays in sync.
 	t.Run("wrong_size_handle_consumed", func(t *testing.T) {
 		var buf bytes.Buffer
 		handleLen := uint32(16) // valid per NFS3 but not 8 bytes
@@ -985,9 +986,8 @@ func TestM6_XdrDecodeFileHandleOversizedConsumption(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, sentinel)
 
 		r := bytes.NewReader(buf.Bytes())
-		_, err := xdrDecodeFileHandle(r)
-		if err == nil {
-			t.Fatal("expected error for wrong-size handle")
+		if fh, err := xdrDecodeFileHandle(r); err != nil || len(fh) != 16 {
+			t.Fatalf("16-byte handle: %x, %v; want its 16 bytes", fh, err)
 		}
 
 		var readSentinel uint32
@@ -1008,9 +1008,8 @@ func TestM6_XdrDecodeFileHandleOversizedConsumption(t *testing.T) {
 		binary.Write(&buf, binary.BigEndian, sentinel)
 
 		r := bytes.NewReader(buf.Bytes())
-		_, err := xdrDecodeFileHandle(r)
-		if err == nil {
-			t.Fatal("expected error for zero-length handle")
+		if fh, err := xdrDecodeFileHandle(r); err != nil || len(fh) != 0 {
+			t.Fatalf("zero-length handle: %x, %v; want an empty handle (stale when used)", fh, err)
 		}
 
 		var readSentinel uint32
@@ -1230,18 +1229,13 @@ func TestR12_FileHandleUnboundedAllocationDoS(t *testing.T) {
 		}
 	})
 
-	// Test: handle length of 64 is accepted (at max) but returns error for non-8
+	// Test: handle length of 64 is accepted (at max)
 	t.Run("accept_64_bytes", func(t *testing.T) {
 		var buf bytes.Buffer
 		binary.Write(&buf, binary.BigEndian, uint32(64))
 		buf.Write(make([]byte, 64)) // provide enough data
-		_, err := xdrDecodeFileHandle(&buf)
-		if err == nil {
-			t.Fatal("expected error for 64-byte handle (not 8)")
-		}
-		// Should be "invalid handle length" not "exceeds NFS3 maximum"
-		if bytes.Contains([]byte(err.Error()), []byte("exceeds NFS3 maximum")) {
-			t.Fatalf("64 bytes should not trigger NFS3 maximum error, got: %v", err)
+		if fh, err := xdrDecodeFileHandle(&buf); err != nil || len(fh) != 64 {
+			t.Fatalf("64-byte handle: %d bytes, %v", len(fh), err)
 		}
 	})
 
@@ -1545,8 +1539,8 @@ func TestXdrDecodeFileHandle(t *testing.T) {
 		if err != nil {
 			t.Errorf("Failed to decode valid handle: %v", err)
 		}
-		if handle != 12345 {
-			t.Errorf("Expected handle 12345, got %d", handle)
+		if !bytes.Equal(handle, legacyHandle(12345)) {
+			t.Errorf("Expected the 8 bytes of 12345, got %x", handle)
 		}
 	})
 
@@ -1574,9 +1568,8 @@ func TestXdrDecodeFileHandle(t *testing.T) {
 		var buf bytes.Buffer
 		binary.Write(&buf, binary.BigEndian, uint32(0))
 
-		_, err := xdrDecodeFileHandle(&buf)
-		if err == nil {
-			t.Error("Expected error for zero length handle")
+		if fh, err := xdrDecodeFileHandle(&buf); err != nil || len(fh) != 0 {
+			t.Errorf("zero length handle: %x, %v; want empty", fh, err)
 		}
 	})
 
@@ -1595,7 +1588,7 @@ func TestXdrDecodeFileHandle(t *testing.T) {
 func TestXdrEncodeFileHandle(t *testing.T) {
 	t.Run("encode valid handle", func(t *testing.T) {
 		var buf bytes.Buffer
-		err := xdrEncodeFileHandle(&buf, 12345)
+		err := xdrEncodeFileHandle(&buf, legacyHandle(12345))
 		if err != nil {
 			t.Errorf("Failed to encode handle: %v", err)
 		}
@@ -1747,7 +1740,7 @@ func TestXdrDecodeHelpers(t *testing.T) {
 func TestRPCEncodingEdgeCases(t *testing.T) {
 	t.Run("encode file handle with padding", func(t *testing.T) {
 		var buf bytes.Buffer
-		err := xdrEncodeFileHandle(&buf, 12345)
+		err := xdrEncodeFileHandle(&buf, legacyHandle(12345))
 		if err != nil {
 			t.Errorf("xdrEncodeFileHandle failed: %v", err)
 		}
@@ -1782,8 +1775,8 @@ func TestXdrDecodeFileHandleEdgeCases(t *testing.T) {
 		if err != nil {
 			t.Errorf("xdrDecodeFileHandle failed: %v", err)
 		}
-		if handle != 12345 {
-			t.Errorf("Expected handle 12345, got %d", handle)
+		if !bytes.Equal(handle, legacyHandle(12345)) {
+			t.Errorf("Expected the 8 bytes of 12345, got %x", handle)
 		}
 	})
 
@@ -1811,7 +1804,7 @@ func TestXdrDecodeFileHandleEdgeCases(t *testing.T) {
 func TestXdrEncodeFileHandleEdgeCases(t *testing.T) {
 	t.Run("encode zero handle", func(t *testing.T) {
 		var buf bytes.Buffer
-		err := xdrEncodeFileHandle(&buf, 0)
+		err := xdrEncodeFileHandle(&buf, legacyHandle(0))
 		if err != nil {
 			t.Errorf("xdrEncodeFileHandle failed: %v", err)
 		}
@@ -1819,7 +1812,7 @@ func TestXdrEncodeFileHandleEdgeCases(t *testing.T) {
 
 	t.Run("encode max handle", func(t *testing.T) {
 		var buf bytes.Buffer
-		err := xdrEncodeFileHandle(&buf, 0xFFFFFFFFFFFFFFFF)
+		err := xdrEncodeFileHandle(&buf, legacyHandle(0xFFFFFFFFFFFFFFFF))
 		if err != nil {
 			t.Errorf("xdrEncodeFileHandle failed: %v", err)
 		}
@@ -1986,7 +1979,7 @@ func TestXdrEncodeFileHandleCoverage(t *testing.T) {
 	var buf bytes.Buffer
 
 	t.Run("encode small handle", func(t *testing.T) {
-		err := xdrEncodeFileHandle(&buf, 12345)
+		err := xdrEncodeFileHandle(&buf, legacyHandle(12345))
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
@@ -1994,7 +1987,7 @@ func TestXdrEncodeFileHandleCoverage(t *testing.T) {
 
 	t.Run("encode max handle", func(t *testing.T) {
 		buf.Reset()
-		err := xdrEncodeFileHandle(&buf, 0xFFFFFFFFFFFFFFFF)
+		err := xdrEncodeFileHandle(&buf, legacyHandle(0xFFFFFFFFFFFFFFFF))
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}

@@ -204,18 +204,21 @@ gid; a server not running as root can only give them its own. An UNCHECKED
   client's handles follow a RENAME, but one that compares fileids may treat a
   moved object's handle as stale and look the name up again. The handle of a
   removed or replaced object reports `NFS3ERR_STALE`.
-- **Handles do not survive a restart.** They live in memory, and a server
-  never gives out a handle number twice. That also holds across restarts:
-  within one process every server shares one counter, and a new process
-  starts numbering at the current time, so it holds unless the clock is set
-  back between runs (a machine without a real-time clock, which boots at
-  1970 until NTP syncs, counts as set back). A client holding a handle from
-  before a restart, its mount's root included, gets `NFS3ERR_STALE` and must
-  remount. The server keeps at most 100,000 handles and evicts the ones not
-  used recently, never the export root's handle or the handles MNT gave out
-  (up to a tenth of the limit; the root is kept regardless); an evicted
-  handle reports `NFS3ERR_STALE`, and the client recovers by looking the
-  name up again from a handle it still holds.
+- **Handles name paths.** A handle locates its object by path and is checked
+  against a log of the server's own REMOVEs, RMDIRs and RENAMEs, so it keeps
+  working however many handles a client holds (`MaxHandles` only sizes the
+  cache), follows a RENAME made through the server, and reports
+  `NFS3ERR_STALE` once its object is removed or replaced through the server.
+  A change made behind the server's back (a write to the backend, a switchfs
+  route or unionfs layer change) is seen by path: the handle reaches whatever
+  is at its path now. See [File Handle System](docs/internals/file-handles.md).
+- **Handles survive a restart only with `HandleStateDir`.** Without it, a
+  restarted server's handles differ, every handle from before reports
+  `NFS3ERR_STALE`, and clients remount. With it, the server keeps its handle
+  key and a journal of its REMOVEs, RMDIRs and RENAMEs there, and clients
+  carry on. An operating system crash can lose the last second of the
+  journal. Handles from servers before v1.2.0 (8 bytes) are always stale:
+  remount once after upgrading.
 - **Changes made behind the server's back are seen after a delay.** absnfs
   caches attributes for `AttrCacheTimeout` (5s by default), and, when
   enabled, misses for `NegativeCacheTimeout` and listings for

@@ -126,7 +126,7 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithWcc(reply, mapError(err)), nil
 	}
 
-	handle := h.server.handler.fileMap.Allocate(newNode)
+	handle := h.server.handler.fileMap.issue(newNode)
 
 	// R4: Copy newNode attrs under RLock
 	newNode.mu.RLock()
@@ -267,7 +267,7 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 		return nfsErrorWithWcc(reply, mapError(err)), nil
 	}
 
-	handle := h.server.handler.fileMap.Allocate(newNode)
+	handle := h.server.handler.fileMap.issue(newNode)
 
 	// R4: Copy newNode attrs under RLock
 	newNode.mu.RLock()
@@ -408,7 +408,7 @@ func (h *NFSProcedureHandler) handleSymlink(body io.Reader, reply *RPCReply, aut
 		return nfsErrorWithWcc(reply, mapError(err)), nil
 	}
 
-	handle := h.server.handler.fileMap.Allocate(newNode)
+	handle := h.server.handler.fileMap.issue(newNode)
 
 	// R4: Copy newNode attrs under RLock
 	newNode.mu.RLock()

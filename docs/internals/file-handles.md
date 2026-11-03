@@ -1,167 +1,259 @@
 # File Handle System
 
-NFS file handles are opaque identifiers that clients use to reference files and
-directories across requests. absnfs implements handles as sequential `uint64`
-values managed by `FileHandleMap`. A handle number is never given out twice, so
-a handle a client keeps after the server dropped it reports `NFSERR_STALE` and
-never reaches another object.
+NFS file handles are opaque byte strings (RFC 1813 `fhandle3`, at most 64
+bytes) that clients use to name files and directories across requests. Since
+v1.2.0 an absnfs handle locates its object by path and is checked by a keyed
+tag and a server-side change log, so the server can resolve any handle it
+issued without remembering it. The in-memory `FileHandleMap` is only a cache:
+evicting an entry costs one decode, one HMAC and one `Lstat` the next time
+the handle is used, never an `NFS3ERR_STALE` for an object that still
+exists.
 
-## Handle Representation
+Before v1.2.0 handles were 8-byte numbers that meant something only while
+they sat in an in-memory table of at most 100,000 entries. A client that held
+more handles than that (four `git status` workspaces of the Kubernetes tree,
+~150k paths) got "Stale NFS file handle" for the evicted ones, and its
+attribute cache was defeated: warm `git status` in older workspaces took 6-7 s
+against 0.4-0.7 s in the newest.
 
-Each handle is an 8-byte unsigned integer. On the wire, handles are encoded as
-NFS3 opaque data: a 4-byte length (always 8) followed by the 8-byte big-endian
-handle value.
+## Decisions
 
-The handle value is a key of `FileHandleMap.handles`, a `map[uint64]*handleEntry`
-that maps handle IDs to `NFSNode` references (plus the entry's eviction state).
+- **Handles name paths.** The path is relative to the absfs root (not to the
+  MNT path), so subdirectory mounts and re-exports share handles. Backends
+  rarely expose usable identities: unionfs copy-up changes the inode, a shared
+  lower layer gives the same inode in every workspace, c4fs's identity is a
+  content hash, and switchfs inode numbers collide across backends.
+- **The same object at the same path always gets the same bytes**, as long
+  as the change log has not changed for it. That keeps the client's vnode,
+  name cache and attribute cache valid across eviction.
+- **Changes the server makes itself (REMOVE, RMDIR, RENAME) never let a
+  handle reach a different object.** A handle to a removed or replaced object
+  is stale; a handle to a renamed object follows it.
+- **Changes the server does not see get path semantics**: a write to the
+  backend, a switchfs route swap, a unionfs layer change. A handle resolves to
+  whatever is at its path now. This is what every path-derived server does
+  (rclone, go-nfs, the ganesha pseudo filesystem), and it is what lets handles
+  survive route changes.
 
-## NFSNode
+## Wire Format (version 1)
 
-An `NFSNode` is a path reference, not an open file descriptor. It holds:
+```
+byte 0     header: bits 7-6 version (01), 5-4 kind, 3-2 type, 1 G, 0 zero
+bytes 1-8  tag = HMAC-SHA256(K_tag, byte(0x40|type<<2) || uvarint(g) || path)[:8]
+[uvarint g, when G is set]
+body by kind:
+  00 inline  the path, Huffman coded, EOS, zero bits to a byte
+  01 tail    T = m<<2 | w<<1; m hashes of the last m components (16 bits
+             when w is set, else 8), top-down; the rest of the path coded
+             as for inline
+  10 opaque  8 random bytes (resolves only from the cache)
+  11         reserved: stale
+```
 
-- `path`: The absolute path within the virtual filesystem.
-- `attrs`: Cached `NFSAttrs` (mode, size, timestamps, uid, gid) protected by
-  a `sync.RWMutex`.
-- `children`: Map of child nodes (populated for directories).
-- An embedded `absfs.SymlinkFileSystem` for filesystem operations.
+- **type**: 00 directory, 01 regular file, 10 symlink, 11 other.
+- **g**: the change-log epoch (microseconds since 2025-01-01) of the newest
+  change to the path or an ancestor when the handle was issued. Objects never
+  touched by a REMOVE or RENAME have g = 0 and pay no bytes for it.
+- **path**: the node's path without its leading `/`; the root is `""`.
+  Components are never empty, `.` or `..`, and contain no NUL.
+- **Keys**: `K_tag = HMAC-SHA256(Key, "absnfs fh v1 tag")`,
+  `K_tail = HMAC-SHA256(Key, "absnfs fh v1 tail")[:8]`. `Key` is 32 random
+  bytes per server, or the one kept in `HandleStateDir`.
+- **Tail hashes**: `h(name) = FNV-1a-64(K_tail || name)`, XOR-folded to 16 or
+  8 bits. The encoder tries 16-bit hashes with the fewest trailing components
+  that fit, then 8-bit ones, then the opaque kind.
 
-When an NFS operation needs to read or write file data, it opens the file via
-`absfs.SymlinkFileSystem.OpenFile` using the node's path, performs the I/O, and
-closes it. The handle does not keep a file descriptor open between requests.
+The Huffman code is a frozen canonical order-0 code over the 95 printable
+ASCII bytes (`/` included), EOS, and ESC, which is followed by 8 raw bits and
+spells any other byte, so UTF-8 names survive. No code is longer than 15 bits.
+The code lengths are in `fh_huffman_v1.go`, generated by `cmd/fhgen` from a
+corpus of 115,354 paths: the Linux tree (the first 71,475 entries GitHub's
+tree API lists), a Go module cache (17,788 paths, Kubernetes dependencies
+included) and two JavaScript `node_modules` trees (26,091 paths). Every symbol
+gets at least 1/2048 of the weight, so spaces, parentheses and capitals cost
+11 bits rather than 15. A golden test fails if the table changes: a different
+table needs a new handle version.
 
-## Handle Allocation
+Measured with `go run ./cmd/fhgen -measure` (g = 0):
 
-`FileHandleMap.Allocate` assigns handles to NFSNode references:
+| Tree                                   | Paths   | Inline | Raw bytes would fit |
+| -------------------------------------- | ------- | ------ | ------------------- |
+| Kubernetes (held out of the corpus)    | 37,846  | 81.4%  | 40.3%               |
+| Linux                                  | 71,475  | 99.8%  | 84.1%               |
+| Go module cache                        | 17,788  | 80.7%  | 32.3%               |
+| JavaScript `node_modules`              | 26,091  | 35.3%  | 4.8%                |
 
-1. **Path deduplication**: If the file is an `NFSNode` with a non-empty path,
-   `pathHandles` is checked for an existing handle for that path. If found, the
-   existing handle is returned (with the file reference updated). This prevents
-   unbounded handle growth from repeated LOOKUP or READDIRPLUS calls for the
-   same path.
+Paths that do not fit inline use the tail kind; the opaque kind needs paths
+about 45 or more components deep and has not occurred in any measured tree.
+The root's handle is 10 bytes.
 
-2. **ID assignment**: the new handle is the next value of `lastHandle`, one
-   counter shared by every `FileHandleMap` in the process. IDs of released,
-   evicted or retired handles are not reused: reusing one would let a client
-   still holding the old handle reach whatever object the ID was given to
-   next.
+**Canonical encoding.** The decoder re-encodes what it parsed and compares
+bytes, so every object has exactly one valid byte string for each (g, path),
+and a flipped padding bit, a trailing byte or a byte spelled with ESC is not
+an alias. Every parse or verification failure is `NFS3ERR_STALE`: an empty
+handle, a legacy 8-byte handle (version bits 00), an unknown version, a
+reserved bit, a tag mismatch. `NFS3ERR_BADHANDLE` is not used, because
+clients recover from STALE by looking the name up again. A length above 64
+is `GARBAGE_ARGS`, as before. The tag is compared with `hmac.Equal` before any
+filesystem I/O.
 
-3. **Eviction**: If the handle count exceeds `maxHandles` (default 100,000),
-   10% of `maxHandles` handles are evicted, chosen by the clock
-   (second-chance) algorithm. A lookup (`Get`, `GetOrError`, or an
-   `Allocate` of a path that already has a handle) marks a handle used. The
-   eviction hand walks the handles from the oldest; a used one has its mark
-   cleared and goes to the back, an unused one is evicted. So a handle a
-   client keeps using, such as the directory it is listing, stays. Eviction
-   cleans up path mappings and closes the associated files. Each step is
-   amortized O(1): IDs released or retired before the hand reaches them are
-   skipped, and the queue is compacted once they make up most of it. A new
-   handle joins the queue only after the eviction its allocation caused, so
-   that eviction never drops the handle about to be returned. Requests with an evicted handle get `NFSERR_STALE`; the client recovers
-   by looking the name up again from a handle it still holds, ultimately the
-   mount root.
+## The Change Log
 
-4. **Pinning**: the handles MNT gives out (`allocateMount`) are pinned and
-   never evicted, so a client can always look names up again from its
-   mount's root. At most 10% of `maxHandles` (at least one) is pinned; MNT
-   handles past that are ordinary. The export root's handle (path `/`) is
-   the exception: it is pinned however it was allocated (`Allocate` or
-   `allocateMount`) and even when subdirectory mounts have used up the cap,
-   so clients that mounted the export never lose it to eviction. That adds
-   at most one pin, so pins stay bounded at 10% of `maxHandles` plus one.
-   Pins also never fill the last place in the table, so eviction always has
-   an unpinned handle to drop; this only matters for a `maxHandles` below 3
-   (at 1, nothing is pinned). A pinned handle still goes stale when its object is removed or replaced,
-   or on `Release`.
+`fh_changelog.go` records what the server's own REMOVE, RMDIR and RENAME did:
 
-## Handle IDs Across Restarts
+- **Tombstones**: `tomb(p)` is the newest epoch at which `p` was removed,
+  replaced or renamed away. They live in an open-addressing table keyed by a
+  64-bit keyed hash of the path (16 bytes a slot), at most 2^20 entries. When
+  it is full the oldest tenth folds into a coarse array of 2^20 slots (8 MiB,
+  made on the first fold), each the maximum epoch folded into it. Hash
+  collisions and folds can only raise an epoch, so they can only cause a
+  spurious STALE, never a wrong object. The root is never looked up, since it
+  cannot change.
+- **Rename records**: for each renamed source path, the last 4 renames
+  `{E, dst, from}`, where `from` is the source's effective epoch just before.
+  An LRU of 16,384 source paths. Dropping a record leaves the tombstone, so
+  the handle goes stale instead of following the rename.
+- **eff(p)**: the newest tombstone of `p` and its ancestors. A handle is
+  issued with `g = eff(p)`.
 
-Handles live only in memory, and every handle from before a restart reports
-`NFSERR_STALE`, the mount root included: clients must remount.
+After a successful filesystem change (a failed one records nothing, so a
+failed RMDIR of a non-empty directory, which git does, stales nothing):
 
-- **Within a process** (an embedding program closes a server and creates a
-  new one), the new server draws from the same counter, so it never repeats
-  an ID, however quickly it starts and whatever the clock's resolution.
-- **Across processes**, the counter starts at the process's start time in
-  nanoseconds. A later process starts above every ID an earlier one gave out
-  unless the clock was set back between them, which includes a machine with
-  no real-time clock that boots at 1970 until NTP syncs, or unless the
-  earlier process gave out more handles than nanoseconds passed between the
-  two starts, which a real restart cannot do.
+| Operation      | Records                                                       |
+| -------------- | ------------------------------------------------------------- |
+| REMOVE, RMDIR  | `tomb(p) = E`                                                 |
+| RENAME a to b  | `tomb(a) = tomb(b) = E`; rename record `a: {E, b, eff(a)}`    |
+| CREATE, MKDIR  | nothing: a remove before a recreate already recorded it       |
 
-The 64-bit counter cannot wrap in practice: it grows by one per allocation,
-and wrapping 2^64 from a start in nanoseconds would take more allocations than
-there are nanoseconds until about the year 2554. The wire format is
-unchanged: 8 bytes, well inside NFS3's 64-byte limit.
+**Validation** of a handle for `p` issued at `g` (at most 8 hops):
 
-## Handles Across RENAME and REMOVE
+1. If nothing on `p`'s chain has a tombstone newer than `g`, the handle names
+   `p`.
+2. Otherwise take, among the rename records of the chain's components `c`
+   with `E > g` and `from <= g`, the one with the smallest `E`. Nothing
+   strictly below `c` on the chain may have a tombstone newer than `g` (that
+   would be a child removed and made again before its parent moved). Rewrite
+   the prefix `c` to the record's destination, set `g = E`, and repeat.
+3. With no such record, the handle is stale.
 
-Handles name paths, so the server moves them when a path changes:
+While the log is empty validation costs nothing.
 
-- After a RENAME, the handles of the old name and of everything below it are
-  moved to the same names below the new one (`FileHandleMap.renamed`). A
-  client's handle keeps reaching the object it named, and a name made again
-  under the old path gets a new handle. Each moved handle gets a new
-  `NFSNode`; the old one is left untouched for requests in flight.
-- The handles of what a RENAME replaced, and of an object REMOVE or RMDIR
-  deleted, are retired (`renamed`, `removed`): requests with them get
-  `NFSERR_STALE`, and, like every handle ID, theirs is never handed out
-  again, so it cannot come to name another object.
+So: removing and recreating a file through the server stales the old handle;
+renaming over a target stales the target's handle; in git's silly rename
+(`index` to `.nfsXXXX`, then `index.lock` to `index`) the open file's handle
+follows it to `.nfsXXXX` and the new `index` gets other bytes; and renaming
+a directory carries every descendant's handle along in O(1).
 
-File ids are derived from paths, so an object reached through a moved handle
-reports a new fileid; a client that compares fileids may then treat the handle
-as stale and look the name up again.
+**Changes in flight.** REMOVE, RMDIR and RENAME register their paths before
+the filesystem call and commit afterwards. Validating or issuing a handle on
+a path whose chain has a change in flight waits for the commit (at most 5
+seconds); an atomic counter keeps the common case, nothing in flight, free.
+Resolution reads a sequence number before validating and checks it again
+after its stat, so a remove and a recreate that race a resolution make it
+validate again rather than return the new object.
 
-## Handle Lookup
+## Resolution
 
-`FileHandleMap.Get` retrieves the `absfs.File` (actually `NFSNode`) for a handle
-ID using a read lock. If the handle is not found, the caller returns
-`NFSERR_STALE` to the client.
+Handlers receive an `*NFSNode` as before (`lookupNode`, now
+`resolveHandle`):
 
-Most procedure handlers use `decodeAndLookupHandle`, which decodes the file
-handle from the XDR body and looks up the node in one step, returning
-`GARBAGE_ARGS` for decode errors and `NFSERR_STALE` for missing handles.
+1. **Cache hit** on the handle bytes: validate the entry's path and epoch. A
+   valid entry returns its node; one that followed a rename is moved to the new
+   path; a stale one is dropped.
+2. **Miss**: parse and check the tag; for a tail handle, walk the directories
+   (below); validate; stat through `Lookup` (the attribute cache within its
+   TTL, else `Lstat`). A missing object, or one whose type differs from the
+   handle's type bits (a file replaced by a directory outside the server), is
+   stale. The result is cached.
 
-## Handle Release
+**Tail walk.** From the prefix directory, each hashed component is matched
+against a directory listing (an LRU of 1,024 listings, dropped when the server
+changes the directory or after `AttrCacheTimeout`), depth first with
+backtracking; every complete candidate is checked against the full 64-bit tag.
+The walk also tries names renamed away from a directory (they have rename
+records) and lists a renamed directory at its new path. One walk costs at
+most 32 listings and 256 tag checks; it is retried once with fresh listings,
+then the handle is stale (counted in `HandleTailWalkFailures`).
 
-`FileHandleMap.Release` removes a handle, cleans up the path mapping and
-closes the associated file. The ID is not reused.
+**Issue** (LOOKUP, READDIRPLUS, CREATE, MKDIR, SYMLINK, MNT): if the cache
+holds bytes for the path that still validate to it, those bytes are returned;
+otherwise `g = eff(path)`, encode, cache. After a RENAME the cached entry of
+the source moves to the destination, so a LOOKUP of the new name returns the
+bytes the client holds for the object while they are cached.
 
-`FileHandleMap.ReleaseAll` closes and removes all handles, clearing both the
-handle map, the path deduplication map and the pins. The counter is shared
-and only grows, so handles given out afterwards still get new IDs. This is called by `Unexport` and
-`Close`.
+**Route changes.** No route state is encoded: a miss resolves through the
+current filesystem, and a cached node's operations go through the top-level
+filesystem too, so a handle keeps working while a switchfs route or a unionfs
+layer under its path changes.
 
-## Path Deduplication
+## The Cache
 
-The `pathHandles` map (`map[string]uint64`) provides a reverse lookup from
-filesystem path to handle ID. This is the key mechanism preventing handle
-exhaustion:
+`FileHandleMap` maps handle bytes to `{node, path, g}` and path to the bytes
+issued for it. It holds at most `ExportOptions.MaxHandles` entries (default
+100,000, about 300 bytes each with the node); when full, the entries least
+recently used are evicted by the clock (second chance) algorithm, amortized
+O(1). The capacity can change at runtime and bounds memory and the miss rate,
+not correctness. Size it above the number of files and directories clients
+keep using (about 200,000 for four Kubernetes workspaces), so their requests
+stay hits.
 
-- NFS clients typically call LOOKUP for every path component when traversing
-  a directory tree, and READDIRPLUS allocates handles for every entry returned.
-- Without deduplication, the same path would accumulate many handles over time.
-- With deduplication, `Allocate` returns the existing handle for a path and
-  updates the NFSNode reference (which may have newer attributes).
+## Restarts: HandleStateDir
 
-The path mapping is maintained in sync with the handle map: entries are added
-during Allocate, removed during Release, and removed during eviction.
+Without `HandleStateDir` the key is random per `New`: handles are valid for
+the life of the server, and every handle from before a restart is stale, as
+before v1.2.0. Clients remount.
 
-## Concurrency
+With it, the server locks the directory (a second server fails `New`), loads
+or makes `handle.key` (32 bytes, mode 0600) and replays `handle.log`, then
+sets its clock above the log's newest epoch. Only REMOVE, RMDIR and RENAME
+append records, before the reply; LOOKUP, READ and CREATE traffic never write.
+The log is synced every second and on `Close`, and compacted (a snapshot
+renamed into place) once it outgrows twice its live size plus 1 MiB. A
+process crash loses nothing; an operating system crash can lose the last
+second of records. A record torn by a crash ends the log.
 
-`FileHandleMap` embeds `sync.RWMutex`:
+A key is never trusted without its log: if either file is missing both are
+made afresh, and if a journal write fails the server removes the key, so the
+next start makes a new one and every old handle is stale. A persisted key
+alone would let the handle of `index.lock` that a client holds as `index`
+after git's rename resolve to a new `index.lock` after a restart: another
+object. For the same reason the key is not an option, and is never logged.
 
-- `Allocate`, `Release`, and `ReleaseAll` acquire the write lock.
-- `Get` and `Count` acquire the read lock.
+## Security
 
-This allows concurrent handle lookups (the common case during request processing)
-while serializing allocations and releases.
+- Handles hold virtual paths relative to the absfs root, never an osfs host
+  root. Names are encoded, not encrypted; the same client receives them in
+  clear through LOOKUP and READDIR.
+- Forging a handle needs `K_tag` (about 2^63 online attempts per guess at the
+  tag). A tampered inline handle costs no filesystem I/O; a tampered tail
+  handle costs at most one capped walk, also bounded by the rate limiter.
+- The journal holds virtual paths, mode 0600. AUTH_SYS trust and the
+  per-operation checks are unchanged: holding a handle is not authorization.
 
-## Wire Format Validation
+## Memory and CPU
 
-`xdrDecodeFileHandle` in `rpc_types.go` validates handles on the wire:
+| Structure            | Bound                                   |
+| -------------------- | --------------------------------------- |
+| Handle cache         | `MaxHandles` x ~300 B (30 MB at 100k)   |
+| Tombstones           | 2^20 x 16 B slots, about 24 MiB at most |
+| Coarse array         | 8 MiB, made on the first fold           |
+| Rename records       | 16,384 paths, about 5 MB                |
+| Directory listings   | 1,024 directories                       |
 
-- The length field must not exceed 64 bytes (NFS3 maximum).
-- The length must be exactly 8 bytes for this implementation.
-- Non-8-byte handles are consumed (to keep the stream in sync) and rejected.
-- Invalid handles result in `GARBAGE_ARGS` or `NFSERR_STALE` depending on
-  whether the error is a format error or a lookup miss.
+Encoding a handle costs one HMAC (about 0.35 us with the Huffman coding);
+decoding and verifying one about 0.9 us; a miss adds the stat a GETATTR does
+anyway. Validation is O(depth) map probes and is skipped while the log is
+empty. Handles grow from 8 bytes to 10-64 on the wire; READDIRPLUS counts
+each entry's real size against the client's `maxcount`.
+
+## Migration from v1.1
+
+A running server's handles are in-memory numbers, so any upgrade is a
+restart, and every legacy 8-byte handle reports `NFS3ERR_STALE` (its version
+bits are 00): clients remount once (macOS: `umount -f`, then mount). The
+version bits leave room for three future formats; decoders keep version 1.
+
+`FileHandleMap`'s uint64 methods (`Allocate`, `Get`, `GetOrError`, `Release`)
+remain as deprecated shims: the identifier is a handle's first 8 bytes, and
+no usable `FileHandleMap` can be made outside the package anyway.
+`InvalidFileHandleError.Handle` is kept. Debug logs print handles in hex.

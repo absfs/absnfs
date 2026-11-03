@@ -1,0 +1,348 @@
+package absnfs
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/absfs/absfs"
+)
+
+// restartEnv serves the same filesystem with one server after another, as
+// a process that restarts does.
+type restartEnv struct {
+	t   *testing.T
+	fs  absfs.SymlinkFileSystem
+	dir string
+}
+
+func (r *restartEnv) start(opts ExportOptions) *fhEnv {
+	r.t.Helper()
+	opts.HandleStateDir = r.dir
+	nfs, err := New(r.fs, opts)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return &fhEnv{
+		t: r.t, fs: r.fs, nfs: nfs,
+		h: &NFSProcedureHandler{server: &Server{handler: nfs, options: ServerOptions{}}},
+		auth: &AuthContext{
+			ClientIP: "127.0.0.1", ClientPort: 1023,
+			Credential:   &RPCCredential{Flavor: AUTH_SYS},
+			EffectiveUID: nfs.owner.UID, EffectiveGID: nfs.owner.GID,
+		},
+	}
+}
+
+func TestHandlesSurviveRestartWithStateDir(t *testing.T) {
+	fs := newMemFS(t)
+	mustMkdir(t, fs, "/repo/.git")
+	writeFile(t, fs, "/repo/.git/index", 10)
+	writeFile(t, fs, "/repo/.git/index.lock", 20)
+	writeFile(t, fs, "/repo/gone", 30)
+	writeFile(t, fs, "/repo/"+strings.Repeat("long_name_", 8), 40)
+	r := &restartEnv{t: t, fs: fs, dir: filepath.Join(t.TempDir(), "state")}
+
+	e := r.start(ExportOptions{})
+	root := e.mount("/")
+	git := e.walk(root, "repo/.git")
+	repo := e.walk(root, "repo")
+	index, lock := e.walk(root, "repo/.git/index"), e.walk(root, "repo/.git/index.lock")
+	gone := e.walk(root, "repo/gone")
+	long := e.walk(root, "repo/"+strings.Repeat("long_name_", 8))
+	if st := e.rename(git, "index", git, ".nfs01"); st != NFS_OK {
+		t.Fatal(st)
+	}
+	if st := e.rename(git, "index.lock", git, "index"); st != NFS_OK {
+		t.Fatal(st)
+	}
+	if st := e.remove(repo, "gone"); st != NFS_OK {
+		t.Fatal(st)
+	}
+	writeFile(t, fs, "/repo/gone", 31)
+	if err := e.nfs.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	e = r.start(ExportOptions{})
+	defer e.nfs.Close()
+	if again := e.mount("/"); !bytes.Equal(again, root) {
+		t.Errorf("the root's handle changed across the restart")
+	}
+	e.size(index, 10, "the open index after the restart")
+	e.size(lock, 20, "index.lock after the restart")
+	e.size(long, 40, "a tail handle after the restart")
+	e.stale(gone, "a removed and recreated file after the restart")
+	if newIndex := e.walk(root, "repo/.git/index"); bytes.Equal(newIndex, index) {
+		t.Error("the new index has the old index's handle after the restart")
+	}
+	// The clock carries on above the journal's epochs.
+	e.nfs.fileMap.log.mu.Lock()
+	last := e.nfs.fileMap.log.last
+	e2 := e.nfs.fileMap.log.nextEpoch()
+	e.nfs.fileMap.log.mu.Unlock()
+	if e2 <= last || last == 0 {
+		t.Errorf("epoch after restart %d, journal's last %d", e2, last)
+	}
+}
+
+func TestHandlesStaleAfterRestartWithoutStateDir(t *testing.T) {
+	fs := newMemFS(t)
+	writeFile(t, fs, "/f", 1)
+	e := newFhEnv(t, fs, ExportOptions{})
+	f := e.walk(e.mount("/"), "f")
+	e2 := newFhEnv(t, fs, ExportOptions{})
+	e2.stale(f, "a handle from before the restart")
+}
+
+func TestHandleStateDirIsExclusive(t *testing.T) {
+	fs := newMemFS(t)
+	dir := t.TempDir()
+	one, err := New(fs, ExportOptions{HandleStateDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(fs, ExportOptions{HandleStateDir: dir}); err == nil {
+		t.Error("a second server shares the state directory")
+	}
+	if err := one.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := one.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+	two, err := New(fs, ExportOptions{HandleStateDir: dir})
+	if err != nil {
+		t.Fatalf("after Close the directory is still locked: %v", err)
+	}
+	two.Close()
+}
+
+func TestHandleStateDirDamage(t *testing.T) {
+	fs := newMemFS(t)
+	writeFile(t, fs, "/f", 1)
+	r := &restartEnv{t: t, fs: fs, dir: t.TempDir()}
+	e := r.start(ExportOptions{})
+	f := e.walk(e.mount("/"), "f")
+	e.nfs.Close()
+
+	// A key of the wrong size is an error, not a silent new key.
+	keyPath := filepath.Join(r.dir, handleKeyFile)
+	key, _ := os.ReadFile(keyPath)
+	os.WriteFile(keyPath, key[:10], 0o600)
+	if _, err := New(fs, ExportOptions{HandleStateDir: r.dir}); err == nil {
+		t.Error("a 10-byte key was accepted")
+	}
+	os.WriteFile(keyPath, key, 0o600)
+
+	// A key without its log is never trusted: both start afresh.
+	os.Remove(filepath.Join(r.dir, handleLogFile))
+	e = r.start(ExportOptions{})
+	e.stale(f, "a handle whose journal was deleted")
+	e.nfs.Close()
+	if again, _ := os.ReadFile(keyPath); bytes.Equal(again, key) {
+		t.Error("the key was kept without its journal")
+	}
+
+	// Unreadable state is an error.
+	if err := os.WriteFile(filepath.Join(t.TempDir(), "file"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(fs, ExportOptions{HandleStateDir: filepath.Join(r.dir, handleKeyFile, "sub")}); err == nil {
+		t.Error("a state directory below a file was accepted")
+	}
+}
+
+// A record torn by a crash ends the journal; the records before it hold.
+func TestHandleJournalTornRecord(t *testing.T) {
+	fs := newMemFS(t)
+	mustMkdir(t, fs, "/d")
+	writeFile(t, fs, "/d/a", 1)
+	writeFile(t, fs, "/d/b", 2)
+	r := &restartEnv{t: t, fs: fs, dir: t.TempDir()}
+	e := r.start(ExportOptions{})
+	root := e.mount("/")
+	d, a, b := e.walk(root, "d"), e.walk(root, "d/a"), e.walk(root, "d/b")
+	if st := e.remove(d, "a"); st != NFS_OK {
+		t.Fatal(st)
+	}
+	e.nfs.Close()
+	logPath := filepath.Join(r.dir, handleLogFile)
+	good, _ := os.ReadFile(logPath)
+	torn := append(append([]byte(nil), good...), appendRecord(nil, tombPayload(1, 2))[:5]...)
+	os.WriteFile(logPath, torn, 0o600)
+	writeFile(t, fs, "/d/a", 3)
+
+	e = r.start(ExportOptions{})
+	defer e.nfs.Close()
+	e.stale(a, "removed before the torn record")
+	e.size(b, 2, "untouched")
+	if st, _ := os.Stat(logPath); st.Size() != int64(len(good)) {
+		t.Errorf("journal of %d bytes after load, want the %d good ones", st.Size(), len(good))
+	}
+	// Corrupt records (bad checksum, unknown type) end it the same way.
+	l := testLog()
+	bad := appendRecord(nil, tombPayload(1, 2))
+	bad[len(bad)-1] ^= 1
+	if n := l.replay(bad); n != 0 {
+		t.Errorf("a record with a bad checksum replayed (%d bytes)", n)
+	}
+	if n := l.replay(appendRecord(nil, []byte{'X', 1, 2})); n != 0 {
+		t.Error("an unknown record replayed")
+	}
+	if n := l.replay(appendRecord(nil, []byte{recRename, 1})); n != 0 {
+		t.Error("a short rename record replayed")
+	}
+}
+
+// The journal is compacted once it outgrows its live records; what it
+// records survives the compaction and a restart.
+func TestHandleJournalCompaction(t *testing.T) {
+	defer func(n int64) { journalSlack = n }(journalSlack)
+	journalSlack = 256
+	defer func(a, b int) { tombLimit, coarseSlots = a, b }(tombLimit, coarseSlots)
+	tombLimit, coarseSlots = 16, 1<<12
+
+	fs := newMemFS(t)
+	mustMkdir(t, fs, "/d")
+	writeFile(t, fs, "/d/moved", 7)
+	r := &restartEnv{t: t, fs: fs, dir: t.TempDir()}
+	// A fixed key, so which paths share coarse slots is the same each run
+	// (with this one, /d shares none with the removed files).
+	os.WriteFile(filepath.Join(r.dir, handleKeyFile), bytes.Repeat([]byte{3}, handleKeySize), 0o600)
+	os.WriteFile(filepath.Join(r.dir, handleLogFile), nil, 0o600)
+	e := r.start(ExportOptions{})
+	root := e.mount("/")
+	d := e.walk(root, "d")
+	moved := e.walk(root, "d/moved")
+	if st := e.rename(d, "moved", d, "there"); st != NFS_OK {
+		t.Fatal(st)
+	}
+	var removed [][]byte
+	for i := 0; i < 200; i++ {
+		name := fmt.Sprintf("f%d", i)
+		writeFile(t, fs, "/d/"+name, 100+i)
+		removed = append(removed, e.walk(root, "d/"+name))
+		if st := e.remove(d, name); st != NFS_OK {
+			t.Fatal(st)
+		}
+	}
+	j := e.nfs.fileMap.log.journal
+	j.mu.Lock()
+	compacted := j.base > 0
+	j.mu.Unlock()
+	if !compacted {
+		t.Fatal("the journal was never compacted")
+	}
+	if e.nfs.fileMap.log.folds.Load() == 0 {
+		t.Fatal("no fold: the coarse snapshot is not exercised")
+	}
+	e.nfs.Close()
+	for i := 0; i < 200; i++ {
+		writeFile(t, fs, fmt.Sprintf("/d/f%d", i), 1000+i)
+	}
+
+	e = r.start(ExportOptions{})
+	defer e.nfs.Close()
+	e.size(moved, 7, "renamed before compaction")
+	for i, fh := range removed {
+		e.stale(fh, fmt.Sprintf("f%d removed before compaction", i))
+	}
+}
+
+// A journal that cannot be written is abandoned and its key removed: the
+// next start makes a new key, so no handle is trusted with records missing.
+func TestHandleJournalWriteFailure(t *testing.T) {
+	fs := newMemFS(t)
+	mustMkdir(t, fs, "/d")
+	writeFile(t, fs, "/d/a", 1)
+	writeFile(t, fs, "/d/b", 2)
+	dir := t.TempDir()
+	var failed error
+	fm, err := newFileHandleMapWithState(0, dir, func(err error) { failed = err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	nfs, err := New(fs, ExportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nfs.Close()
+	nfs.fileMap = fm
+	j := fm.log.journal
+	j.f.Close() // writes now fail
+	if err := nfs.Remove(nfs.root, "d"); err == nil {
+		t.Fatal("removed a non-empty directory")
+	}
+	dnode, _ := nfs.Lookup("/d")
+	if err := nfs.Remove(dnode, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if failed == nil {
+		t.Error("onFail was not called")
+	}
+	if _, err := os.Stat(filepath.Join(dir, handleKeyFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the key survives a failed journal: %v", err)
+	}
+	// The running server keeps its log in memory and stays correct.
+	if _, _, ok := fm.log.validate(context.Background(), "d/a", 0); ok {
+		t.Error("the removed file's handle is valid")
+	}
+	j.write([]byte("ignored")) // abandoned: nothing happens
+	j.sync()
+	j.lock.Close()
+}
+
+func TestHandleOptions(t *testing.T) {
+	fs := newMemFS(t)
+	nfs, err := New(fs, ExportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nfs.Close()
+	if got := nfs.GetExportOptions().MaxHandles; got != DefaultMaxHandles {
+		t.Errorf("default MaxHandles %d, want %d", got, DefaultMaxHandles)
+	}
+	for i := 0; i < 50; i++ {
+		nfs.fileMap.issue(fileNode(fmt.Sprintf("/f%d", i)))
+	}
+	opts := nfs.GetExportOptions()
+	opts.MaxHandles = 20
+	if err := nfs.UpdateExportOptions(opts); err != nil {
+		t.Fatal(err)
+	}
+	if nfs.fileMap.limit() != 20 || nfs.fileMap.Count() > 20 || nfs.GetExportOptions().MaxHandles != 20 {
+		t.Errorf("after MaxHandles 20: limit %d, count %d, option %d", nfs.fileMap.limit(), nfs.fileMap.Count(), nfs.GetExportOptions().MaxHandles)
+	}
+	nfs.UpdateTuningOptions(func(t *TuningOptions) { t.MaxHandles = -1 })
+	if nfs.fileMap.limit() != DefaultMaxHandles || nfs.GetExportOptions().MaxHandles != DefaultMaxHandles {
+		t.Errorf("MaxHandles -1 gives limit %d, option %d", nfs.fileMap.limit(), nfs.GetExportOptions().MaxHandles)
+	}
+
+	dir := t.TempDir()
+	withState, err := New(fs, ExportOptions{HandleStateDir: dir, MaxHandles: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer withState.Close()
+	opts = withState.GetExportOptions()
+	if opts.HandleStateDir != dir || opts.MaxHandles != 7 {
+		t.Errorf("GetExportOptions: dir %q, MaxHandles %d", opts.HandleStateDir, opts.MaxHandles)
+	}
+	if err := withState.UpdateExportOptions(opts); err != nil {
+		t.Errorf("passing GetExportOptions back: %v", err)
+	}
+	opts.HandleStateDir = ""
+	if err := withState.UpdateExportOptions(opts); err != nil {
+		t.Errorf("an empty HandleStateDir (unchanged): %v", err)
+	}
+	opts.HandleStateDir = t.TempDir()
+	if err := withState.UpdateExportOptions(opts); err == nil {
+		t.Error("HandleStateDir changed at runtime")
+	}
+}

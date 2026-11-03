@@ -11,7 +11,7 @@ import (
 
 // getattr sends GETATTR for fh and returns the status and, when NFS_OK, the
 // attributes.
-func (e *cacheEnv) getattr(fh uint64) (uint32, faFattr) {
+func (e *cacheEnv) getattr(fh []byte) (uint32, faFattr) {
 	e.t.Helper()
 	var req bytes.Buffer
 	xdrEncodeFileHandle(&req, fh)
@@ -33,7 +33,7 @@ func (e *cacheEnv) getattr(fh uint64) (uint32, faFattr) {
 
 // setattrArgs encodes SETATTR3args setting mode, with a ctime guard when
 // guard is not nil.
-func setattrArgs(fh uint64, mode uint32, guard *time.Time) *bytes.Buffer {
+func setattrArgs(fh []byte, mode uint32, guard *time.Time) *bytes.Buffer {
 	var b bytes.Buffer
 	xdrEncodeFileHandle(&b, fh)
 	faSattr(&b, &mode)
@@ -190,8 +190,8 @@ func TestHandlesFollowRename(t *testing.T) {
 	}
 	e.mkdir("/a")
 	e.writeFile("/a/f", "other")
-	if got := e.handle("/a/f"); got == fh {
-		t.Errorf("a new /a/f got handle %d, which still belongs to /b/f", got)
+	if got := e.handle("/a/f"); bytes.Equal(got, fh) {
+		t.Errorf("a new /a/f got handle %x, which still belongs to /b/f", got)
 	}
 
 	e.writeFile("/b/t", "target")
@@ -207,8 +207,8 @@ func TestHandlesFollowRename(t *testing.T) {
 		t.Errorf("GETATTR of the replaced /b/t's handle: status %d, want NFSERR_STALE", st)
 	}
 	e.writeFile("/b/new", "x")
-	if got := e.handle("/b/new"); got == th {
-		t.Errorf("the replaced file's handle %d was handed out again", th)
+	if got := e.handle("/b/new"); bytes.Equal(got, th) {
+		t.Errorf("the replaced file's handle %x was handed out again", th)
 	}
 }
 
@@ -228,8 +228,8 @@ func TestRemoveRetiresHandle(t *testing.T) {
 		t.Errorf("GETATTR of a removed file's handle: status %d, want NFSERR_STALE", st)
 	}
 	e.writeFile("/d/f", "y")
-	if got := e.handle("/d/f"); got == fh {
-		t.Errorf("a new /d/f got the removed file's handle %d", got)
+	if got := e.handle("/d/f"); bytes.Equal(got, fh) {
+		t.Errorf("a new /d/f got the removed file's handle %x", got)
 	}
 
 	reply, err := e.h.handleRmdir(bytes.NewReader(faDirOp(dh, "sub")), &RPCReply{}, e.auth)

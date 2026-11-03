@@ -12,6 +12,18 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Added
 
+- `ExportOptions.MaxHandles` (and `TuningOptions.MaxHandles`): the capacity
+  of the file handle cache, default 100,000 (<= 0). It bounds memory and the
+  miss rate only; changeable at runtime, and a smaller value evicts at once.
+- `ExportOptions.HandleStateDir`: keeps the handle key and a journal of the
+  server's REMOVEs, RMDIRs and RENAMEs in a directory (locked against a
+  second server), so file handles survive a restart with exactly their old
+  meaning. Fixed at `New`.
+- `NFSMetrics` handle cache counters: `HandleCacheSize`,
+  `HandleCacheCapacity`, `HandleCacheMisses`, `HandleTailWalkFailures`,
+  `HandleTombstoneFolds`, `HandleRedirectsDropped`.
+- `cmd/fhgen`, which generates the frozen Huffman table of version 1 handles
+  and measures how many paths of a tree fit in a handle.
 - `ExportOptions.DefaultOwner` (`*FileOwner`): the uid/gid reported for files
   whose `os.FileInfo` records no owner. Defaults to the user running the
   server (0/0 on Windows, where `os.Getuid` returns -1).
@@ -134,30 +146,29 @@ to the macOS NFS client, which is stricter than Linux's.
   or `ForceOwner` instead of silently ignoring the change, and validates
   `Squash` before applying anything rather than after the tuning update.
   `syscall.EINVAL` now maps to `NFS3ERR_INVAL`.
-- File handle numbers were reused: a handle dropped by `Release` or by
-  eviction (past 100,000 handles) went back on a free list, and a server
-  restarted over the same filesystem numbered handles from 1 again, so a
-  client still holding the old handle reached a different file or
-  directory. Handle numbers are now never reused: every server in a process
-  draws from one counter that only grows, and it starts at the process's
-  start time in nanoseconds, so a stale handle reports `NFS3ERR_STALE`,
-  also after a restart (unless the clock is set back between runs).
-- Eviction dropped the lowest handle numbers first, so the mount's root
-  handle, which MNT gives out first, was the first evicted even while the
-  client was using it. Eviction now drops handles not used recently (clock
-  algorithm, amortized O(1) per allocation instead of a sort of every live
-  handle), and the handles MNT gives out are pinned and never evicted. At
-  most a tenth of the handle limit is pinned, but the export root's handle
-  is pinned however it was allocated and even when subdirectory mounts have
-  used up that cap, so a client that mounted the export root never has to
-  remount because that handle was evicted. Subdirectory mounts past the cap
-  get ordinary handles and can still be evicted.
-- A handle could be evicted by its own allocation: when nearly every handle
-  had been used since the eviction hand last passed, the hand cleared them
-  all and reached the new handle while it still had handles to drop, so
-  LOOKUP, CREATE or READDIRPLUS returned a handle that was already
-  `NFS3ERR_STALE`. A new handle now joins the eviction order only after the
-  eviction its allocation caused.
+- **Evicted handles went stale, and stale handles could reach other
+  objects.** Handles were 8-byte numbers that meant something only while
+  they sat in an in-memory table of 100,000 entries. A client holding more
+  (four `git` workspaces of the Kubernetes tree, about 150,000 paths) got
+  "Stale NFS file handle" for evicted ones, and warm `git status` in older
+  workspaces took 6-7 s instead of 0.4-0.7 s because eviction defeated the
+  client's attribute cache. Released numbers were also reused, and a
+  restarted server numbered from 1 again, so an old handle could reach
+  another file. Handles are now path handles (version 1, 10 to 64 bytes): a
+  keyed tag, the object's type, its path below the export root (Huffman
+  coded, or with hashed trailing components when long), and a change-log
+  epoch. The server resolves any handle it issued without the table, which
+  is now only a cache, so eviction never reports `NFS3ERR_STALE` for an
+  object that still exists, and the same object keeps the same bytes. A log
+  of the server's own REMOVEs, RMDIRs and RENAMEs (bounded, about 40 MB at
+  most) makes the handle of a removed or replaced object stale and lets a
+  renamed object's handle follow it, including every handle below a renamed
+  directory, in O(1) instead of a scan of the table. Forged, garbled,
+  legacy and empty handles are `NFS3ERR_STALE` and cost no filesystem I/O.
+  See `docs/internals/file-handles.md`.
+- READDIRPLUS replies counted only the size already written against the
+  client's `maxcount`, so a long last entry could exceed it; each entry's
+  real size (handle and name included) is now counted before it is added.
 
 ### Deprecated
 
@@ -166,12 +177,18 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Changed
 
-- **Restarting the server makes every client handle stale.** After a
-  restart, clients' existing handles, the mount root's included, report
-  `NFS3ERR_STALE`, so mounted clients must remount. Before, handles were
-  numbered from 1 on every start, so a client that had mounted `/` first
-  usually kept a working root handle (and other old handles could silently
-  reach different objects).
+- **Handles are 10 to 64 bytes and name paths.** Handles from earlier
+  versions (8 bytes) report `NFS3ERR_STALE`: clients remount once after
+  upgrading (macOS: `umount -f`, then mount). Without `HandleStateDir`, a
+  restart makes every client handle stale, the mount root's included, so
+  mounted clients remount; before, handles were numbered from 1 on every
+  start, so a client usually kept a working root handle (and other old
+  handles could silently reach different objects). A change made behind the
+  server's back (backend writes, a switchfs route swap, a unionfs layer
+  change) is seen by path: the handle reaches what is at its path now.
+- `FileHandleMap.Allocate`, `Get`, `GetOrError` and `Release` are
+  deprecated: the `uint64` they use is a handle's first 8 bytes, an
+  identifier for logs. Debug logs print handles in hex.
 - **Default owner.** Files whose filesystem records no owner (memfs, virtual
   filesystems, Windows) are reported as owned by the user running the server
   rather than by root (0/0), and osfs on unix reports real owners. An export

@@ -155,7 +155,7 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 	}
 
 	if h.server.options.Debug {
-		h.server.logger.Printf("WRITE: handle=%d path='%s' offset=%d count=%d stable=%d", handleVal, node.path, offset, count, stable)
+		h.server.logger.Printf("WRITE: handle=%x path='%s' offset=%d count=%d stable=%d", handleVal, node.path, offset, count, stable)
 	}
 
 	// R23: Return NFS error instead of nil,err
