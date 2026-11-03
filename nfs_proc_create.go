@@ -8,11 +8,14 @@ package absnfs
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"os"
 	"path"
 	"strings"
+	"time"
 )
 
 // handleCreate handles NFSPROC3_CREATE - create a file
@@ -45,7 +48,7 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 	// Use effective UID/GID from auth context as default for new files
 	newUID := authCtx.EffectiveUID
 	newGID := authCtx.EffectiveGID
-	var isExclusive bool
+	var verf [8]byte
 	if createHow == 0 || createHow == 1 {
 		sattr, err := decodeSattr3(body)
 		if err != nil {
@@ -63,11 +66,9 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 		}
 	} else if createHow == 2 {
 		// M14: Use io.ReadFull for the 8-byte EXCLUSIVE verifier
-		var verf [8]byte
 		if _, err := io.ReadFull(body, verf[:]); err != nil {
 			return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 		}
-		isExclusive = true
 	}
 
 	if status := validateMode(mode, false); status != NFS_OK {
@@ -91,38 +92,21 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 		Gid:  newGID,
 	}
 
-	newNode, err := h.server.handler.Create(node, name, attrs)
-	if err != nil {
-		// For EXCLUSIVE creates, if file already exists, return success
-		// (simplified idempotent behavior per RFC 1813 - full verifier comparison not implemented)
-		if isExclusive && os.IsExist(err) {
-			lookupPath := path.Join(node.path, name)
-			existingNode, lookupErr := h.server.handler.Lookup(lookupPath)
-			if lookupErr == nil {
-				dirPostAttrs, _ := h.server.handler.GetAttr(node)
-				if dirPostAttrs == nil {
-					dirPostAttrs = dirPreAttrs
-				}
-				handle := h.server.handler.fileMap.Allocate(existingNode)
-				existingNode.mu.RLock()
-				existingAttrsCopy := *existingNode.attrs
-				existingNode.mu.RUnlock()
-				var buf bytes.Buffer
-				xdrEncodeUint32(&buf, NFS_OK)
-				xdrEncodeUint32(&buf, 1)
-				xdrEncodeFileHandle(&buf, handle)
-				xdrEncodeUint32(&buf, 1)
-				if err := encodeFileAttributes(&buf, &existingAttrsCopy); err != nil {
-					return nfsErrorWithWcc(reply, NFSERR_IO), nil
-				}
-				if err := encodeWccData(&buf, dirPreAttrs, dirPostAttrs); err != nil {
-					return nfsErrorWithWcc(reply, NFSERR_IO), nil
-				}
-				reply.Data = buf.Bytes()
-				return reply, nil
-			}
+	// GUARDED (1) and EXCLUSIVE (2) must not touch an existing file.
+	exclusive := createHow == 1 || createHow == 2
+	newNode, err := h.server.handler.createWithContext(context.Background(), node, name, attrs, exclusive)
+	if err == nil && createHow == 2 {
+		newNode = h.stampVerifier(newNode, verf)
+	}
+	if err != nil && createHow == 2 && errors.Is(err, os.ErrExist) {
+		// A retransmitted EXCLUSIVE CREATE finds the file it made: the
+		// verifier is still in its times (RFC 1813 section 3.3.8).
+		existing, lookupErr := h.server.handler.Lookup(path.Join(node.path, name))
+		if lookupErr == nil && existing.attrs.Mtime().Equal(verifierTime(verf)) {
+			newNode, err = existing, nil
 		}
-
+	}
+	if err != nil {
 		dirPostAttrs, _ := h.server.handler.GetAttr(node)
 		if dirPostAttrs == nil {
 			dirPostAttrs = dirPreAttrs
@@ -163,6 +147,31 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 
 	reply.Data = buf.Bytes()
 	return reply, nil
+}
+
+// verifierTime encodes an EXCLUSIVE CREATE verifier as a file time.
+func verifierTime(verf [8]byte) time.Time {
+	sec := binary.BigEndian.Uint32(verf[:4])
+	nsec := binary.BigEndian.Uint32(verf[4:]) % 1e9
+	return time.Unix(int64(sec), int64(nsec))
+}
+
+// stampVerifier stores the verifier of an EXCLUSIVE CREATE in the new file's
+// times, so a retransmission of the same request can be told apart from a
+// different client's create. The client sets the real times with SETATTR
+// next. If the filesystem refuses, the create still succeeds; only a
+// retransmission would then see NFS3ERR_EXIST.
+func (h *NFSProcedureHandler) stampVerifier(n *NFSNode, verf [8]byte) *NFSNode {
+	s := h.server.handler
+	t := verifierTime(verf)
+	if err := s.fs.Chtimes(n.path, t, t); err != nil {
+		return n
+	}
+	s.attrCache.Invalidate(n.path)
+	if stamped, err := s.Lookup(n.path); err == nil {
+		return stamped
+	}
+	return n
 }
 
 // handleMkdir handles NFSPROC3_MKDIR - create a directory

@@ -7,6 +7,7 @@ package absnfs
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"io"
 	"math"
@@ -163,7 +164,9 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 		return nfsErrorWithWcc(reply, mapError(err)), nil
 	}
 
-	n, err := h.server.handler.Write(node, int64(offset), data)
+	// The owner may write a file whose mode denies it (owner override).
+	ownerOverride := authCtx.EffectiveUID == preAttrs.Uid
+	n, err := h.server.handler.writeWithContext(context.Background(), node, int64(offset), data, ownerOverride)
 	if err != nil {
 		if h.server.options.Debug {
 			h.server.logger.Printf("WRITE: Failed to write to '%s': %v", node.path, err)

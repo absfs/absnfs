@@ -3,8 +3,10 @@
 package absnfs
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -100,5 +102,51 @@ func TestForceOwnerOverridesOS(t *testing.T) {
 	}
 	if node.attrs.Uid != 4242 || node.attrs.Gid != 4343 {
 		t.Errorf("owner = %d:%d, want the forced 4242:4343", node.attrs.Uid, node.attrs.Gid)
+	}
+}
+
+// TestParallelOwnerWrites: clients send WRITEs for one file in parallel; every
+// one must get through, and the file keeps its read-only mode.
+func TestParallelOwnerWrites(t *testing.T) {
+	// osfs: memfs itself is not safe for concurrent chmod and stat.
+	nfs, dir := newOSExport(t, ExportOptions{})
+	if err := os.Truncate(filepath.Join(dir, "file.txt"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "file.txt"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	node, err := nfs.Lookup("/file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := nfs.fileMap.Allocate(node)
+	owner := processOwner()
+	handler := &NFSProcedureHandler{server: &Server{handler: nfs}}
+	const writers = 16
+	statuses := make(chan uint32, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			auth := AuthContext{ClientIP: "127.0.0.1", EffectiveUID: owner.UID, EffectiveGID: owner.GID, Credential: &RPCCredential{Flavor: AUTH_SYS}}
+			r, _ := handler.handleWrite(bytes.NewReader(faWriteRequest(file, uint64(4*i), []byte("abcd"))), &RPCReply{}, &auth)
+			statuses <- readStatusFromReply(r)
+		}(i)
+	}
+	wg.Wait()
+	close(statuses)
+	for st := range statuses {
+		if st != NFS_OK {
+			t.Errorf("parallel owner WRITE: status %d", st)
+		}
+	}
+	info, err := os.Lstat(filepath.Join(dir, "file.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o444 || info.Size() != 4*writers {
+		t.Errorf("after parallel writes: mode %o size %d, want 444 and %d", info.Mode().Perm(), info.Size(), 4*writers)
 	}
 }

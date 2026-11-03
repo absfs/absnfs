@@ -42,6 +42,9 @@ func mapError(err error) uint32 {
 		return NFSERR_NOENT
 	case errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM):
 		return NFSERR_PERM
+	// Before ErrExist: on unix, syscall.ENOTEMPTY also matches os.ErrExist.
+	case errors.Is(err, syscall.ENOTEMPTY):
+		return NFSERR_NOTEMPTY
 	case errors.Is(err, os.ErrExist) || errors.Is(err, syscall.EEXIST):
 		return NFSERR_EXIST
 	case errors.Is(err, os.ErrInvalid):
@@ -365,6 +368,12 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 
 // WriteWithContext implements the WRITE operation with timeout support
 func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset int64, data []byte) (int64, error) {
+	return s.writeWithContext(ctx, node, offset, data, false)
+}
+
+// writeWithContext writes data at offset. ownerOverride lets the file's
+// owner write even when its mode denies writing (see openForOwnerWrite).
+func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset int64, data []byte, ownerOverride bool) (int64, error) {
 	if node == nil {
 		return 0, fmt.Errorf("nil node")
 	}
@@ -422,6 +431,9 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 
 	// Standard write path
 	f, err := s.fs.OpenFile(node.path, os.O_WRONLY, 0)
+	if err != nil && ownerOverride && errors.Is(err, os.ErrPermission) {
+		f, err = s.openForOwnerWrite(node.path, err)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("write: failed to open %s: %w", node.path, err)
 	}
@@ -457,13 +469,54 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 	return int64(n), err
 }
 
+// openForOwnerWrite opens a regular file for writing on behalf of its owner
+// when its mode denies the owner write permission, by adding owner write for
+// the duration of the open. NFS is stateless, so a client that creates a file
+// read-only and then writes to it (as git does with 0444 object files) sends
+// WRITEs the filesystem would refuse; NFS servers conventionally let the owner
+// through ("owner override"). denied is returned when the override does not
+// apply.
+//
+// Overrides are serialized: clients send parallel WRITEs for one file, and
+// each must see the file's real mode, not another override's temporary one.
+func (s *AbsfsNFS) openForOwnerWrite(p string, denied error) (absfs.File, error) {
+	s.ownerWriteMu.Lock()
+	defer s.ownerWriteMu.Unlock()
+
+	info, err := s.fs.Lstat(p)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, denied
+	}
+	if info.Mode().Perm()&0o200 != 0 {
+		// Writable now: another override finished, or the mode changed.
+		return s.fs.OpenFile(p, os.O_WRONLY, 0)
+	}
+	mode := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+	if err := s.fs.Chmod(p, mode|0o200); err != nil {
+		return nil, denied
+	}
+	f, openErr := s.fs.OpenFile(p, os.O_WRONLY, 0)
+	if err := s.fs.Chmod(p, mode); err != nil && openErr == nil {
+		f.Close()
+		return nil, fmt.Errorf("restore mode %v: %w", mode, err)
+	}
+	return f, openErr
+}
+
 // Create implements the CREATE operation
 func (s *AbsfsNFS) Create(dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode, error) {
 	return s.CreateWithContext(context.Background(), dir, name, attrs)
 }
 
-// CreateWithContext implements the CREATE operation with timeout support
+// CreateWithContext implements the CREATE operation with timeout support.
+// An existing file is truncated (NFS UNCHECKED semantics).
 func (s *AbsfsNFS) CreateWithContext(ctx context.Context, dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode, error) {
+	return s.createWithContext(ctx, dir, name, attrs, false)
+}
+
+// createWithContext creates a file. With exclusive set it fails with an
+// os.ErrExist error when the name exists (NFS GUARDED and EXCLUSIVE).
+func (s *AbsfsNFS) createWithContext(ctx context.Context, dir *NFSNode, name string, attrs *NFSAttrs, exclusive bool) (*NFSNode, error) {
 	if dir == nil {
 		return nil, fmt.Errorf("nil directory node")
 	}
@@ -519,7 +572,12 @@ func (s *AbsfsNFS) CreateWithContext(ctx context.Context, dir *NFSNode, name str
 		return nil, fmt.Errorf("create: failed to sanitize path: %w", err)
 	}
 
-	f, err := s.fs.Create(path)
+	var f absfs.File
+	if exclusive {
+		f, err = s.fs.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, attrs.Mode&os.ModePerm)
+	} else {
+		f, err = s.fs.Create(path)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create: failed to create %s: %w", path, err)
 	}
@@ -673,6 +731,9 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 	}
 
 	err = s.fs.Rename(oldPath, newPath)
+	if err != nil && errors.Is(err, os.ErrExist) {
+		err = s.replaceByRename(oldPath, newPath, err)
+	}
 	if err != nil {
 		return fmt.Errorf("rename: failed to rename %s to %s: %w", oldPath, newPath, err)
 	}
@@ -689,6 +750,36 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 		s.dirCache.Invalidate(newDir.path)
 	}
 	return nil
+}
+
+// replaceByRename gives RENAME its NFS (and POSIX) meaning on filesystems whose
+// Rename refuses an existing target (memfs does): RFC 1813 says a compatible
+// target, both non-directories or an empty directory replaced by a directory,
+// is removed and the rename proceeds. Unlike a native rename this is not
+// atomic. exists is the error Rename returned.
+func (s *AbsfsNFS) replaceByRename(oldPath, newPath string, exists error) error {
+	if oldPath == newPath {
+		return nil
+	}
+	src, err := s.fs.Lstat(oldPath)
+	if err != nil {
+		return err
+	}
+	dst, err := s.fs.Lstat(newPath)
+	if err != nil {
+		return exists
+	}
+	switch {
+	case src.IsDir() && !dst.IsDir():
+		return syscall.ENOTDIR
+	case !src.IsDir() && dst.IsDir():
+		return syscall.EISDIR
+	}
+	// Remove fails on a non-empty directory, which is the required error.
+	if err := s.fs.Remove(newPath); err != nil {
+		return err
+	}
+	return s.fs.Rename(oldPath, newPath)
 }
 
 // ReadDir implements the READDIR operation

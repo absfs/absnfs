@@ -1744,8 +1744,13 @@ func TestCovBoost_HandleCreate_ExclusiveExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleCreate: %v", err)
 	}
-	if readStatus(t, result) != NFS_OK {
-		t.Errorf("expected NFS_OK for EXCLUSIVE create of existing file, got %d", readStatus(t, result))
+	// The file exists and was not made by this verifier: RFC 1813 requires
+	// NFS3ERR_EXIST, and the existing file must not be truncated.
+	if readStatus(t, result) != NFSERR_EXIST {
+		t.Errorf("expected NFSERR_EXIST for EXCLUSIVE create of existing file, got %d", readStatus(t, result))
+	}
+	if info, err := srv.handler.fs.Lstat("/dir/file.txt"); err != nil || info.Size() != int64(len("hello")) {
+		t.Errorf("existing file changed: %v, %v", info, err)
 	}
 }
 
