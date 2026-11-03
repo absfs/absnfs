@@ -135,7 +135,7 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 	}
 
 	targetPath := path.Join(node.path, name)
-	targetInfo, err := h.server.handler.fs.Stat(targetPath)
+	targetInfo, err := h.server.handler.fs.Lstat(targetPath)
 	if err != nil {
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, NFSERR_NOENT)

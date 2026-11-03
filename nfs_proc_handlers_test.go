@@ -98,18 +98,19 @@ func TestR3_NilAttrsSafetyInGetAttr(t *testing.T) {
 	node.attrs = nil
 	node.mu.Unlock()
 
-	// GetAttr should still work - it reads uid/gid under RLock with nil check
+	// GetAttr should still work: it reads everything from the filesystem
 	attrs, err := nfs.GetAttr(node)
 	if err != nil {
 		t.Fatalf("GetAttr should not fail with nil attrs, got: %v", err)
 	}
 
-	// When attrs is nil, uid and gid should default to 0
-	if attrs.Uid != 0 {
-		t.Errorf("Expected UID=0 when node.attrs is nil, got %d", attrs.Uid)
+	// memfs records no OS owner, so the serving user is reported
+	want := processOwner()
+	if attrs.Uid != want.UID || attrs.Gid != want.GID {
+		t.Errorf("owner = %d:%d, want the serving user %d:%d", attrs.Uid, attrs.Gid, want.UID, want.GID)
 	}
-	if attrs.Gid != 0 {
-		t.Errorf("Expected GID=0 when node.attrs is nil, got %d", attrs.Gid)
+	if attrs.FileId != fileID("/testfile") {
+		t.Errorf("FileId = %d, want %d", attrs.FileId, fileID("/testfile"))
 	}
 }
 

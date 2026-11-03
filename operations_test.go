@@ -204,11 +204,13 @@ func TestOperationsAdvanced(t *testing.T) {
 		if updatedAttrs.Mode != newAttrs.Mode {
 			t.Errorf("SetAttr didn't update mode: got %o, want %o", updatedAttrs.Mode, newAttrs.Mode)
 		}
-		if updatedAttrs.Uid != newAttrs.Uid {
-			t.Errorf("SetAttr didn't update uid: got %d, want %d", updatedAttrs.Uid, newAttrs.Uid)
+		// memfs records the chown but no OS owner, so the export's owner is
+		// still the one reported.
+		if uid, gid := memfsOwner(t, fs, "/attrfile"); uid != newAttrs.Uid || gid != newAttrs.Gid {
+			t.Errorf("SetAttr didn't chown: memfs owner %d:%d, want %d:%d", uid, gid, newAttrs.Uid, newAttrs.Gid)
 		}
-		if updatedAttrs.Gid != newAttrs.Gid {
-			t.Errorf("SetAttr didn't update gid: got %d, want %d", updatedAttrs.Gid, newAttrs.Gid)
+		if updatedAttrs.FileId != fileID("/attrfile") {
+			t.Errorf("SetAttr lost the file id: got %d", updatedAttrs.FileId)
 		}
 
 		// Test SetAttr with nil node
@@ -555,7 +557,7 @@ func TestOperationsAdvanced(t *testing.T) {
 		if err != nil {
 			t.Errorf("GetAttr after SetAttr failed: %v", err)
 		}
-		if attrs3.Mode != newAttrs.Mode || attrs3.Uid != newAttrs.Uid {
+		if uid, _ := memfsOwner(t, fs, "/cachefile"); attrs3.Mode != newAttrs.Mode || uid != newAttrs.Uid {
 			t.Error("Attributes not updated after cache invalidation")
 		}
 

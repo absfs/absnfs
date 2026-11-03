@@ -117,6 +117,7 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 	// Apply truncation before other attribute changes.
 	// This is critical for file overwrites: the NFS client sends
 	// SETATTR(size=0) before WRITE(offset=0, data) to clear old content.
+	current := preAttrs
 	if sattr.SetSize {
 		if sattr.Size > uint64(math.MaxInt64) {
 			return nfsErrorWithWcc(reply, NFSERR_INVAL), nil
@@ -125,27 +126,19 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 			return nfsErrorWithWcc(reply, mapError(err)), nil
 		}
 		h.server.handler.attrCache.Invalidate(node.path)
-		info, statErr := h.server.handler.fs.Stat(node.path)
-		if statErr == nil {
-			node.mu.Lock()
-			node.attrs.Size = info.Size()
-			node.attrs.SetMtime(info.ModTime())
-			node.attrs.Refresh()
-			node.mu.Unlock()
+		if fresh, statErr := h.server.handler.statAttrs(node.path); statErr == nil {
+			current = fresh
 		}
 	}
 
-	node.mu.RLock()
-	if node.attrs == nil {
-		node.mu.RUnlock()
-		return nfsErrorWithWcc(reply, NFSERR_IO), nil
-	}
-	attrs := &NFSAttrs{
-		Mode: node.attrs.Mode,
-		Uid:  node.attrs.Uid,
-		Gid:  node.attrs.Gid,
-	}
-	node.mu.RUnlock()
+	// SetAttr applies the fields that differ from node.attrs, so give the
+	// node the fresh attributes and start the request from a copy of them:
+	// file id, owner and times are kept unless the request sets them.
+	nodeAttrs, reqAttrs := *current, *current
+	node.mu.Lock()
+	node.attrs = &nodeAttrs
+	node.mu.Unlock()
+	attrs := &reqAttrs
 
 	if sattr.SetMode {
 		attrs.Mode = os.FileMode(sattr.Mode)

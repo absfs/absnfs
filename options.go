@@ -15,25 +15,25 @@ import (
 // TuningOptions contains performance-related settings safe for runtime change.
 // Stale reads are harmless -- they only affect performance characteristics.
 type TuningOptions struct {
-	TransferSize          int
-	AttrCacheTimeout      time.Duration
-	AttrCacheSize         int
-	CacheNegativeLookups  bool
-	NegativeCacheTimeout  time.Duration
-	EnableDirCache        bool
-	DirCacheTimeout       time.Duration
-	DirCacheMaxEntries    int
-	DirCacheMaxDirSize    int
-	MaxWorkers            int
-	MaxConnections        int
-	IdleTimeout           time.Duration
-	TCPKeepAlive          bool
-	TCPNoDelay            bool
-	SendBufferSize        int
-	ReceiveBufferSize     int
-	Async                 bool
-	Log                   *LogConfig
-	Timeouts              *TimeoutConfig
+	TransferSize         int
+	AttrCacheTimeout     time.Duration
+	AttrCacheSize        int
+	CacheNegativeLookups bool
+	NegativeCacheTimeout time.Duration
+	EnableDirCache       bool
+	DirCacheTimeout      time.Duration
+	DirCacheMaxEntries   int
+	DirCacheMaxDirSize   int
+	MaxWorkers           int
+	MaxConnections       int
+	IdleTimeout          time.Duration
+	TCPKeepAlive         bool
+	TCPNoDelay           bool
+	SendBufferSize       int
+	ReceiveBufferSize    int
+	Async                bool
+	Log                  *LogConfig
+	Timeouts             *TimeoutConfig
 }
 
 // PolicyOptions contains security/access settings that require drain-and-swap.
@@ -67,23 +67,23 @@ func (n *AbsfsNFS) snapshotOptions() *RequestOptions {
 // tuningFromExportOptions extracts TuningOptions from ExportOptions.
 func tuningFromExportOptions(opts *ExportOptions) *TuningOptions {
 	t := &TuningOptions{
-		TransferSize:          opts.TransferSize,
-		AttrCacheTimeout:      opts.AttrCacheTimeout,
-		AttrCacheSize:         opts.AttrCacheSize,
-		CacheNegativeLookups:  opts.CacheNegativeLookups,
-		NegativeCacheTimeout:  opts.NegativeCacheTimeout,
-		EnableDirCache:        opts.EnableDirCache,
-		DirCacheTimeout:       opts.DirCacheTimeout,
-		DirCacheMaxEntries:    opts.DirCacheMaxEntries,
-		DirCacheMaxDirSize:    opts.DirCacheMaxDirSize,
-		MaxWorkers:            opts.MaxWorkers,
-		MaxConnections:        opts.MaxConnections,
-		IdleTimeout:           opts.IdleTimeout,
-		TCPKeepAlive:          opts.TCPKeepAlive,
-		TCPNoDelay:            opts.TCPNoDelay,
-		SendBufferSize:        opts.SendBufferSize,
-		ReceiveBufferSize:     opts.ReceiveBufferSize,
-		Async:                 opts.Async,
+		TransferSize:         opts.TransferSize,
+		AttrCacheTimeout:     opts.AttrCacheTimeout,
+		AttrCacheSize:        opts.AttrCacheSize,
+		CacheNegativeLookups: opts.CacheNegativeLookups,
+		NegativeCacheTimeout: opts.NegativeCacheTimeout,
+		EnableDirCache:       opts.EnableDirCache,
+		DirCacheTimeout:      opts.DirCacheTimeout,
+		DirCacheMaxEntries:   opts.DirCacheMaxEntries,
+		DirCacheMaxDirSize:   opts.DirCacheMaxDirSize,
+		MaxWorkers:           opts.MaxWorkers,
+		MaxConnections:       opts.MaxConnections,
+		IdleTimeout:          opts.IdleTimeout,
+		TCPKeepAlive:         opts.TCPKeepAlive,
+		TCPNoDelay:           opts.TCPNoDelay,
+		SendBufferSize:       opts.SendBufferSize,
+		ReceiveBufferSize:    opts.ReceiveBufferSize,
+		Async:                opts.Async,
 	}
 	if opts.Log != nil {
 		logCopy := *opts.Log
@@ -122,28 +122,28 @@ func policyFromExportOptions(opts *ExportOptions) *PolicyOptions {
 // exportOptionsFromSnapshots reconstructs an ExportOptions from tuning + policy snapshots.
 func exportOptionsFromSnapshots(t *TuningOptions, p *PolicyOptions) ExportOptions {
 	opts := ExportOptions{
-		ReadOnly:              p.ReadOnly,
-		Secure:                p.Secure,
-		Squash:                p.Squash,
-		MaxFileSize:           p.MaxFileSize,
-		EnableRateLimiting:    p.EnableRateLimiting,
-		Async:                 t.Async,
-		TransferSize:          t.TransferSize,
-		AttrCacheTimeout:      t.AttrCacheTimeout,
-		AttrCacheSize:         t.AttrCacheSize,
-		CacheNegativeLookups:  t.CacheNegativeLookups,
-		NegativeCacheTimeout:  t.NegativeCacheTimeout,
-		EnableDirCache:        t.EnableDirCache,
-		DirCacheTimeout:       t.DirCacheTimeout,
-		DirCacheMaxEntries:    t.DirCacheMaxEntries,
-		DirCacheMaxDirSize:    t.DirCacheMaxDirSize,
-		MaxWorkers:            t.MaxWorkers,
-		MaxConnections:        t.MaxConnections,
-		IdleTimeout:           t.IdleTimeout,
-		TCPKeepAlive:          t.TCPKeepAlive,
-		TCPNoDelay:            t.TCPNoDelay,
-		SendBufferSize:        t.SendBufferSize,
-		ReceiveBufferSize:     t.ReceiveBufferSize,
+		ReadOnly:             p.ReadOnly,
+		Secure:               p.Secure,
+		Squash:               p.Squash,
+		MaxFileSize:          p.MaxFileSize,
+		EnableRateLimiting:   p.EnableRateLimiting,
+		Async:                t.Async,
+		TransferSize:         t.TransferSize,
+		AttrCacheTimeout:     t.AttrCacheTimeout,
+		AttrCacheSize:        t.AttrCacheSize,
+		CacheNegativeLookups: t.CacheNegativeLookups,
+		NegativeCacheTimeout: t.NegativeCacheTimeout,
+		EnableDirCache:       t.EnableDirCache,
+		DirCacheTimeout:      t.DirCacheTimeout,
+		DirCacheMaxEntries:   t.DirCacheMaxEntries,
+		DirCacheMaxDirSize:   t.DirCacheMaxDirSize,
+		MaxWorkers:           t.MaxWorkers,
+		MaxConnections:       t.MaxConnections,
+		IdleTimeout:          t.IdleTimeout,
+		TCPKeepAlive:         t.TCPKeepAlive,
+		TCPNoDelay:           t.TCPNoDelay,
+		SendBufferSize:       t.SendBufferSize,
+		ReceiveBufferSize:    t.ReceiveBufferSize,
 	}
 	if len(p.AllowedIPs) > 0 {
 		opts.AllowedIPs = make([]string, len(p.AllowedIPs))
@@ -433,6 +433,27 @@ type ExportOptions struct {
 	// When nil, default timeouts are used for all operations
 	// Allows fine-grained control over how long each operation type can take
 	Timeouts *TimeoutConfig
+
+	// DefaultOwner is the uid/gid reported for files whose os.FileInfo does
+	// not record an owner (memfs and most virtual filesystems, and every
+	// filesystem on Windows). Files from the operating system's own
+	// filesystem (osfs on unix) report their real owner instead.
+	//
+	// When nil, the uid and gid of the serving process are used (0/0 on
+	// Windows, which has no numeric ids). Reporting the serving user rather
+	// than root matters to clients such as git, which refuses to work in a
+	// directory owned by someone else ("dubious ownership").
+	//
+	// Fixed when the export is created; UpdateExportOptions ignores it.
+	DefaultOwner *FileOwner
+
+	// ForceOwner reports DefaultOwner (or the serving user, when
+	// DefaultOwner is nil) for every file, even those whose real owner is
+	// known. Use it to present a tree owned by another account as the
+	// mounting user's own. Default: false.
+	//
+	// Fixed when the export is created; UpdateExportOptions ignores it.
+	ForceOwner bool
 }
 
 // TimeoutConfig defines timeout durations for various NFS operations

@@ -18,7 +18,17 @@
 //
 //	fs, _ := memfs.NewFS()
 //	server, _ := absnfs.New(fs, absnfs.ExportOptions{})
-//	server.Export("/export/test", 2049)
+//	server.Export("/", 12049)
+//
+// On macOS a normal user can then mount it without root:
+//
+//	mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,nolocks localhost:/ ~/nfs
+//
+// Attributes: every procedure reports the same non-zero file id for an
+// object (derived from its path, like the file handles), describes symlinks
+// as symlinks, and reports the real owner when the filesystem's FileInfo
+// carries a *syscall.Stat_t, otherwise ExportOptions.DefaultOwner, which
+// defaults to the user running the server.
 //
 // Security Features:
 //   - IP-based access control
@@ -59,6 +69,14 @@ type AbsfsNFS struct {
 	rateLimiter      *RateLimiter            // Rate limiter for DoS protection
 	exportServer     *Server                 // Server created by Export(), nil if not exported
 
+	// owner is reported for files whose FileInfo carries no owner, and for
+	// every file when forceOwner is set. Fixed at New.
+	owner      FileOwner
+	forceOwner bool
+
+	// ownerWriteMu serializes owner-override opens (see openForOwnerWrite).
+	ownerWriteMu sync.Mutex
+
 	// Options are stored as immutable snapshots behind atomic pointers.
 	// Readers load the pointer -- no lock needed.
 	tuning atomic.Pointer[TuningOptions]
@@ -83,10 +101,10 @@ type AbsfsNFS struct {
 type FileHandleMap struct {
 	sync.RWMutex
 	handles     map[uint64]absfs.File
-	pathHandles map[string]uint64  // Reverse map: path -> handle for deduplication
-	nextHandle  uint64             // Counter for allocating new handles
-	freeHandles *uint64MinHeap     // Min-heap of freed handles for reuse
-	maxHandles  int                // Maximum handles before eviction (0 = DefaultMaxHandles)
+	pathHandles map[string]uint64 // Reverse map: path -> handle for deduplication
+	nextHandle  uint64            // Counter for allocating new handles
+	freeHandles *uint64MinHeap    // Min-heap of freed handles for reuse
+	maxHandles  int               // Maximum handles before eviction (0 = DefaultMaxHandles)
 }
 
 // NFSNode represents a file or directory in the NFS tree

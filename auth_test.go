@@ -709,15 +709,8 @@ func TestR3_AccessPermissionChecking(t *testing.T) {
 		server.handler.fs.Chmod("/ownerfile", 0700)
 		fileHandle := getFileHandle(server, "/ownerfile")
 
-		// Set the file's uid to match the auth context
-		node, ok := handler.lookupNode(fileHandle)
-		if !ok {
-			t.Fatal("Failed to look up node")
-		}
-		node.mu.Lock()
-		node.attrs.Uid = 1000
-		node.attrs.Gid = 2000
-		node.mu.Unlock()
+		// Make UID 1000 the file's owner; memfs records no OS owner, so the export's owner is reported
+		server.handler.owner = FileOwner{UID: 1000, GID: 2000}
 
 		// Auth context: owner (UID 1000)
 		authCtx := &AuthContext{
@@ -765,14 +758,8 @@ func TestR3_AccessPermissionChecking(t *testing.T) {
 		server.handler.fs.Chmod("/otherfile", 0704)
 		fileHandle := getFileHandle(server, "/otherfile")
 
-		node, ok := handler.lookupNode(fileHandle)
-		if !ok {
-			t.Fatal("Failed to look up node")
-		}
-		node.mu.Lock()
-		node.attrs.Uid = 1000
-		node.attrs.Gid = 2000
-		node.mu.Unlock()
+		// memfs records no OS owner, so the export's owner is reported
+		server.handler.owner = FileOwner{UID: 1000, GID: 2000}
 
 		// Auth context: neither owner nor group (UID 9999, GID 8888)
 		authCtx := &AuthContext{
@@ -819,14 +806,8 @@ func TestR3_AccessPermissionChecking(t *testing.T) {
 		server.handler.fs.Chmod("/nopermfile", 0000)
 		fileHandle := getFileHandle(server, "/nopermfile")
 
-		node, ok := handler.lookupNode(fileHandle)
-		if !ok {
-			t.Fatal("Failed to look up node")
-		}
-		node.mu.Lock()
-		node.attrs.Uid = 1000
-		node.attrs.Gid = 2000
-		node.mu.Unlock()
+		// memfs records no OS owner, so the export's owner is reported
+		server.handler.owner = FileOwner{UID: 1000, GID: 2000}
 
 		// Auth context: root (UID 0)
 		authCtx := &AuthContext{
@@ -925,10 +906,12 @@ func TestR3_SetattrUIDGIDAuthRestriction(t *testing.T) {
 		t.Fatal("Failed to look up node")
 	}
 
-	node.mu.Lock()
-	node.attrs.Uid = 1000
-	node.attrs.Gid = 1000
-	node.mu.Unlock()
+	// The file belongs to UID 1000 in memfs, and memfs records no OS owner,
+	// so the export reports its configured owner: make that 1000 too.
+	if err := server.handler.fs.Chown("/testfile.txt", 1000, 1000); err != nil {
+		t.Fatal(err)
+	}
+	server.handler.owner = FileOwner{UID: 1000, GID: 1000}
 
 	t.Run("NonRootCannotChangeUID", func(t *testing.T) {
 		// Build SETATTR request: set UID to 0
@@ -963,9 +946,13 @@ func TestR3_SetattrUIDGIDAuthRestriction(t *testing.T) {
 		}
 
 		// Verify UID was NOT changed (non-root cannot change UID)
+		currentUID, _ := memfsOwner(t, server.handler.fs, "/testfile.txt")
 		node.mu.RLock()
-		currentUID := node.attrs.Uid
+		reported := node.attrs.Uid
 		node.mu.RUnlock()
+		if reported != 1000 {
+			t.Errorf("reported UID = %d, want 1000", reported)
+		}
 
 		if currentUID == 0 {
 			t.Error("Non-root user should not be able to change UID to 0")
@@ -976,11 +963,6 @@ func TestR3_SetattrUIDGIDAuthRestriction(t *testing.T) {
 	})
 
 	t.Run("RootCanChangeUID", func(t *testing.T) {
-		// Reset UID
-		node.mu.Lock()
-		node.attrs.Uid = 1000
-		node.mu.Unlock()
-
 		var buf bytes.Buffer
 		xdrEncodeFileHandle(&buf, fileHandle)
 		binary.Write(&buf, binary.BigEndian, uint32(0)) // set_mode = false
@@ -1010,10 +992,8 @@ func TestR3_SetattrUIDGIDAuthRestriction(t *testing.T) {
 			t.Fatalf("Expected NFS_OK, got %d", status)
 		}
 
-		// Verify UID WAS changed (root can change UID)
-		node.mu.RLock()
-		currentUID := node.attrs.Uid
-		node.mu.RUnlock()
+		// Verify UID WAS changed in the filesystem (root can change UID)
+		currentUID, _ := memfsOwner(t, server.handler.fs, "/testfile.txt")
 
 		if currentUID != 0 {
 			t.Errorf("Root should be able to change UID to 0, got %d", currentUID)

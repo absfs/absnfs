@@ -171,6 +171,13 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	// Populate atomic option pointers from the fully-defaulted ExportOptions
 	server.initAtomicOptions(&options)
 
+	// Ownership reported for files whose FileInfo records none
+	server.owner = processOwner()
+	if options.DefaultOwner != nil {
+		server.owner = *options.DefaultOwner
+	}
+	server.forceOwner = options.ForceOwner
+
 	// Initialize directory cache if enabled
 	if options.EnableDirCache {
 		server.dirCache = NewDirCache(options.DirCacheTimeout, options.DirCacheMaxEntries, options.DirCacheMaxDirSize)
@@ -201,23 +208,11 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		children:          make(map[string]*NFSNode),
 	}
 
-	info, err := fs.Stat("/")
+	attrs, err := server.statAttrs("/")
 	if err != nil {
 		return nil, err
 	}
-
-	modTime := info.ModTime()
-	root.attrs = &NFSAttrs{
-		Mode: info.Mode(),
-		Size: info.Size(),
-		Uid:  0, // Root ownership by default
-		Gid:  0,
-	}
-	root.attrs.SetMtime(modTime)
-	root.attrs.SetAtime(modTime) // Use ModTime as Atime since absfs doesn't expose Atime
-	root.mu.Lock()
-	root.attrs.Refresh() // Initialize cache validity
-	root.mu.Unlock()
+	root.attrs = attrs
 
 	server.root = root
 	return server, nil
@@ -323,7 +318,11 @@ func (n *AbsfsNFS) SetLogger(logger Logger) error {
 // GetExportOptions returns a copy of the current export options
 // This is thread-safe and returns a snapshot of the current configuration
 func (n *AbsfsNFS) GetExportOptions() ExportOptions {
-	return exportOptionsFromSnapshots(n.tuning.Load(), n.policy.Load())
+	opts := exportOptionsFromSnapshots(n.tuning.Load(), n.policy.Load())
+	owner := n.owner
+	opts.DefaultOwner = &owner
+	opts.ForceOwner = n.forceOwner
+	return opts
 }
 
 // UpdateExportOptions updates the server's export options at runtime.

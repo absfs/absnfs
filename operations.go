@@ -10,12 +10,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/absfs/absfs"
@@ -163,32 +162,15 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 		return node, nil
 	}
 
-	// Use Lstat to get symlink info without following
-	// The filesystem now implements absfs.SymlinkFileSystem which has Lstat
-	info, err := s.fs.Lstat(path)
-
+	attrs, err := s.statAttrs(path)
 	if err != nil {
 		// Store negative cache entry if enabled and error is "not found"
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			s.attrCache.PutNegative(path)
 			s.RecordNegativeCacheMiss()
 		}
-		return nil, fmt.Errorf("lookup: failed to stat %s: %w", path, err)
+		return nil, fmt.Errorf("lookup: %w", err)
 	}
-
-	modTime := info.ModTime()
-	h := fnv.New64a()
-	h.Write([]byte(path))
-	attrs := &NFSAttrs{
-		Mode:   info.Mode(),
-		Size:   info.Size(),
-		FileId: h.Sum64(),
-		Uid:    0,
-		Gid:    0,
-	}
-	attrs.SetMtime(modTime)
-	attrs.SetAtime(modTime)
-	attrs.Refresh() // Initialize cache validity
 
 	node := &NFSNode{
 		SymlinkFileSystem: s.fs,
@@ -196,7 +178,7 @@ func (s *AbsfsNFS) LookupWithContext(ctx context.Context, path string) (*NFSNode
 		attrs:             attrs,
 	}
 
-	if info.IsDir() {
+	if attrs.Mode.IsDir() {
 		node.children = make(map[string]*NFSNode)
 	}
 
@@ -216,36 +198,11 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 		return attrs, nil
 	}
 
-	// Get fresh attributes using Lstat (to handle symlinks properly)
-	// The filesystem implements absfs.SymlinkFileSystem which has Lstat
-	info, err := s.fs.Lstat(node.path)
-
+	// Get fresh attributes (Lstat, so a symlink is described as itself)
+	attrs, err := s.statAttrs(node.path)
 	if err != nil {
-		return nil, fmt.Errorf("getattr: failed to stat %s: %w", node.path, err)
+		return nil, fmt.Errorf("getattr: %w", err)
 	}
-
-	// Read Uid/Gid from node.attrs with lock protection
-	var uid, gid uint32
-	node.mu.RLock()
-	if node.attrs != nil {
-		uid = node.attrs.Uid
-		gid = node.attrs.Gid
-	}
-	node.mu.RUnlock()
-
-	modTime := info.ModTime()
-	h := fnv.New64a()
-	h.Write([]byte(node.path))
-	attrs := &NFSAttrs{
-		Mode:   info.Mode(),
-		Size:   info.Size(),
-		FileId: h.Sum64(),
-		Uid:    uid,
-		Gid:    gid,
-	}
-	attrs.SetMtime(modTime)
-	attrs.SetAtime(modTime)
-	attrs.Refresh() // Initialize cache validity
 
 	// Cache the attributes
 	s.attrCache.Put(node.path, attrs)
@@ -261,8 +218,8 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 		return fmt.Errorf("nil attrs")
 	}
 
-	// Check if file exists first
-	_, err := s.fs.Stat(node.path)
+	// Check if the object exists first
+	_, err := s.fs.Lstat(node.path)
 	if err != nil {
 		return fmt.Errorf("setattr: %w", err)
 	}
@@ -295,14 +252,18 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 		}
 	}
 
-	// Update attrs with lock protection
-	node.mu.Lock()
-	node.attrs = attrs
-	node.attrs.Refresh() // Initialize cache validity
-	node.mu.Unlock()
-
 	// Invalidate cache after attribute changes
 	s.attrCache.Invalidate(node.path)
+
+	// Re-read what the filesystem now records rather than trusting the
+	// request, so the node keeps its file id and real owner.
+	fresh, err := s.statAttrs(node.path)
+	if err != nil {
+		return fmt.Errorf("setattr: %w", err)
+	}
+	node.mu.Lock()
+	node.attrs = fresh
+	node.mu.Unlock()
 	return nil
 }
 
@@ -487,12 +448,9 @@ func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset i
 		}
 
 		// Update node attributes to reflect new size and time
-		info, statErr := s.fs.Stat(node.path)
-		if statErr == nil {
+		if fresh, statErr := s.statAttrs(node.path); statErr == nil {
 			node.mu.Lock()
-			node.attrs.Size = info.Size()
-			node.attrs.SetMtime(info.ModTime())
-			node.attrs.Refresh() // Initialize cache validity
+			node.attrs = fresh
 			node.mu.Unlock()
 		}
 	}
@@ -573,6 +531,16 @@ func (s *AbsfsNFS) CreateWithContext(ctx context.Context, dir *NFSNode, name str
 	if err := s.fs.Chmod(path, attrs.Mode&os.ModePerm); err != nil {
 		s.fs.Remove(path)
 		return nil, fmt.Errorf("create: failed to chmod %s: %w", path, err)
+	}
+
+	// Give the file the requested owner, as MKDIR and SYMLINK do. This is
+	// best effort: a server not running as root can only chown to itself.
+	if err := s.fs.Chown(path, int(attrs.Uid), int(attrs.Gid)); err != nil {
+		if slog := s.getStructuredLogger(); slog != nil {
+			slog.Debug("CREATE: chown failed",
+				LogField{Key: "path", Value: path},
+				LogField{Key: "error", Value: err})
+		}
 	}
 
 	// Invalidate parent directory caches and negative cache entries in the directory
@@ -862,34 +830,19 @@ func (s *AbsfsNFS) ReadDirPlus(dir *NFSNode) ([]*NFSNode, error) {
 
 	// Pre-cache attributes for all entries
 	for _, node := range nodes {
-		if attrs, found := s.attrCache.Get(node.path, s); !found || attrs == nil || !attrs.IsValid() {
-			info, err := s.fs.Stat(node.path)
-			if err != nil {
-				continue
-			}
-			// Read Uid/Gid with lock protection
-			node.mu.RLock()
-			uid := node.attrs.Uid
-			gid := node.attrs.Gid
-			node.mu.RUnlock()
-
-			modTime := info.ModTime()
-			attrs := &NFSAttrs{
-				Mode: info.Mode(),
-				Size: info.Size(),
-				Uid:  uid,
-				Gid:  gid,
-			}
-			attrs.SetMtime(modTime)
-			attrs.SetAtime(modTime)
-			attrs.Refresh() // Initialize cache validity
-			s.attrCache.Put(node.path, attrs)
-
-			// Assign attrs with write lock protection
-			node.mu.Lock()
-			node.attrs = attrs
-			node.mu.Unlock()
+		if attrs, found := s.attrCache.Get(node.path, s); found && attrs != nil && attrs.IsValid() {
+			continue
 		}
+		attrs, err := s.statAttrs(node.path)
+		if err != nil {
+			continue
+		}
+		s.attrCache.Put(node.path, attrs)
+
+		// Assign attrs with write lock protection
+		node.mu.Lock()
+		node.attrs = attrs
+		node.mu.Unlock()
 	}
 
 	return nodes, nil
