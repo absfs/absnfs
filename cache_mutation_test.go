@@ -264,13 +264,13 @@ func TestGetAttrRacingChangeLeavesNoStaleEntry(t *testing.T) {
 		}},
 		{"SETATTR", func(e *cacheEnv, node *NFSNode) {
 			want := *node.attrs
-			want.Mode = 0o600
+			want.Mode = 0o444 // read-only: a mode Windows can represent
 			if err := e.nfs.SetAttr(node, &want); err != nil {
 				e.t.Errorf("SetAttr: %v", err)
 			}
 		}, func(t *testing.T, attrs *NFSAttrs) {
-			if attrs.Mode.Perm() != 0o600 {
-				t.Errorf("GETATTR after SETATTR reports mode %o, want 600", attrs.Mode.Perm())
+			if attrs.Mode.Perm() != 0o444 {
+				t.Errorf("GETATTR after SETATTR reports mode %o, want 444", attrs.Mode.Perm())
 			}
 		}},
 	} {
@@ -278,6 +278,8 @@ func TestGetAttrRacingChangeLeavesNoStaleEntry(t *testing.T) {
 			e, base := newOSCacheEnv(t, ExportOptions{AttrCacheTimeout: time.Hour})
 			p := path.Join(base, "f")
 			e.writeFile(p, "hello")
+			// Writable again before the directory is removed (Windows).
+			t.Cleanup(func() { e.fs.SymlinkFileSystem.Chmod(p, 0o644) })
 			node := e.lookup(p)
 			e.nfs.attrCache.Invalidate(p)
 
