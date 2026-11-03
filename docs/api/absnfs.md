@@ -72,7 +72,7 @@ kernel NFS clients (Linux, macOS `mount_nfs`) expect:
 - **RPC record marking** on the TCP stream (RFC 5531), which kernel clients
   require.
 - **No portmapper.** Clients name the port explicitly:
-  `mount_nfs -o vers=3,tcp,port=P,mountport=P,noresvport,nolocks localhost:/ ~/nfs`.
+  `mount_nfs -o vers=3,tcp,port=P,mountport=P,noresvport,locallocks,noatime localhost:/ ~/nfs`.
   See the README section "Mounting on macOS as a normal user".
 - **TLS** from `ExportOptions.TLS` applies, as with `Server.Listen`.
 
@@ -107,7 +107,7 @@ running. Use it after `Export(path, 0)` to learn the port to mount.
 if err := server.Export("/", 0); err != nil {
     log.Fatal(err)
 }
-fmt.Printf("mount_nfs -o vers=3,tcp,port=%[1]d,mountport=%[1]d,noresvport,nolocks localhost:/ ~/nfs\n",
+fmt.Printf("mount_nfs -o vers=3,tcp,port=%[1]d,mountport=%[1]d,noresvport,locallocks,noatime localhost:/ ~/nfs\n",
     server.ExportPort())
 ```
 

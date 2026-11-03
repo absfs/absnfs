@@ -18,6 +18,11 @@ to the macOS NFS client, which is stricter than Linux's.
 - `ExportOptions.ForceOwner`: report `DefaultOwner` for every file, even those
   with a real owner.
 - `FileOwner` type. `GetExportOptions` reports the owner in effect.
+- `ExportOptions.AllowAnySymlinkTarget`: let clients create symbolic links
+  with absolute or `..` targets (`ln -s ../README.md docs/up`), for
+  filesystems that resolve links within their own namespace. Off by default,
+  so exports of a host directory keep refusing links that could lead out of
+  the export. It is a policy option: `UpdateExportOptions` can change it.
 - `AbsfsNFS.ExportPort`, the port an `Export` listens on, so a caller that
   passed port 0 can tell clients where to mount.
 - Owner override for WRITE: the owner of a file may write it even when its
@@ -30,9 +35,17 @@ to the macOS NFS client, which is stricter than Linux's.
   `locallocks`, removing a large directory while listing it, and a git
   commit.
 - README sections on mounting from macOS as a normal user and on file
-  ownership.
+  ownership. The recipe uses `locallocks` (with `nolocks`, `go build` fails to
+  lock `go.mod`) and `noatime` (without it the macOS client sets the access
+  time of every file read through mmap, which makes a union copy it up).
 
 ### Fixed
+
+- READLINK refused (`NFS3ERR_IO`) any relative target with a `..` component,
+  so a link such as `docs/up -> ../README.md` read as EIO through a mount, and
+  `git add`, `git status` and `rg` failed on trees containing one. Targets are
+  now returned as stored: the client resolves them itself, so their text gives
+  it nothing it could not reach.
 
 - READDIRPLUS reported fileid 0 for every entry, and macOS hid them all, so
   `ls` showed an empty directory. SETATTR replies and the export root also

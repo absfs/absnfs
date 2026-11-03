@@ -22,7 +22,7 @@
 //
 // On macOS a normal user can then mount it without root:
 //
-//	mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,nolocks localhost:/ ~/nfs
+//	mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,locallocks,noatime localhost:/ ~/nfs
 //
 // Attributes: every procedure reports the same non-zero file id for an
 // object (derived from its path, like the file handles), describes symlinks

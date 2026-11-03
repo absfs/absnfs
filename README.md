@@ -71,7 +71,7 @@ Then mount it, as yourself, into a folder you own:
 ```bash
 # macOS
 mkdir -p ~/nfs
-mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,nolocks,soft,intr localhost:/ ~/nfs
+mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,locallocks,soft,intr localhost:/ ~/nfs
 ls -l ~/nfs
 umount ~/nfs   # before pressing Ctrl-C in the server
 
@@ -92,18 +92,19 @@ system NFS server. This recipe needs no `sudo`, no portmapper and no System
 Settings change:
 
 ```bash
-mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,nolocks,soft,intr,timeo=10,retrans=2 \
+mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,locallocks,noatime,soft,intr,timeo=10,retrans=2 \
     localhost:/ ~/nfs
 ```
 
-| Option                         | Why                                                                                                                                                                                                      |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `vers=3,tcp`                   | absnfs speaks NFSv3 over TCP.                                                                                                                                                                            |
-| `port=P`                       | Skip the portmapper lookup for NFS. The portmapper lives on port 111, which only root can bind.                                                                                                          |
-| `mountport=P`                  | Skip the portmapper lookup for the MOUNT protocol too. absnfs serves MOUNT on the same port as NFS.                                                                                                      |
-| `noresvport`                   | Connect from an ordinary source port. A reserved port (below 1024) needs root; without this option an unprivileged `mount_nfs` fails with "Operation not permitted". Leave `ExportOptions.Secure` false. |
-| `nolocks` or `locallocks`      | absnfs has no lock manager (NLM). `nolocks` disables locking; `locallocks` keeps locks on the client, which tools that lock files need (`go build` locks `go.mod`).                                      |
-| `soft,intr,timeo=10,retrans=2` | Recommended while developing: if the server process exits under a live mount, a hard mount hangs every process that touches it; a soft mount returns errors instead.                                     |
+| Option                         | Why                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `vers=3,tcp`                   | absnfs speaks NFSv3 over TCP.                                                                                                                                                                                                                                                                                                                                                                    |
+| `port=P`                       | Skip the portmapper lookup for NFS. The portmapper lives on port 111, which only root can bind.                                                                                                                                                                                                                                                                                                  |
+| `mountport=P`                  | Skip the portmapper lookup for the MOUNT protocol too. absnfs serves MOUNT on the same port as NFS.                                                                                                                                                                                                                                                                                              |
+| `noresvport`                   | Connect from an ordinary source port. A reserved port (below 1024) needs root; without this option an unprivileged `mount_nfs` fails with "Operation not permitted". Leave `ExportOptions.Secure` false.                                                                                                                                                                                         |
+| `locallocks`                   | absnfs has no lock manager (NLM). `locallocks` keeps locks on the client, which tools that lock files need: with `nolocks`, `go build` fails with "RLock go.mod: operation not supported". `nolocks` is fine for trees no tool locks.                                                                                                                                                            |
+| `noatime`                      | Without it, the macOS client sends a SETATTR to set the access time after a program reads a file through `mmap` (git reads every object it uses that way). The server then changes the file's times: harmless on a plain directory, but a union filesystem (unionfs) copies each such file up to its writable layer, so `git log` on a lower layer's repository copies its objects and packs up. |
+| `soft,intr,timeo=10,retrans=2` | Recommended while developing: if the server process exits under a live mount, a hard mount hangs every process that touches it; a soft mount returns errors instead.                                                                                                                                                                                                                             |
 
 Unmount with `umount ~/nfs`, then `umount -f`, then `diskutil unmount force` if
 it is busy. Always unmount before stopping the server.
@@ -151,6 +152,8 @@ gid; a server not running as root can only give them its own. An UNCHECKED
   object, derived from its path (file handles are path based too), so it
   survives a union filesystem copying the file up to another layer.
 - **Symlinks reported as symlinks** everywhere, including directory listings.
+  READLINK returns targets as stored, `..` components included; SYMLINK
+  accepts any target with `ExportOptions.AllowAnySymlinkTarget` (see Caveats).
 - **Real ownership** with a configurable fallback (above).
 - **Owner override**: the owner of a file may write it even when its mode does
   not allow writing, as with a local open file descriptor. A client that
@@ -176,7 +179,14 @@ gid; a server not running as root can only give them its own. An UNCHECKED
 - **AUTH_SYS only.** Clients assert their own uid and gid; absnfs trusts them,
   like any NFSv3 server without Kerberos. Use `AllowedIPs`, squashing and TLS
   to limit who can connect.
-- **No NLM lock manager.** Mount with `nolocks` or `locallocks`.
+- **No NLM lock manager.** Mount with `locallocks` (or `nolocks`, if no
+  tool locks files).
+- **SYMLINK refuses absolute and `..` targets by default** (`NFS3ERR_ACCES`,
+  "Permission denied" for `ln -s ../x y`), because a filesystem backed by a
+  host directory follows links on the host, where such a link could lead out
+  of the export. Set `ExportOptions.AllowAnySymlinkTarget` when the exported
+  filesystem resolves links within its own namespace (memfs, c4fs, unionfs).
+  READLINK returns every target as stored either way.
 - **No hard links** (LINK returns `NFS3ERR_NOTSUPP`).
 - **UNCHECKED CREATE truncates an existing file** (keeping its owner and
   mode), as `open(O_CREAT|O_TRUNC)` does. Clients send it only after a lookup

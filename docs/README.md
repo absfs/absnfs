@@ -44,7 +44,7 @@ func main() {
     }
 
     // Mount from macOS, as yourself:
-    //   mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,nolocks,soft,intr localhost:/ ~/nfs
+    //   mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,locallocks,noatime,soft,intr localhost:/ ~/nfs
     // Linux (as root):
     //   mount -t nfs -o vers=3,tcp,port=12049,mountport=12049,nolock localhost:/ /mnt/test
     select {} // block forever
