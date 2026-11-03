@@ -61,12 +61,18 @@ func main() {
 
 Once the server is running, mount from the same machine:
 
-**macOS:**
+**macOS** (as yourself, no `sudo`):
 ```sh
-sudo mkdir -p /Volumes/test
-sudo mount_nfs -o resvport,nolocks,vers=3,tcp,port=2049,mountport=2049 \
-  localhost:/ /Volumes/test
+mkdir -p ~/nfs
+mount_nfs -o vers=3,tcp,port=2049,mountport=2049,noresvport,nolocks \
+  localhost:/ ~/nfs
 ```
+
+`noresvport` lets an unprivileged user connect from an ordinary source port,
+`port` and `mountport` skip the portmapper, and `nolocks` (or `locallocks`)
+is needed because absnfs has no lock manager. See
+[Mounting on macOS as a normal user](../../README.md#mounting-on-macos-as-a-normal-user)
+for the full recipe and why each option matters.
 
 **Linux:**
 ```sh
@@ -77,12 +83,12 @@ sudo mount -t nfs -o vers=3,tcp,port=2049,mountport=2049,nolock \
 
 ## Key Types
 
-| Type | Purpose |
-|------|---------|
-| `absnfs.ExportOptions` | All configuration for the NFS export |
-| `absnfs.AbsfsNFS` | The NFS handler wrapping your filesystem |
-| `absnfs.Server` | TCP server managing connections and RPC dispatch |
-| `absnfs.ServerOptions` | Server-level settings (port, hostname, debug) |
+| Type                   | Purpose                                          |
+| ---------------------- | ------------------------------------------------ |
+| `absnfs.ExportOptions` | All configuration for the NFS export             |
+| `absnfs.AbsfsNFS`      | The NFS handler wrapping your filesystem         |
+| `absnfs.Server`        | TCP server managing connections and RPC dispatch |
+| `absnfs.ServerOptions` | Server-level settings (port, hostname, debug)    |
 
 ## Using the Convenience Export Method
 
@@ -101,9 +107,11 @@ if err := nfs.Export("/", 2049); err != nil {
 }
 ```
 
-Note that `Export` does not enable record marking or portmapper. For production
-use or standard NFS clients, create a `Server` explicitly as shown in the
-minimal example above.
+`Export` binds `localhost`, serves the MOUNT protocol on the same port, and
+uses RPC record marking, so kernel NFS clients can mount it directly (port 0
+picks a free port). It does not start a portmapper. For another bind address,
+a portmapper or TLS, create a `Server` explicitly as shown in the minimal
+example above.
 
 ## What Happens at Startup
 

@@ -7,7 +7,7 @@
 //
 //	# Without portmapper (non-privileged port):
 //	go run ./cmd/testserver -port 12049
-//	sudo mount_nfs -o resvport,nolocks,vers=3,tcp,port=12049,mountport=12049 localhost:/ /mnt/test
+//	mkdir -p ~/nfs && mount_nfs -o vers=3,tcp,port=12049,mountport=12049,noresvport,nolocks localhost:/ ~/nfs
 //
 //	# With portmapper (requires root):
 //	sudo go run ./cmd/testserver -portmapper
