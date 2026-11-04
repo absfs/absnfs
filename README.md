@@ -157,16 +157,21 @@ answer:
 - **`CaseInsensitiveTrue`** and **`CaseInsensitiveFalse`** give that answer
   for every handle. `CaseInsensitiveFalse` is what absnfs reported before.
 
-In auto mode FSINFO does not claim the answers are the same for every object
-(`FSF3_HOMOGENEOUS`), so the macOS client asks per object; otherwise it asks
-once per mount. Either way it takes the volume's answer (what Finder and
+The macOS client asks about the root once, at mount. In auto mode FSINFO
+does not claim the answers are the same for every object
+(`FSF3_HOMOGENEOUS`), so for any other object the client sends PATHCONF on
+each `pathconf(2)` call; with true or false it answers every object from
+the root's answer. Either way it takes the volume's answer (what Finder and
 `getattrlist` see) from the export's root at mount. An export whose root is
 case-sensitive but whose content folds, such as a memfs root listing
 switchfs routes to host directories on APFS, should set
 `CaseInsensitiveTrue`; auto would report its root, and so the volume, as
 case-sensitive. Fixed at `New`. Names are always passed to the filesystem as
 spelled: a case-only rename (`mv README.md Readme.md`) reaches the
-filesystem as a RENAME whatever the answer. See
+filesystem as a RENAME whatever the answer. The probe detects only ASCII
+case folding; Unicode normalisation (APFS treats composed and decomposed
+`é` as one name) and non-ASCII case are left to the filesystem, and
+PATHCONF says nothing about them. See
 [ExportOptions](docs/api/export-options.md#case-insensitive-names).
 
 ## Security
@@ -379,7 +384,8 @@ ABSNFS_MACOS_MOUNT=1 go test -run 'TestMacOSHandles|TestMacOSWorkspaces' -v
 ```
 
 `TestMacOSCaseOnlyRename` runs `mv README.md Readme.md` over the mount in a
-host directory, in a union of host directories, and in union workspaces under
+host directory, in a union of host directories (with `README.md` in the
+lower layer, and after an append copied it up), and in union workspaces under
 a memfs root (with `CaseInsensitiveTrue` and with auto), checks the rename
 reaches the filesystem (the union's writable layer then holds `Readme.md` and
 a whiteout of `README.md`), and checks what `pathconf(_PC_CASE_SENSITIVE)`

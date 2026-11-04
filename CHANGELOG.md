@@ -23,11 +23,20 @@ to the macOS NFS client, which is stricter than Linux's.
   to every handle. Fixed at `New`. Exports with a case-sensitive root over
   folding content (a memfs root listing switchfs routes to host directories
   on APFS) should set `CaseInsensitiveTrue`: the macOS client takes the
-  volume's answer from the root.
+  volume's answer from the root. The probe detects only ASCII case folding;
+  Unicode normalisation and non-ASCII case are left to the filesystem.
+  The answer does not make a case-only rename work: the client sends that
+  RENAME whatever PATHCONF says. A union over basefs after v1.0.0 (which
+  wraps `FileInfo`) returns success for `Rename("/README.md", "/Readme.md")`
+  and changes nothing, whether `README.md` is in the lower layer or copied
+  up; that needs a fix in unionfs (`sameEntry`), not here.
 - A macOS end-to-end test, `TestMacOSCaseOnlyRename`, run with
   `ABSNFS_MACOS_MOUNT=1`: `mv README.md Readme.md` over the mount in a host
-  directory, a union of host directories and union workspaces under a memfs
-  root, and `pathconf(_PC_CASE_SENSITIVE)` on each and on a memfs export.
+  directory, a union of host directories (with `README.md` in the lower
+  layer, and copied up), and union workspaces under a memfs root, and
+  `pathconf(_PC_CASE_SENSITIVE)` on each and on a memfs export. A unit test,
+  `TestRenameCaseOnlyUnion`, does the same renames through the Go API where
+  the temporary directory folds case.
 - `ExportOptions.AllowedUIDs` (and `PolicyOptions.AllowedUIDs`): when not
   empty, only AUTH_SYS requests carrying a listed uid reach NFS procedures;
   other uids and AUTH_NONE get `AUTH_ERROR`. NULL and MOUNT are answered for
@@ -278,8 +287,9 @@ to the macOS NFS client, which is stricter than Linux's.
   (`CaseInsensitiveAuto`): an export of a directory on a case-insensitive
   host volume (APFS, NTFS by default) now answers `case_insensitive` true,
   where absnfs always answered false. In this mode FSINFO no longer sets
-  `FSF3_HOMOGENEOUS`, so the macOS client asks PATHCONF on each
-  `pathconf(2)` call instead of once per mount. `CaseInsensitiveFalse`
+  `FSF3_HOMOGENEOUS`, so the macOS client, which still asks about the root
+  once at mount, sends PATHCONF for any other object on each `pathconf(2)`
+  call instead of answering it from the root's answer. `CaseInsensitiveFalse`
   restores both.
 - **UNCHECKED CREATE of an existing regular file sets only the size its
   `sattr3` asks for**, as Linux knfsd does: without one the file keeps its

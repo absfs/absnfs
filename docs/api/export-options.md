@@ -226,10 +226,11 @@ when the server removes, renames or replaces the directory, so a backend
 swapped behind the server's back (a switchfs route) is seen within the
 timeout.
 
-**What clients ask.** With `FSF3_HOMOGENEOUS` set, the macOS client asks
-PATHCONF once per mount, on the root, and answers every `pathconf(2)` from
-that. Without it (auto), it asks the server on every `pathconf(2)` call, for
-the object asked about. Either way it takes the volume's capabilities
+**What clients ask.** The macOS client sends PATHCONF for the root once, at
+mount, and answers later `pathconf(2)` calls on the root from that. With
+`FSF3_HOMOGENEOUS` set (true or false) it answers `pathconf(2)` on every
+other object from it too. Without it (auto), for any object other than the
+root it sends PATHCONF on each `pathconf(2)` call. Either way it takes the volume's capabilities
 (`VOL_CAP_FMT_CASE_SENSITIVE`, as Finder and `getattrlist` see them) from
 the root's answer at mount. So an export whose root is case-sensitive but
 whose content folds, such as a memfs root listing switchfs routes to host
@@ -240,6 +241,15 @@ probed names all come from a case-sensitive lower layer (a c4fs view) while
 its writable layer folds. Such exports set `CaseInsensitiveTrue`. It is
 harmless over the case-sensitive root: the client sends the names it is
 given and the root answers them exactly.
+
+**Unicode.** The probe swaps only ASCII letters (`a`-`z`, `A`-`Z`), so
+it detects only ASCII case folding; a directory whose names have no ASCII
+letter takes its ancestor's answer. Hosts such as APFS also fold non-ASCII
+case (`Ü` and `ü`) and treat a composed and a decomposed spelling (`é` as
+U+00E9, or as `e` followed by U+0301) as one name. `case_insensitive` says
+nothing about either: PATHCONF has no field for normalisation, and absnfs
+neither normalises nor folds names. It passes them to the filesystem as the
+client spelled them, and the filesystem decides what they find.
 
 The answer does not change what the server does with names: LOOKUP, CREATE
 and RENAME pass names to the filesystem as spelled. File handles name paths

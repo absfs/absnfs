@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/absfs/absfs"
 	"github.com/absfs/basefs"
 	"github.com/absfs/osfs"
+	"github.com/absfs/unionfs"
 )
 
 // foldFS looks names up as a case-insensitive host does: a name that is
@@ -430,5 +432,87 @@ func TestRenameCaseOnlyDirectory(t *testing.T) {
 	f.Close()
 	if len(names) != 1 || names[0] != "dir" {
 		t.Fatalf("root lists %v, want [dir]", names)
+	}
+}
+
+// A case-only rename in a union of host directories on a volume that folds
+// names (macOS, Windows) renames the file whether it is still in the lower
+// layer or was copied up first: the writable layer then holds Readme.md
+// and a whiteout of README.md.
+func TestRenameCaseOnlyUnion(t *testing.T) {
+	scratch := t.TempDir()
+	if scratch, _ = filepath.EvalSymlinks(scratch); scratch == "" {
+		t.Skip("cannot resolve the temporary directory")
+	}
+	probe := filepath.Join(scratch, "Probe")
+	if err := os.WriteFile(probe, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(scratch, "pROBE")); err != nil {
+		t.Skipf("%s does not fold case", scratch)
+	}
+	os.Remove(probe)
+	ofs, err := osfs.NewFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	layer := func(dir string) absfs.SymlinkFileSystem {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		fs, err := basefs.NewFS(ofs, filepath.ToSlash(dir))
+		if err != nil {
+			t.Skipf("basefs over %s: %v", dir, err)
+		}
+		return fs
+	}
+	for _, copyUp := range []bool{false, true} {
+		t.Run(fmt.Sprintf("copied up %v", copyUp), func(t *testing.T) {
+			base := filepath.Join(scratch, fmt.Sprint(copyUp))
+			lower := layer(filepath.Join(base, "lower"))
+			writeFile(t, lower, "/README.md", 7)
+			upperDir := filepath.Join(base, "upper")
+			upper := layer(upperDir)
+			u := unionfs.New(unionfs.WithWritableLayer(upper), unionfs.WithReadOnlyLayer(lower)).SymlinkFileSystem()
+			size := int64(7)
+			if copyUp {
+				f, err := u.OpenFile("/README.md", os.O_WRONLY|os.O_APPEND, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.Write([]byte("x\n")); err != nil {
+					t.Fatal(err)
+				}
+				f.Close()
+				size += 2
+			}
+			nfs := newCaseNFS(t, u, ExportOptions{AllowAnySymlinkTarget: true})
+			root, _ := nfs.Lookup("/")
+			if err := nfs.Rename(root, "README.md", root, "Readme.md"); err != nil {
+				t.Fatalf("rename README.md Readme.md: %v", err)
+			}
+			ents, err := os.ReadDir(upperDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, e := range ents {
+				name := e.Name()
+				if target, ok := unionfs.WhiteoutTarget("/" + name); ok {
+					name = "D " + target
+				} else {
+					name = "W /" + name
+				}
+				got = append(got, name)
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, []string{"D /README.md", "W /Readme.md"}) {
+				t.Fatalf("upper records %v, want [D /README.md W /Readme.md]", got)
+			}
+			info, err := u.Stat("/Readme.md")
+			if err != nil || info.Size() != size {
+				t.Fatalf("stat /Readme.md: %v, %v; want %d bytes", info, err, size)
+			}
+		})
 	}
 }

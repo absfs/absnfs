@@ -162,6 +162,33 @@ func TestMacOSCaseOnlyRename(t *testing.T) {
 		}
 	})
 
+	// README.md copied up to the writable layer first, by an append over
+	// the mount, as an edit before the rename does.
+	t.Run("union, copied up, auto", func(t *testing.T) {
+		fs, upper := hostUnion(t, scratch, "copyup")
+		_, mnt := mountMacOS(t, fs, ExportOptions{AllowAnySymlinkTarget: true}, "")
+		f, err := os.OpenFile(filepath.Join(mnt, "README.md"), os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Write([]byte("x\n")); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if got := upperChangeset(t, upper); !equalStrings(got, []string{"W /README.md"}) {
+			t.Fatalf("upper records %v after the append, want [W /README.md]", got)
+		}
+		mvCase(t, mnt)
+		if got := upperChangeset(t, upper); !equalStrings(got, []string{"D /README.md", "W /Readme.md"}) {
+			t.Fatalf("upper records %v, want [D /README.md W /Readme.md]", got)
+		}
+		if data, err := os.ReadFile(filepath.Join(mnt, "Readme.md")); err != nil || len(data) != 9 {
+			t.Fatalf("read Readme.md: %d bytes, %v; want 9", len(data), err)
+		}
+	})
+
 	// c4d's shape: a memfs root, case-sensitive, lists the workspaces,
 	// each a switchfs route to a union over host directories.
 	for _, mode := range []CaseInsensitivity{CaseInsensitiveTrue, CaseInsensitiveAuto} {
