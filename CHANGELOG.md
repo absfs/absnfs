@@ -27,16 +27,21 @@ to the macOS NFS client, which is stricter than Linux's.
   Unicode normalisation and non-ASCII case are left to the filesystem.
   The answer does not make a case-only rename work: the client sends that
   RENAME whatever PATHCONF says. A union over basefs after v1.0.0 (which
-  wraps `FileInfo`) returns success for `Rename("/README.md", "/Readme.md")`
-  and changes nothing, whether `README.md` is in the lower layer or copied
-  up; that needs a fix in unionfs (`sameEntry`), not here.
+  wraps `FileInfo`) returned success for `Rename("/README.md", "/Readme.md")`
+  and changed nothing, whether `README.md` was in the lower layer or copied
+  up; unionfs fixed that (absfs/unionfs#11), and absnfs now requires that
+  unionfs (see "Changed").
 - A macOS end-to-end test, `TestMacOSCaseOnlyRename`, run with
   `ABSNFS_MACOS_MOUNT=1`: `mv README.md Readme.md` over the mount in a host
   directory, a union of host directories (with `README.md` in the lower
-  layer, and copied up), and union workspaces under a memfs root, and
-  `pathconf(_PC_CASE_SENSITIVE)` on each and on a memfs export. A unit test,
-  `TestRenameCaseOnlyUnion`, does the same renames through the Go API where
-  the temporary directory folds case.
+  layer, and copied up), and union workspaces under a memfs root (in one
+  workspace with `README.md` in the lower layer, in another after an edit
+  over the mount copied it up), and `pathconf(_PC_CASE_SENSITIVE)` on each
+  and on a memfs export. A unit test, `TestRenameCaseOnlyUnion`, does the
+  same renames through the Go API where the temporary directory folds case.
+  Both run over basefs confined to its root by `os.Root` (osfs `OpenRoot`)
+  where the build supports it, Go 1.25 or later on macOS, as c4d serves
+  workspaces, and fail if basefs is confined anywhere else or not there.
 - `ExportOptions.AllowedUIDs` (and `PolicyOptions.AllowedUIDs`): when not
   empty, only AUTH_SYS requests carrying a listed uid reach NFS procedures;
   other uids and AUTH_NONE get `AUTH_ERROR`. NULL and MOUNT are answered for
@@ -283,6 +288,15 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Changed
 
+- **Requires basefs master (79e9a01, which confines a basefs over osfs to
+  its root with `os.Root` on Go 1.25 or later on Unix), osfs master
+  (26d9c50, which adds `OpenRoot`) and unionfs with absfs/unionfs#11**,
+  which compares file identities through the `FileInfo` wrappers basefs
+  returns, so a case-only rename in a union over basefs renames the file
+  whether it is in the lower layer or was copied up. All three are pinned at
+  pseudo-versions of those commits until they are tagged. CI now runs on Go
+  1.25 and the latest release as well as 1.23, so the confined stack is
+  tested.
 - **PATHCONF reports case sensitivity truthfully by default**
   (`CaseInsensitiveAuto`): an export of a directory on a case-insensitive
   host volume (APFS, NTFS by default) now answers `case_insensitive` true,

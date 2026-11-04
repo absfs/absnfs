@@ -389,10 +389,17 @@ func TestSameFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The os package's own infos, which os.SameFile compares on every host.
+	o1, _ := os.Lstat(filepath.Join(dir, "h"))
+	o2, _ := os.Lstat(filepath.Join(dir, "h"))
+	if same, known := sameFile(o1, o2); !same || !known {
+		t.Errorf("host h, h: %v, %v", same, known)
+	}
 	host, err := basefs.NewFS(ofs, filepath.ToSlash(dir))
 	if err != nil {
 		t.Skipf("basefs over %s: %v", dir, err)
 	}
+	t.Cleanup(func() { host.Close() })
 	h1, _ := host.Lstat("/h")
 	h2, _ := host.Lstat("/h")
 	i, _ := host.Lstat("/i")
@@ -435,10 +442,23 @@ func TestRenameCaseOnlyDirectory(t *testing.T) {
 	}
 }
 
+// checkConfined fails t unless fs, a basefs over osfs, is confined to its
+// root by os.Root exactly when this build supports it (basefsConfines), so
+// a test over host directories runs over the stack c4d serves.
+func checkConfined(t *testing.T, fs absfs.FileSystem) {
+	t.Helper()
+	if got := basefs.Confined(fs); got != basefsConfines {
+		t.Fatalf("basefs confined %v, want %v (%s on %s)", got, basefsConfines, runtime.Version(), runtime.GOOS)
+	}
+}
+
 // A case-only rename in a union of host directories on a volume that folds
 // names (macOS, Windows) renames the file whether it is still in the lower
 // layer or was copied up first: the writable layer then holds Readme.md
-// and a whiteout of README.md.
+// and a whiteout of README.md. Where the build supports it (Go 1.25 or
+// later on macOS) both layers are basefs confined by os.Root, whose
+// FileInfos unionfs must see through to tell that README.md and Readme.md
+// are one file.
 func TestRenameCaseOnlyUnion(t *testing.T) {
 	scratch := t.TempDir()
 	if scratch, _ = filepath.EvalSymlinks(scratch); scratch == "" {
@@ -465,6 +485,8 @@ func TestRenameCaseOnlyUnion(t *testing.T) {
 		if err != nil {
 			t.Skipf("basefs over %s: %v", dir, err)
 		}
+		t.Cleanup(func() { fs.Close() })
+		checkConfined(t, fs)
 		return fs
 	}
 	for _, copyUp := range []bool{false, true} {

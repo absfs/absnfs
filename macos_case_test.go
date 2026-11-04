@@ -46,7 +46,8 @@ func macOSCaseSensitive(t *testing.T, p string) int {
 	return int(r)
 }
 
-// hostDirFS is basefs over osfs rooted at a new directory dir.
+// hostDirFS is basefs over osfs rooted at a new directory dir, confined to
+// it by os.Root where the build supports that (see checkConfined).
 func hostDirFS(t *testing.T, dir string) absfs.SymlinkFileSystem {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -60,7 +61,25 @@ func hostDirFS(t *testing.T, dir string) absfs.SymlinkFileSystem {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { fs.Close() })
+	checkConfined(t, fs)
 	return fs
+}
+
+// appendMount appends a line to the file p on the mount, as an edit does,
+// which copies a file still in a union's lower layer up to the writable one.
+func appendMount(t *testing.T, p string) {
+	t.Helper()
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("x\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // hostUnion is a union of a writable host directory over a read-only one
@@ -167,16 +186,7 @@ func TestMacOSCaseOnlyRename(t *testing.T) {
 	t.Run("union, copied up, auto", func(t *testing.T) {
 		fs, upper := hostUnion(t, scratch, "copyup")
 		_, mnt := mountMacOS(t, fs, ExportOptions{AllowAnySymlinkTarget: true}, "")
-		f, err := os.OpenFile(filepath.Join(mnt, "README.md"), os.O_WRONLY|os.O_APPEND, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.Write([]byte("x\n")); err != nil {
-			t.Fatal(err)
-		}
-		if err := f.Close(); err != nil {
-			t.Fatal(err)
-		}
+		appendMount(t, filepath.Join(mnt, "README.md"))
 		if got := upperChangeset(t, upper); !equalStrings(got, []string{"W /README.md"}) {
 			t.Fatalf("upper records %v after the append, want [W /README.md]", got)
 		}
@@ -190,7 +200,9 @@ func TestMacOSCaseOnlyRename(t *testing.T) {
 	})
 
 	// c4d's shape: a memfs root, case-sensitive, lists the workspaces,
-	// each a switchfs route to a union over host directories.
+	// each a switchfs route to a union over host directories. README.md is
+	// renamed in w1 while still in the lower layer, then in w2 after an
+	// edit copies it up.
 	for _, mode := range []CaseInsensitivity{CaseInsensitiveTrue, CaseInsensitiveAuto} {
 		t.Run("memfs root, union routes, "+mode.String(), func(t *testing.T) {
 			w1, upper1 := hostUnion(t, scratch, "w1-"+mode.String())
@@ -221,6 +233,17 @@ func TestMacOSCaseOnlyRename(t *testing.T) {
 			}
 			if data, err := os.ReadFile(filepath.Join(mnt, "w1", "Readme.md")); err != nil || len(data) != 7 {
 				t.Fatalf("read w1/Readme.md: %d bytes, %v", len(data), err)
+			}
+			appendMount(t, filepath.Join(mnt, "w2", "README.md"))
+			if got := upperChangeset(t, upper2); !equalStrings(got, []string{"W /README.md"}) {
+				t.Fatalf("w2 upper records %v after the append, want [W /README.md]", got)
+			}
+			mvCase(t, filepath.Join(mnt, "w2"))
+			if got := upperChangeset(t, upper2); !equalStrings(got, []string{"D /README.md", "W /Readme.md"}) {
+				t.Fatalf("w2 upper records %v, want [D /README.md W /Readme.md]", got)
+			}
+			if data, err := os.ReadFile(filepath.Join(mnt, "w2", "Readme.md")); err != nil || len(data) != 9 {
+				t.Fatalf("read w2/Readme.md: %d bytes, %v; want 9", len(data), err)
 			}
 		})
 	}

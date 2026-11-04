@@ -94,6 +94,8 @@ func newMacOSBackend(t *testing.T, backend, scratch string) absfs.SymlinkFileSys
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { bfs.Close() })
+		checkConfined(t, bfs)
 		fs = bfs
 	case "memfs":
 		mfs, err := memfs.NewFS()

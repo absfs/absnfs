@@ -386,11 +386,14 @@ ABSNFS_MACOS_MOUNT=1 go test -run 'TestMacOSHandles|TestMacOSWorkspaces' -v
 `TestMacOSCaseOnlyRename` runs `mv README.md Readme.md` over the mount in a
 host directory, in a union of host directories (with `README.md` in the
 lower layer, and after an append copied it up), and in union workspaces under
-a memfs root (with `CaseInsensitiveTrue` and with auto), checks the rename
-reaches the filesystem (the union's writable layer then holds `Readme.md` and
-a whiteout of `README.md`), and checks what `pathconf(_PC_CASE_SENSITIVE)`
-reports on each, and on a memfs export. It needs a case-insensitive volume
-for its temporary directory:
+a memfs root (with `CaseInsensitiveTrue` and with auto, renaming in one
+workspace with `README.md` in the lower layer and in another after an append
+copied it up), checks the rename reaches the filesystem (the union's writable
+layer then holds `Readme.md` and a whiteout of `README.md`), and checks what
+`pathconf(_PC_CASE_SENSITIVE)` reports on each, and on a memfs export. Built
+with Go 1.25 or later, its host directories are basefs confined to their root
+by `os.Root`, the stack c4d serves workspaces from, and it fails if they are
+not. It needs a case-insensitive volume for its temporary directory:
 
 ```bash
 ABSNFS_MACOS_MOUNT=1 go test -run TestMacOSCaseOnlyRename -v
