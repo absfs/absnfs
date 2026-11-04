@@ -114,6 +114,31 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Fixed
 
+- **Spellings of one object reported different fileids where names fold.**
+  The fileid was a hash of the path as spelled, so on a case-insensitive
+  export `docs` and `Docs` (and `README.md` and `readme.md`, or `é`
+  composed and decomposed) reported different inode numbers, where the host
+  volume reports one. `/bin/mv docs Docs` over a macOS mount then took `Docs`
+  for an existing directory and failed with `rename docs to Docs/docs:
+  Invalid argument`, and `cp` and `rsync` same-file checks could be misled.
+  Where PATHCONF answers case-insensitive (`CaseInsensitiveTrue`, or auto in
+  a directory that folds), each name is now folded before the path is
+  hashed, by Unicode's canonical caseless match (full case folding and NFD,
+  as APFS matches names), per directory with auto. READDIR and READDIRPLUS
+  entries, which carry the stored spelling, report the fileid LOOKUP of any
+  other spelling reports. Case-sensitive exports report exactly the fileids
+  they did. Adds a dependency on `golang.org/x/text` (v0.28.0, the last that
+  supports Go 1.23). Covered by `TestFileIDFoldsSpellings`,
+  `TestFileIDFoldsPerDirectory`, `TestFileIDFoldsOnHost` (APFS or NTFS
+  through basefs and unionfs), the golden `TestFileIDCaseSensitiveUnchanged`,
+  and `mv docs Docs` subtests of `TestMacOSCaseOnlyRename`.
+- **Two Lstats of a union file with a metadata marker compared as two
+  files** (#88). unionfs reports such a file (a lower-layer file after chmod,
+  chown or chtimes) with a fresh merged `*inode.Inode` on every Lstat, and
+  `sameFile` compared those pointers, so the PATHCONF probe and a case-only
+  RENAME over a folding memfs layer took the file for another. It now looks
+  through any `Unwrap() fs.FileInfo` wrapper first, as `unionfs.SameFile`
+  does, and treats a memfs inode on one side only as unknown.
 - **A case-only RENAME of a non-empty directory failed with
   `NFS3ERR_NOTEMPTY`** on a filesystem that wraps its `os.FileInfo` over a
   case-insensitive host (basefs after v1.0.0 over osfs on APFS): the check

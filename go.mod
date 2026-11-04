@@ -16,6 +16,7 @@ require github.com/absfs/inode v1.1.0
 require (
 	github.com/absfs/switchfs v1.0.1-0.20261103183748-8b08df311d19
 	github.com/absfs/unionfs v1.0.1-0.20261104035904-d70ffdc44f0a
+	golang.org/x/text v0.28.0
 )
 
 require (

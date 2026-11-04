@@ -215,19 +215,40 @@ func swapASCIICase(name string) string {
 // could tell. It knows the identity os.SameFile knows, the device and inode
 // numbers of a host file (also through a filesystem such as basefs that
 // wraps its FileInfo, which os.SameFile cannot see through) and a memfs
-// inode.
+// inode. It reads them from the innermost info each wraps (see
+// unwrapInfo): a union reports a file a metadata marker changes with a
+// fresh merged *inode.Inode on every Lstat, so two Lstats of it compare
+// as one file only by the inode the marker wraps (absnfs#88).
 func sameFile(a, b os.FileInfo) (same, known bool) {
+	a, b = unwrapInfo(a), unwrapInfo(b)
 	if os.SameFile(a, b) {
 		return true, true
 	}
 	if same, known := sysSameFile(a.Sys(), b.Sys()); known {
 		return same, true
 	}
-	if x, ok := a.Sys().(*inode.Inode); ok && x != nil {
-		y, ok := b.Sys().(*inode.Inode)
-		return ok && x == y, true
+	x, xok := a.Sys().(*inode.Inode)
+	y, yok := b.Sys().(*inode.Inode)
+	if xok && yok && x != nil && y != nil {
+		return x == y, true
 	}
 	return false, false
+}
+
+// unwrapInfo returns the innermost info that info wraps, through any
+// FileInfo with an Unwrap() fs.FileInfo method (at most 64 deep), as
+// unionfs.SameFile does.
+// unionfs.SameFile itself is not used because it does not say whether it
+// could tell, which probeCase needs.
+func unwrapInfo(info os.FileInfo) os.FileInfo {
+	for i := 0; i < 64; i++ {
+		u, ok := info.(interface{ Unwrap() fs.FileInfo })
+		if !ok {
+			break
+		}
+		info = u.Unwrap()
+	}
+	return info
 }
 
 // sameAttrs stands in for identity where sameFile cannot tell: the same

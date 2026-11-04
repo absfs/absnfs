@@ -166,10 +166,14 @@ func (n *NFSNode) Chtimes(atime time.Time, mtime time.Time) error {
 // n itself is left as it is: requests in flight may be using it.
 func (n *NFSNode) movedTo(p string) *NFSNode {
 	moved := &NFSNode{SymlinkFileSystem: n.SymlinkFileSystem, path: p, server: n.server}
+	id := fileID(p)
+	if n.server != nil {
+		id = n.server.objectID(p)
+	}
 	n.mu.RLock()
 	if n.attrs != nil {
 		attrs := *n.attrs
-		attrs.FileId = fileID(p)
+		attrs.FileId = id
 		attrs.Invalidate()
 		moved.attrs = &attrs
 	}

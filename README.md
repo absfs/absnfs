@@ -171,7 +171,11 @@ spelled: a case-only rename (`mv README.md Readme.md`) reaches the
 filesystem as a RENAME whatever the answer. The probe detects only ASCII
 case folding; Unicode normalisation (APFS treats composed and decomposed
 `é` as one name) and non-ASCII case are left to the filesystem, and
-PATHCONF says nothing about them. See
+PATHCONF says nothing about them. Where the answer is true, every spelling
+of an object reports one fileid (`docs`, `Docs`, READDIR's `docs`), as on
+the host volume, so `mv docs Docs` and same-file checks in `cp` and `rsync`
+see one file; names are folded for that as APFS matches them (Unicode case
+folding and normalisation). See
 [ExportOptions](docs/api/export-options.md#case-insensitive-names).
 
 ## Security
@@ -244,7 +248,8 @@ to a directory you export.
   return `NFS3ERR_NOTSUPP`.
 - **Stable file ids**: every procedure reports the same non-zero fileid for an
   object, derived from its path (file handles are path based too), so it
-  survives a union filesystem copying the file up to another layer.
+  survives a union filesystem copying the file up to another layer. Where
+  names fold, every spelling of the path reports the same one.
 - **Symlinks reported as symlinks** everywhere, including directory listings.
   READLINK returns targets as stored, `..` components included; SYMLINK
   accepts any target with `ExportOptions.AllowAnySymlinkTarget` (see Caveats).
@@ -390,7 +395,11 @@ a memfs root (with `CaseInsensitiveTrue` and with auto, renaming in one
 workspace with `README.md` in the lower layer and in another after an append
 copied it up), checks the rename reaches the filesystem (the union's writable
 layer then holds `Readme.md` and a whiteout of `README.md`), and checks what
-`pathconf(_PC_CASE_SENSITIVE)` reports on each, and on a memfs export. Built
+`pathconf(_PC_CASE_SENSITIVE)` reports on each, and on a memfs export. It
+also runs `mv docs Docs` on a directory in a host directory, a union (whose
+writable layer then holds a whiteout of `docs` and an opaque copy `Docs`),
+and a union workspace under a memfs root, after checking that `docs` and
+`Docs` report one inode number, by `lstat` and in the directory entry. Built
 with Go 1.25 or later, its host directories are basefs confined to their root
 by `os.Root`, the stack c4d serves workspaces from, and it fails if they are
 not. It needs a case-insensitive volume for its temporary directory:

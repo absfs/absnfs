@@ -8,9 +8,7 @@ package absnfs
 
 import (
 	"fmt"
-	"hash/fnv"
 	"os"
-	"path"
 )
 
 // FileOwner is a numeric user and group id as reported to NFS clients.
@@ -30,27 +28,6 @@ func idOrZero(id int) uint32 {
 		return 0
 	}
 	return uint32(id)
-}
-
-// fileID returns the NFS fileid for the object at p.
-//
-// File handles in absnfs identify paths, so the fileid is derived from the
-// path as well: every procedure reports the same id for the same object, and
-// it does not change when a union filesystem copies a file up to another
-// layer. It is never 0, because clients treat fileid 0 as "no entry" (macOS
-// silently drops such entries from directory listings).
-func fileID(p string) uint64 {
-	h := fnv.New64a()
-	h.Write([]byte(path.Clean(p)))
-	return nonZeroID(h.Sum64())
-}
-
-// nonZeroID maps the (astronomically unlikely) zero hash to 1.
-func nonZeroID(id uint64) uint64 {
-	if id == 0 {
-		return 1
-	}
-	return id
 }
 
 // ownerOf returns the owner to report for info: the owner the filesystem
@@ -73,7 +50,7 @@ func (s *AbsfsNFS) attrsFromInfo(p string, info os.FileInfo) *NFSAttrs {
 	attrs := &NFSAttrs{
 		Mode:   info.Mode(),
 		Size:   info.Size(),
-		FileId: fileID(p),
+		FileId: s.objectID(p),
 		Uid:    uid,
 		Gid:    gid,
 	}

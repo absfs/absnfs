@@ -248,14 +248,37 @@ letter takes its ancestor's answer. Hosts such as APFS also fold non-ASCII
 case (`Ü` and `ü`) and treat a composed and a decomposed spelling (`é` as
 U+00E9, or as `e` followed by U+0301) as one name. `case_insensitive` says
 nothing about either: PATHCONF has no field for normalisation, and absnfs
-neither normalises nor folds names. It passes them to the filesystem as the
-client spelled them, and the filesystem decides what they find.
+neither normalises nor folds names it passes to the filesystem. It passes
+them as the client spelled them, and the filesystem decides what they find
+(it folds them only into fileids, see below).
 
 The answer does not change what the server does with names: LOOKUP, CREATE
 and RENAME pass names to the filesystem as spelled. File handles name paths
 as spelled, so `README.md` and `Readme.md` have different handles even where
 they are the same file, and the client sends a case-only RENAME (`mv
 README.md Readme.md`) to the server whatever PATHCONF says.
+
+**File ids.** Where the answer is true, every spelling of an object reports
+one fileid, as every spelling reports one inode number on the host volume:
+`docs`, `Docs` and `DOCS`, and READDIR's `docs` entry, all report the same.
+Without that `/bin/mv docs Docs` over the mount stats `Docs`, sees another
+inode, takes it for an existing directory and fails (`rename docs to
+Docs/docs: Invalid argument`), and `cp` and `rsync` same-file checks are
+misled. The fileid stays a hash of the path, with each name in a directory
+whose answer is true replaced by its fold key: Unicode's canonical caseless
+match (the decomposed full case folding of the decomposed name), which is
+how APFS matches names, so `straße` and `STRASSE`, or `é` composed and
+decomposed, also share one. With auto each name is folded by its own
+directory's answer, so a case-sensitive directory keeps `A` and `a` apart
+even with folding routes below it; a name that is its own key (lowercase
+ASCII) needs no answer and costs nothing. Rare differences from the host:
+Cherokee letters fold on APFS but keep a fileid per case here, and on NTFS,
+which neither normalises nor folds `ß`, two files named `straße` and
+`STRASSE` (or `é` composed and decomposed) report one fileid. With
+`CaseInsensitiveTrue` over content that keeps two such names apart (a
+case-sensitive memfs root holding both `W1` and `w1`), both report one
+fileid. Where the answer is false, fileids are exactly what absnfs reported
+before.
 
 It is fixed by `New()`: `UpdateExportOptions` rejects a different value, and
 `GetExportOptions` reports the value in effect. `New()` rejects a value

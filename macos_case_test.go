@@ -14,6 +14,7 @@ package absnfs
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -83,20 +84,24 @@ func appendMount(t *testing.T, p string) {
 }
 
 // hostUnion is a union of a writable host directory over a read-only one
-// holding README.md and src/main.go. It returns the writable directory.
+// holding README.md, src/main.go and docs/guide.md. It returns the
+// writable directory.
 func hostUnion(t *testing.T, scratch, name string) (absfs.SymlinkFileSystem, string) {
 	t.Helper()
 	lower := hostDirFS(t, filepath.Join(scratch, name+"-lower"))
 	writeFile(t, lower, "/README.md", 7)
 	mustMkdir(t, lower, "/src")
 	writeFile(t, lower, "/src/main.go", 3)
+	mustMkdir(t, lower, "/docs")
+	writeFile(t, lower, "/docs/guide.md", 5)
 	upperDir := filepath.Join(scratch, name+"-upper")
 	upper := hostDirFS(t, upperDir)
 	return unionfs.New(unionfs.WithWritableLayer(upper), unionfs.WithReadOnlyLayer(lower)).SymlinkFileSystem(), upperDir
 }
 
 // upperChangeset lists what a union's writable directory records: "W p"
-// for an entry written, "D p" for a whiteout.
+// for an entry written, "D p" for a whiteout, "O p" for a directory made
+// opaque (its lower contents hidden).
 func upperChangeset(t *testing.T, dir string) []string {
 	t.Helper()
 	var out []string
@@ -105,7 +110,9 @@ func upperChangeset(t *testing.T, dir string) []string {
 			return err
 		}
 		rel := "/" + filepath.ToSlash(p[len(dir)+1:])
-		if target, ok := unionfs.WhiteoutTarget(rel); ok {
+		if path.Base(rel) == unionfs.OpaqueWhiteout {
+			out = append(out, "O "+path.Dir(rel))
+		} else if target, ok := unionfs.WhiteoutTarget(rel); ok {
 			out = append(out, "D "+target)
 		} else {
 			out = append(out, "W "+rel)
@@ -248,6 +255,65 @@ func TestMacOSCaseOnlyRename(t *testing.T) {
 		})
 	}
 
+	// mvDirCase renames the directory docs to Docs in dir on the mount, as
+	// a user does. /bin/mv stats the target first: had Docs reported
+	// another inode number than docs, mv would take it for an existing
+	// directory and move docs into it ("rename docs to Docs/docs: Invalid
+	// argument"). Both spellings report one inode, as on APFS itself.
+	mvDirCase := func(t *testing.T, dir string) {
+		t.Helper()
+		lower, upper := macOSIno(t, filepath.Join(dir, "docs")), macOSIno(t, filepath.Join(dir, "Docs"))
+		if lower != upper {
+			t.Fatalf("inode of docs %d, of Docs %d; want one", lower, upper)
+		}
+		if listed := readDirInos(t, dir)["docs"]; listed != lower {
+			t.Fatalf("readdir lists docs with inode %d, lstat reports %d", listed, lower)
+		}
+		if out, err := runWithTimeout(20*time.Second, dir, nil, "/bin/mv", "docs", "Docs"); err != nil {
+			t.Fatalf("mv docs Docs: %v\n%s", err, out)
+		}
+		if got := readDirNames(t, dir); !slices.Contains(got, "Docs") || slices.Contains(got, "docs") {
+			t.Fatalf("%s lists %v after mv, want Docs and no docs", dir, got)
+		}
+		if data, err := os.ReadFile(filepath.Join(dir, "Docs", "guide.md")); err != nil || len(data) != 5 {
+			t.Fatalf("read Docs/guide.md: %d bytes, %v; want 5", len(data), err)
+		}
+		if a, b := macOSIno(t, filepath.Join(dir, "docs")), macOSIno(t, filepath.Join(dir, "Docs")); a != b {
+			t.Fatalf("after mv: inode of docs %d, of Docs %d; want one", a, b)
+		}
+	}
+
+	t.Run("directory, host directory, auto", func(t *testing.T) {
+		dir := filepath.Join(scratch, "host-dir")
+		fs := hostDirFS(t, dir)
+		mustMkdir(t, fs, "/docs")
+		writeFile(t, fs, "/docs/guide.md", 5)
+		_, mnt := mountMacOS(t, fs, ExportOptions{}, "")
+		mvDirCase(t, mnt)
+		if got := readDirNames(t, dir); !equalStrings(got, []string{"Docs"}) {
+			t.Fatalf("host directory lists %v, want [Docs]", got)
+		}
+	})
+
+	t.Run("directory, union, auto", func(t *testing.T) {
+		fs, upper := hostUnion(t, scratch, "union-dir")
+		_, mnt := mountMacOS(t, fs, ExportOptions{AllowAnySymlinkTarget: true}, "")
+		mvDirCase(t, mnt)
+		if got := upperChangeset(t, upper); !equalStrings(got, wantDirRenameChangeset) {
+			t.Fatalf("upper records %v, want %v", got, wantDirRenameChangeset)
+		}
+	})
+
+	t.Run("directory, memfs root, union route, true", func(t *testing.T) {
+		w, upper := hostUnion(t, scratch, "w-dir")
+		sw := newSwitchFS(t, map[string]absfs.FileSystem{"/w": w})
+		_, mnt := mountMacOS(t, sw.fs, ExportOptions{CaseInsensitive: CaseInsensitiveTrue, AllowAnySymlinkTarget: true}, "")
+		mvDirCase(t, filepath.Join(mnt, "w"))
+		if got := upperChangeset(t, upper); !equalStrings(got, wantDirRenameChangeset) {
+			t.Fatalf("upper records %v, want %v", got, wantDirRenameChangeset)
+		}
+	})
+
 	t.Run("memfs, auto", func(t *testing.T) {
 		fs := newMemFS(t)
 		writeFile(t, fs, "/README.md", 7)
@@ -256,4 +322,54 @@ func TestMacOSCaseOnlyRename(t *testing.T) {
 		wantCase(t, mnt, map[string]int{".": 1, "src": 1, "README.md": 1})
 		mvCase(t, mnt)
 	})
+}
+
+// wantDirRenameChangeset is what a union's writable directory records after
+// docs, a directory in the lower layer, is renamed to Docs: a whiteout of
+// docs and an opaque Docs holding a copy of what docs held.
+var wantDirRenameChangeset = []string{"D /docs", "O /Docs", "W /Docs", "W /Docs/guide.md"}
+
+// macOSIno returns the inode number lstat reports for p.
+func macOSIno(t *testing.T, p string) uint64 {
+	t.Helper()
+	info, err := os.Lstat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Sys().(*syscall.Stat_t).Ino
+}
+
+// readDirInos returns the inode number each entry of dir has in its
+// directory entry (d_ino, which the client takes from READDIR), not what
+// lstat of it reports.
+func readDirInos(t *testing.T, dir string) map[string]uint64 {
+	t.Helper()
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	out := make(map[string]uint64)
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := syscall.ReadDirent(int(f.Fd()), buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n <= 0 {
+			return out
+		}
+		for off := 0; off < n; {
+			d := (*syscall.Dirent)(unsafe.Pointer(&buf[off]))
+			if d.Reclen == 0 {
+				break
+			}
+			name := make([]byte, d.Namlen)
+			for i := range name {
+				name[i] = byte(d.Name[i])
+			}
+			out[string(name)] = d.Ino
+			off += int(d.Reclen)
+		}
+	}
 }

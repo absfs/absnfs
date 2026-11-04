@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	iofs "io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -22,7 +23,8 @@ import (
 
 // foldFS looks names up as a case-insensitive host does: a name that is
 // not in its directory finds an entry spelled with letters of another
-// case. It counts the directories it opens.
+// case, or composed or decomposed otherwise, as on APFS (it matches names
+// by foldName). It counts the directories it opens.
 type foldFS struct {
 	absfs.SymlinkFileSystem
 	opens atomic.Int64
@@ -45,7 +47,7 @@ func (f *foldFS) fold(p string) string {
 				names, _ := d.Readdirnames(-1)
 				d.Close()
 				for _, n := range names {
-					if strings.EqualFold(n, name) {
+					if foldName(n) == foldName(name) {
 						next = path.Join(out, n)
 						break
 					}
@@ -59,9 +61,21 @@ func (f *foldFS) fold(p string) string {
 
 func (f *foldFS) Lstat(p string) (os.FileInfo, error) { return f.SymlinkFileSystem.Lstat(f.fold(p)) }
 func (f *foldFS) Stat(p string) (os.FileInfo, error)  { return f.SymlinkFileSystem.Stat(f.fold(p)) }
+func (f *foldFS) ReadDir(p string) ([]iofs.DirEntry, error) {
+	return f.SymlinkFileSystem.ReadDir(f.fold(p))
+}
 func (f *foldFS) Open(p string) (absfs.File, error) {
 	f.opens.Add(1)
 	return f.SymlinkFileSystem.Open(f.fold(p))
+}
+
+// OpenFile opens p folded only to read: a name created or truncated is
+// spelled as given, as the tests that use foldFS need.
+func (f *foldFS) OpenFile(p string, flag int, perm os.FileMode) (absfs.File, error) {
+	if flag == os.O_RDONLY {
+		return f.Open(p)
+	}
+	return f.SymlinkFileSystem.OpenFile(p, flag, perm)
 }
 
 // pathconfCase asks PATHCONF about p and returns case_insensitive and
