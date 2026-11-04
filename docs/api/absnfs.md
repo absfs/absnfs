@@ -19,6 +19,7 @@ Creates a new NFS server instance. The filesystem must not be nil and must imple
 **Validation:**
 - Returns `os.ErrInvalid` if `fs` is nil.
 - Returns an error if `Squash` is not one of `""`, `"root"`, `"all"`, or `"none"` (case-insensitive).
+- Returns an error if `CaseInsensitive` is not `CaseInsensitiveAuto`, `CaseInsensitiveTrue` or `CaseInsensitiveFalse`.
 
 **Defaults applied:** All zero-value fields in ExportOptions are replaced with defaults. See [ExportOptions](export-options.md) for the full default table.
 
@@ -168,7 +169,7 @@ func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error
 
 Updates both tuning and policy settings at runtime. Tuning changes apply immediately via atomic swap. Policy changes use drain-and-swap.
 
-- Returns an error, and applies nothing, if `Squash`, `DefaultOwner`, `ForceOwner`, `HandleStateDir` or `HandleGeneration` differs from the current value (immutable at runtime). An empty `Squash`, `HandleStateDir` or `HandleGeneration` and a nil `DefaultOwner` mean "unchanged", so the result of `GetExportOptions` can always be passed back.
+- Returns an error, and applies nothing, if `Squash`, `DefaultOwner`, `ForceOwner`, `HandleStateDir`, `HandleGeneration` or `CaseInsensitive` differs from the current value (immutable at runtime). An empty `Squash`, `HandleStateDir` or `HandleGeneration` and a nil `DefaultOwner` mean "unchanged", so the result of `GetExportOptions` can always be passed back.
 - If `newOptions.Timeouts` or `newOptions.Log` is nil, current values are preserved.
 
 See [TuningOptions / PolicyOptions](tuning-policy.md) for the drain-and-swap mechanism.

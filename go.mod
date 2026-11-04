@@ -15,7 +15,7 @@ require github.com/absfs/inode v1.1.0
 
 require (
 	github.com/absfs/switchfs v1.0.1-0.20261103183748-8b08df311d19
-	github.com/absfs/unionfs v1.0.0
+	github.com/absfs/unionfs v1.0.1-0.20261104020435-e2a45dd21dba
 )
 
 require github.com/bmatcuk/doublestar/v4 v4.9.1 // indirect

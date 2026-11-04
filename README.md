@@ -142,6 +142,33 @@ on filesystems without an OS owner the reported owner stays `DefaultOwner`.
 gid; a server not running as root can only give them its own. An UNCHECKED
 `CREATE` of an existing file keeps that file's owner and mode.
 
+## Case-insensitive names
+
+PATHCONF tells clients whether names fold case (`pathconf(path,
+_PC_CASE_SENSITIVE)` on macOS). `ExportOptions.CaseInsensitive` picks the
+answer:
+
+- **`CaseInsensitiveAuto`** (the default) reports what the filesystem each
+  handle is in does, probed read-only: a few names of the handle's directory
+  are looked up with their letters' case swapped. An osfs or basefs export of
+  a directory on APFS or NTFS (case-insensitive by default) answers
+  case-insensitive, memfs case-sensitive, and a switchfs answers per route.
+  Answers are cached per directory for `AttrCacheTimeout`.
+- **`CaseInsensitiveTrue`** and **`CaseInsensitiveFalse`** give that answer
+  for every handle. `CaseInsensitiveFalse` is what absnfs reported before.
+
+In auto mode FSINFO does not claim the answers are the same for every object
+(`FSF3_HOMOGENEOUS`), so the macOS client asks per object; otherwise it asks
+once per mount. Either way it takes the volume's answer (what Finder and
+`getattrlist` see) from the export's root at mount. An export whose root is
+case-sensitive but whose content folds, such as a memfs root listing
+switchfs routes to host directories on APFS, should set
+`CaseInsensitiveTrue`; auto would report its root, and so the volume, as
+case-sensitive. Fixed at `New`. Names are always passed to the filesystem as
+spelled: a case-only rename (`mv README.md Readme.md`) reaches the
+filesystem as a RENAME whatever the answer. See
+[ExportOptions](docs/api/export-options.md#case-insensitive-names).
+
 ## Security
 
 **Every local user can use a loopback export, as any uid.** `Export` binds
@@ -217,6 +244,8 @@ to a directory you export.
   READLINK returns targets as stored, `..` components included; SYMLINK
   accepts any target with `ExportOptions.AllowAnySymlinkTarget` (see Caveats).
 - **Real ownership** with a configurable fallback (above).
+- **Truthful case sensitivity**: PATHCONF reports whether names fold case,
+  probed per handle by default or set for the export (above).
 - **Owner override**: the owner of a file may write it even when its mode does
   not allow writing, as with a local open file descriptor. A client that
   creates a file read-only and then writes it (git's 0444 object files) works.
@@ -347,6 +376,18 @@ the oldest, whose handles were evicted, takes about as long as in the newest:
 
 ```bash
 ABSNFS_MACOS_MOUNT=1 go test -run 'TestMacOSHandles|TestMacOSWorkspaces' -v
+```
+
+`TestMacOSCaseOnlyRename` runs `mv README.md Readme.md` over the mount in a
+host directory, in a union of host directories, and in union workspaces under
+a memfs root (with `CaseInsensitiveTrue` and with auto), checks the rename
+reaches the filesystem (the union's writable layer then holds `Readme.md` and
+a whiteout of `README.md`), and checks what `pathconf(_PC_CASE_SENSITIVE)`
+reports on each, and on a memfs export. It needs a case-insensitive volume
+for its temporary directory:
+
+```bash
+ABSNFS_MACOS_MOUNT=1 go test -run TestMacOSCaseOnlyRename -v
 ```
 
 These tests refuse to run as root, mount only into a fresh temporary

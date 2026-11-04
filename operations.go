@@ -1065,8 +1065,11 @@ func (s *AbsfsNFS) renameConflict(oldPath, newPath string) (bothDirs bool, err e
 		return false, nil // the backend reports a missing source
 	}
 	dst, err := s.fs.Lstat(newPath)
-	// SameFile: a case-only rename on a case-insensitive host.
-	if err != nil || os.SameFile(src, dst) {
+	// The same file: a case-only rename on a case-insensitive host.
+	if err != nil {
+		return false, nil
+	}
+	if same, _ := sameFile(src, dst); same {
 		return false, nil
 	}
 	switch {

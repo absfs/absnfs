@@ -27,6 +27,9 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	if squash != "" && squash != "root" && squash != "all" && squash != "none" {
 		return nil, fmt.Errorf("invalid squash mode %q: must be root, all, or none", options.Squash)
 	}
+	if options.CaseInsensitive > CaseInsensitiveFalse {
+		return nil, fmt.Errorf("invalid CaseInsensitive %v: must be CaseInsensitiveAuto, CaseInsensitiveTrue or CaseInsensitiveFalse", options.CaseInsensitive)
+	}
 
 	// Set default values if not specified
 	if options.TransferSize <= 0 {
@@ -189,6 +192,7 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		server.owner = *options.DefaultOwner
 	}
 	server.forceOwner = options.ForceOwner
+	server.caseMode = options.CaseInsensitive
 
 	// Initialize directory cache if enabled
 	if options.EnableDirCache {
@@ -341,6 +345,7 @@ func (n *AbsfsNFS) GetExportOptions() ExportOptions {
 	opts.ForceOwner = n.forceOwner
 	opts.HandleStateDir = n.handleStateDir
 	opts.HandleGeneration = n.handleGeneration
+	opts.CaseInsensitive = n.caseMode
 	return opts
 }
 
@@ -349,11 +354,12 @@ func (n *AbsfsNFS) GetExportOptions() ExportOptions {
 // Tuning changes apply immediately via atomic swap.
 // Policy changes use drain-and-swap to ensure in-flight requests complete first.
 //
-// Squash, DefaultOwner, ForceOwner, HandleStateDir and HandleGeneration are
-// fixed when the export is created. An update that changes one of them is
-// rejected with an error and nothing is applied; an empty Squash,
-// HandleStateDir or HandleGeneration and a nil DefaultOwner mean
-// "unchanged", so the result of GetExportOptions can always be passed back.
+// Squash, DefaultOwner, ForceOwner, HandleStateDir, HandleGeneration and
+// CaseInsensitive are fixed when the export is created. An update that
+// changes one of them is rejected with an error and nothing is applied; an
+// empty Squash, HandleStateDir or HandleGeneration and a nil DefaultOwner
+// mean "unchanged", so the result of GetExportOptions can always be passed
+// back.
 func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
 	if n == nil {
 		return fmt.Errorf("nil server")
@@ -375,6 +381,9 @@ func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
 	}
 	if newOptions.HandleGeneration != "" && newOptions.HandleGeneration != n.handleGeneration {
 		return fmt.Errorf("cannot change HandleGeneration at runtime (requires restart)")
+	}
+	if newOptions.CaseInsensitive != n.caseMode {
+		return fmt.Errorf("cannot change CaseInsensitive at runtime (requires restart)")
 	}
 
 	// Apply tuning changes (lock-free, immediate).

@@ -580,6 +580,48 @@ type ExportOptions struct {
 	// where clients must be proven. A typical value is the uid of the
 	// user the server serves: []uint32{uint32(os.Getuid())}.
 	AllowedUIDs []uint32
+
+	// CaseInsensitive is what PATHCONF reports in case_insensitive:
+	// whether a name finds a file spelled with letters of another case
+	// (case_preserving is always reported true).
+	//
+	// CaseInsensitiveAuto (the zero value, the default) answers for each
+	// handle what the filesystem it is in does. It probes, reading only:
+	// it lists a few names of the handle's directory (a file's parent),
+	// looks a few of them up with each ASCII letter's case swapped and
+	// compares what it finds with the entry (device and inode, a memfs
+	// inode, else type, size and modification time). A name that finds the
+	// same file means names fold there; one that finds nothing or another
+	// file means they do not. A directory with no name to try (empty, or
+	// no name with an ASCII letter) takes the answer of its nearest
+	// ancestor that has one, and false when none does. Answers are cached
+	// per directory for AttrCacheTimeout, and dropped when the server
+	// removes, renames or replaces the directory. Since a union may fold
+	// names in one layer and not another, a directory where any probed
+	// name folds is reported case-insensitive.
+	//
+	// The answers can differ between handles, so in auto mode FSINFO does
+	// not report FSF3_HOMOGENEOUS, and clients ask PATHCONF for each
+	// object (macOS asks on every pathconf call). The macOS client still
+	// takes the volume's capabilities (VOL_CAP_FMT_CASE_SENSITIVE, as
+	// Finder and getattrlist see them) from the root's answer at mount.
+	//
+	// CaseInsensitiveTrue and CaseInsensitiveFalse give that answer for
+	// every handle, and FSINFO reports FSF3_HOMOGENEOUS, so clients ask
+	// once per mount. CaseInsensitiveFalse is what absnfs reported before
+	// this option existed. Set CaseInsensitiveTrue for an export whose
+	// root is case-sensitive but whose content folds, such as a memfs root
+	// listing switchfs routes to host directories on a case-insensitive
+	// volume: auto then answers false for the root (and for a route's
+	// directories with no names yet), which the client uses as the
+	// volume's answer. Auto also answers false for a union whose probed
+	// names all come from a case-sensitive lower layer while its writable
+	// layer folds. True is harmless over a case-sensitive root: names
+	// still reach the filesystem as spelled.
+	//
+	// Fixed when the export is created: UpdateExportOptions rejects a
+	// different value.
+	CaseInsensitive CaseInsensitivity
 }
 
 // TimeoutConfig defines timeout durations for various NFS operations

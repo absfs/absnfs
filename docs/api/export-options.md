@@ -47,6 +47,9 @@ type ExportOptions struct {
     // File handles across restarts (fixed at New)
     HandleStateDir   string
     HandleGeneration string
+
+    // Names (fixed at New)
+    CaseInsensitive CaseInsensitivity
 }
 ```
 
@@ -189,6 +192,64 @@ the generation has no effect: every restart already makes every handle stale.
 It is fixed at `New`: `UpdateExportOptions` rejects a different non-empty
 value (empty means unchanged); to change it, close the server and make a new
 one.
+
+## Case-Insensitive Names
+
+| Field             | Type                | Default                     | Description                                             |
+| ----------------- | ------------------- | --------------------------- | ------------------------------------------------------- |
+| `CaseInsensitive` | `CaseInsensitivity` | `CaseInsensitiveAuto` (`0`) | What PATHCONF reports in `case_insensitive` (see below) |
+
+`CaseInsensitivity` has three values:
+
+| Value                  | PATHCONF `case_insensitive`                            | FSINFO `FSF3_HOMOGENEOUS` |
+| ---------------------- | ------------------------------------------------------ | ------------------------- |
+| `CaseInsensitiveAuto`  | Probed per handle: what the handle's filesystem does   | not set                   |
+| `CaseInsensitiveTrue`  | `true` for every handle                                | set                       |
+| `CaseInsensitiveFalse` | `false` for every handle (what absnfs reported before) | set                       |
+
+`case_preserving` is always `true`.
+
+**Auto** answers for the directory a handle is (or, for anything else, is
+in). It probes reading only: it reads up to 64 names of the directory, looks
+up to 4 of them up with the case of each ASCII letter swapped (`README.md`
+as `readme.MD`), and compares what it finds with the entry: device and inode
+numbers (also through wrappers such as basefs, which `os.SameFile` cannot
+see through), a memfs inode, else type, size and modification time. A
+swapped name that finds the same file means names fold there; one that finds
+nothing or another file, or two listed names differing only in case, mean
+they do not. Any probed name that folds decides it, since a union may fold
+names in one layer and not in another. A directory with no name to try
+(empty, or no name with an ASCII letter) takes the answer of its nearest
+ancestor that has one, and `false` when none does. Answers are cached per
+directory for `AttrCacheTimeout` (at most 4,096 directories) and dropped
+when the server removes, renames or replaces the directory, so a backend
+swapped behind the server's back (a switchfs route) is seen within the
+timeout.
+
+**What clients ask.** With `FSF3_HOMOGENEOUS` set, the macOS client asks
+PATHCONF once per mount, on the root, and answers every `pathconf(2)` from
+that. Without it (auto), it asks the server on every `pathconf(2)` call, for
+the object asked about. Either way it takes the volume's capabilities
+(`VOL_CAP_FMT_CASE_SENSITIVE`, as Finder and `getattrlist` see them) from
+the root's answer at mount. So an export whose root is case-sensitive but
+whose content folds, such as a memfs root listing switchfs routes to host
+directories on a case-insensitive volume (c4d's workspaces), reports
+case-sensitive for its root and volume under auto, and for a route
+directory with no names yet. Auto also answers `false` for a union whose
+probed names all come from a case-sensitive lower layer (a c4fs view) while
+its writable layer folds. Such exports set `CaseInsensitiveTrue`. It is
+harmless over the case-sensitive root: the client sends the names it is
+given and the root answers them exactly.
+
+The answer does not change what the server does with names: LOOKUP, CREATE
+and RENAME pass names to the filesystem as spelled. File handles name paths
+as spelled, so `README.md` and `Readme.md` have different handles even where
+they are the same file, and the client sends a case-only RENAME (`mv
+README.md Readme.md`) to the server whatever PATHCONF says.
+
+It is fixed by `New()`: `UpdateExportOptions` rejects a different value, and
+`GetExportOptions` reports the value in effect. `New()` rejects a value
+other than the three above.
 
 ## Connection Fields
 

@@ -188,6 +188,11 @@ func (h *NFSProcedureHandler) handleFsinfo(body io.Reader, reply *RPCReply, auth
 	// FSF3_SYMLINK=0x0002, FSF3_HOMOGENEOUS=0x0008, FSF3_CANSETTIME=0x0010
 	// FSF3_LINK (0x0001) is NOT set because handleLink always returns NFSERR_NOTSUPP
 	var properties uint32 = 0x0002 | 0x0008 | 0x0010 // symlink + homogeneous + cansettime
+	if h.server.handler.caseMode == CaseInsensitiveAuto {
+		// PATHCONF's case_insensitive is answered per handle, so the
+		// answers are not the same for every object.
+		properties &^= 0x0008
+	}
 	binary.Write(&buf, binary.BigEndian, properties)
 
 	reply.Data = buf.Bytes()
@@ -223,8 +228,12 @@ func (h *NFSProcedureHandler) handlePathconf(body io.Reader, reply *RPCReply, au
 	binary.Write(&buf, binary.BigEndian, uint32(255))  // name_max
 	binary.Write(&buf, binary.BigEndian, uint32(1))    // no_trunc
 	binary.Write(&buf, binary.BigEndian, uint32(1))    // chown_restricted
-	binary.Write(&buf, binary.BigEndian, uint32(0))    // case_insensitive
-	binary.Write(&buf, binary.BigEndian, uint32(1))    // case_preserving
+	var caseInsensitive uint32
+	if h.server.handler.caseInsensitive(node.path, attrs.Mode.IsDir()) {
+		caseInsensitive = 1
+	}
+	binary.Write(&buf, binary.BigEndian, caseInsensitive) // case_insensitive
+	binary.Write(&buf, binary.BigEndian, uint32(1))       // case_preserving
 
 	reply.Data = buf.Bytes()
 	return reply, nil

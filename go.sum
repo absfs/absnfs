@@ -22,5 +22,7 @@ github.com/absfs/switchfs v1.0.1-0.20261103183748-8b08df311d19 h1:JmI5Pgusjuey9W
 github.com/absfs/switchfs v1.0.1-0.20261103183748-8b08df311d19/go.mod h1:gFnb5t+a5Gn+K6RgMjU9Rj2D9jRnJ13byNHd12RyJ5Y=
 github.com/absfs/unionfs v1.0.0 h1:hASHga6ZXENNd7xMNukmgeK4DsDndiI79nE+EkyQwjY=
 github.com/absfs/unionfs v1.0.0/go.mod h1:35xm3ylXqMdmhq78IYUcznu1OUfKWqq4rzM8ugDfwIk=
+github.com/absfs/unionfs v1.0.1-0.20261104020435-e2a45dd21dba h1:QMuwxIDrpOdI67mPT9PxVIBuocGg+WERZIEVq4tmzW0=
+github.com/absfs/unionfs v1.0.1-0.20261104020435-e2a45dd21dba/go.mod h1:/nZFthMNN3FfGcUUSfqHDtjQy46evqEXYGiJHyd8Aa8=
 github.com/bmatcuk/doublestar/v4 v4.9.1 h1:X8jg9rRZmJd4yRy7ZeNDRnM+T3ZfHv15JiBJ/avrEXE=
 github.com/bmatcuk/doublestar/v4 v4.9.1/go.mod h1:xBQ8jztBU6kakFMg+8WGxn0c6z1fTSPVIjEY1Wr7jzc=

@@ -6,12 +6,28 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Planned as v1.2.0: it adds exported API (below) and changes two behaviours
+Planned as v1.2.0: it adds exported API (below) and changes three behaviours
 existing deployments can see (see "Changed"). Fixes found serving workspaces
 to the macOS NFS client, which is stricter than Linux's.
 
 ### Added
 
+- `ExportOptions.CaseInsensitive` (`CaseInsensitivity`: `CaseInsensitiveAuto`,
+  the default, `CaseInsensitiveTrue`, `CaseInsensitiveFalse`): what PATHCONF
+  reports as `case_insensitive`. Auto probes, read-only, the directory of
+  each handle (a few names looked up with their ASCII letters' case swapped,
+  compared by device and inode, memfs inode, or type, size and time), falls
+  back to the nearest ancestor that can be probed and then false, and caches
+  the answer per directory for `AttrCacheTimeout`, dropping it when the
+  server removes, renames or replaces the directory. Explicit values apply
+  to every handle. Fixed at `New`. Exports with a case-sensitive root over
+  folding content (a memfs root listing switchfs routes to host directories
+  on APFS) should set `CaseInsensitiveTrue`: the macOS client takes the
+  volume's answer from the root.
+- A macOS end-to-end test, `TestMacOSCaseOnlyRename`, run with
+  `ABSNFS_MACOS_MOUNT=1`: `mv README.md Readme.md` over the mount in a host
+  directory, a union of host directories and union workspaces under a memfs
+  root, and `pathconf(_PC_CASE_SENSITIVE)` on each and on a memfs export.
 - `ExportOptions.AllowedUIDs` (and `PolicyOptions.AllowedUIDs`): when not
   empty, only AUTH_SYS requests carrying a listed uid reach NFS procedures;
   other uids and AUTH_NONE get `AUTH_ERROR`. NULL and MOUNT are answered for
@@ -84,6 +100,12 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Fixed
 
+- **A case-only RENAME of a non-empty directory failed with
+  `NFS3ERR_NOTEMPTY`** on a filesystem that wraps its `os.FileInfo` over a
+  case-insensitive host (basefs after v1.0.0 over osfs on APFS): the check
+  that the target is the source itself used `os.SameFile`, which cannot see
+  through a wrapper. It now compares device and inode numbers, or memfs
+  inodes, as the PATHCONF probe does.
 - **Type decisions that gate an operation use the object as it is now.**
   LOOKUP, READDIR, READDIRPLUS, REMOVE and RMDIR decided whether a handle
   named a directory from the attributes it was issued with, and CREATE,
@@ -252,6 +274,13 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Changed
 
+- **PATHCONF reports case sensitivity truthfully by default**
+  (`CaseInsensitiveAuto`): an export of a directory on a case-insensitive
+  host volume (APFS, NTFS by default) now answers `case_insensitive` true,
+  where absnfs always answered false. In this mode FSINFO no longer sets
+  `FSF3_HOMOGENEOUS`, so the macOS client asks PATHCONF on each
+  `pathconf(2)` call instead of once per mount. `CaseInsensitiveFalse`
+  restores both.
 - **UNCHECKED CREATE of an existing regular file sets only the size its
   `sattr3` asks for**, as Linux knfsd does: without one the file keeps its
   content, with size 0 it is truncated. Before, it was always truncated.

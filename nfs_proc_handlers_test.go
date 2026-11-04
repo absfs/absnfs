@@ -408,10 +408,12 @@ func TestR3_FSINFONoLinkBit(t *testing.T) {
 				t.Errorf("FSINFO properties should NOT have FSF3_LINK set on %s server, properties=%#x", tt.roDesc, properties)
 			}
 
-			// Verify that FSF3_SYMLINK (0x0002), FSF3_HOMOGENEOUS (0x0008), FSF3_CANSETTIME (0x0010) are set
-			const expected = 0x0002 | 0x0008 | 0x0010
+			// Verify that FSF3_SYMLINK (0x0002) and FSF3_CANSETTIME (0x0010)
+			// are set. FSF3_HOMOGENEOUS (0x0008) depends on CaseInsensitive
+			// (see TestFsinfoHomogeneous).
+			const expected = 0x0002 | 0x0010
 			if properties&expected != expected {
-				t.Errorf("Expected FSF3_SYMLINK|FSF3_HOMOGENEOUS|FSF3_CANSETTIME in properties, got %#x", properties)
+				t.Errorf("Expected FSF3_SYMLINK|FSF3_CANSETTIME in properties, got %#x", properties)
 			}
 		})
 	}

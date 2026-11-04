@@ -32,13 +32,16 @@ takes effect atomically.
 
 ### Fixed at New
 
-`Squash`, `DefaultOwner`, `ForceOwner`, `HandleStateDir` and `HandleGeneration`
-are fixed when the server is created by `New`. `UpdateExportOptions` returns an
-error, and applies nothing, if any of them differs from the current value;
-changing one requires a restart. An empty `Squash`, `HandleStateDir` or
-`HandleGeneration` and a nil `DefaultOwner` mean "unchanged", so the result of
-`GetExportOptions` can always be passed back. `ForceOwner` is a plain bool and
-must match.
+`Squash`, `DefaultOwner`, `ForceOwner`, `HandleStateDir`, `HandleGeneration`
+and `CaseInsensitive` are fixed when the server is created by `New`.
+`UpdateExportOptions` returns an error, and applies nothing, if any of them
+differs from the current value; changing one requires a restart. An empty
+`Squash`, `HandleStateDir` or `HandleGeneration` and a nil `DefaultOwner` mean
+"unchanged", so the result of `GetExportOptions` can always be passed back.
+`ForceOwner` is a plain bool and must match, and so must `CaseInsensitive`
+(its zero value, `CaseInsensitiveAuto`, is a setting of its own). Clients
+take whether PATHCONF's answers are the same for every object from FSINFO
+when they mount, which is one reason it cannot change under them.
 
 ## UpdateExportOptions (Simple Path)
 

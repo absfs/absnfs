@@ -154,6 +154,14 @@ func TestMacOSWorkspacesWarmStatus(t *testing.T) {
 // server when the test ends. extraOpts (",opt,...") is added to the mount options.
 func mountMacOSHandles(t *testing.T, fs absfs.SymlinkFileSystem, maxHandles int, extraOpts string) (*AbsfsNFS, string) {
 	t.Helper()
+	return mountMacOS(t, fs, ExportOptions{MaxHandles: maxHandles}, extraOpts)
+}
+
+// mountMacOS serves fs with exportOpts, mounts it with the kernel client in
+// a fresh directory, and unmounts and stops the server when the test ends.
+// extraOpts (",opt,...") is added to the mount options.
+func mountMacOS(t *testing.T, fs absfs.SymlinkFileSystem, exportOpts ExportOptions, extraOpts string) (*AbsfsNFS, string) {
+	t.Helper()
 	scratch, err := os.MkdirTemp("", "absnfs-handles-")
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +173,7 @@ func mountMacOSHandles(t *testing.T, fs absfs.SymlinkFileSystem, maxHandles int,
 	if err := os.Mkdir(mnt, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	nfs, err := New(fs, ExportOptions{MaxHandles: maxHandles})
+	nfs, err := New(fs, exportOpts)
 	if err != nil {
 		t.Fatal(err)
 	}

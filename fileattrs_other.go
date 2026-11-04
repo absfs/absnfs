@@ -9,3 +9,9 @@ import "os"
 func sysOwner(info os.FileInfo) (uid, gid uint32, ok bool) {
 	return 0, 0, false
 }
+
+// sysSameFile knows no host file identity here (os.SameFile covers
+// Windows files that are not wrapped).
+func sysSameFile(a, b any) (same, known bool) {
+	return false, false
+}

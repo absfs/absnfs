@@ -17,8 +17,8 @@ via the `nfsHandlers` map, which maps procedure numbers to handler functions.
 | 2 | SETATTR | `handleSetattr` | Sets mode, uid, gid, size, atime, mtime. Supports sattrguard3 (ctime check). Truncation (size=0) is applied before other attributes. |
 | 4 | ACCESS | `handleAccess` | Checks read/write/execute/lookup/delete permissions using UNIX permission bits, effective UID/GID, and auxiliary groups |
 | 18 | FSSTAT | `handleFsstat` | Returns filesystem space statistics (hardcoded: 10GB total, 5GB free) |
-| 19 | FSINFO | `handleFsinfo` | Returns transfer sizes (rtmax/wtmax=1MB, preferred=64KB, mult=4KB), max file size (1TB), time delta (1ms), and properties (symlink + homogeneous + cansettime) |
-| 20 | PATHCONF | `handlePathconf` | Returns path configuration (linkmax=1024, name_max=255, no_trunc=true, chown_restricted=true, case_preserving=true) |
+| 19 | FSINFO | `handleFsinfo` | Returns transfer sizes (rtmax/wtmax=1MB, preferred=64KB, mult=4KB), max file size (1TB), time delta (1ms), and properties (symlink + cansettime, + homogeneous unless `CaseInsensitive` is auto) |
+| 20 | PATHCONF | `handlePathconf` | Returns path configuration (linkmax=1024, name_max=255, no_trunc=true, chown_restricted=true, case_insensitive per `ExportOptions.CaseInsensitive` (`case.go`; auto probes the handle's directory), case_preserving=true) |
 
 ### Name Resolution
 

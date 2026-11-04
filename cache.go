@@ -761,11 +761,13 @@ func (s *AbsfsNFS) invalidate(paths ...string) {
 		}
 		s.fileMap.dirs.forget(p)
 	}
+	s.caseCache.forget(false, paths...)
 }
 
 // invalidateTree drops what the caches hold for each of roots and
 // everything below them, for a directory that moved or was replaced.
 func (s *AbsfsNFS) invalidateTree(roots ...string) {
+	s.caseCache.forget(true, roots...)
 	s.attrCache.invalidateTree(roots...)
 	if s.dirCache != nil {
 		s.dirCache.invalidateTree(roots...)
