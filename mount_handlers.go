@@ -67,12 +67,24 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 			return reply, nil
 		}
 
-		// Create mount point with timeout
-		node, err := h.server.handler.Lookup(mountPath)
-		if err != nil {
-			// MNT3 response: fhs_status (MNT3ERR_NOENT = 2)
+		// With AllowedUIDs set, a caller whose uid is not listed may
+		// mount only the export's root: MNT of any other path would tell
+		// it whether that path exists. MNT is answered for unlisted uids
+		// at all because macOS mount_nfs sends it as uid 0.
+		if mountPath != "/" && !h.mountAllowed(authCtx) {
 			var buf bytes.Buffer
-			xdrEncodeUint32(&buf, 2) // MNT3ERR_NOENT
+			xdrEncodeUint32(&buf, 13) // MNT3ERR_ACCES
+			reply.Data = buf.Bytes()
+			return reply, nil
+		}
+
+		// Every component of the path, the last included, must be a
+		// directory now: the host would follow a symbolic link anywhere
+		// in it, out of the export.
+		node, status := h.mountNode(mountPath)
+		if status != 0 {
+			var buf bytes.Buffer
+			xdrEncodeUint32(&buf, status)
 			reply.Data = buf.Bytes()
 			return reply, nil
 		}
@@ -133,4 +145,36 @@ func (h *NFSProcedureHandler) handleMountCall(call *RPCCall, body io.Reader, rep
 		reply.AcceptStatus = PROC_UNAVAIL
 		return reply, nil
 	}
+}
+
+// mountAllowed reports whether the caller may MNT any path, not only the
+// export's root: always, unless AllowedUIDs is set and the caller's AUTH_SYS
+// uid (as sent) is not on it.
+func (h *NFSProcedureHandler) mountAllowed(authCtx *AuthContext) bool {
+	allowed := h.server.handler.policy.Load().AllowedUIDs
+	if len(allowed) == 0 {
+		return true
+	}
+	return authCtx != nil && authCtx.AuthSys != nil && uidAllowed(authCtx.AuthSys.UID, allowed)
+}
+
+// mountNode looks up the directory MNT names, or returns the MNT3 status
+// to answer: MNT3ERR_NOENT when a component is missing or is not a
+// directory on the way, MNT3ERR_NOTDIR when the last is not a directory.
+func (h *NFSProcedureHandler) mountNode(mountPath string) (*NFSNode, uint32) {
+	s := h.server.handler
+	if err := s.checkAncestors(mountPath); err != nil {
+		return nil, 2 // MNT3ERR_NOENT
+	}
+	node, err := s.Lookup(mountPath)
+	if err != nil {
+		return nil, 2 // MNT3ERR_NOENT
+	}
+	node.mu.RLock()
+	isDir := node.attrs.Mode.IsDir()
+	node.mu.RUnlock()
+	if !isDir {
+		return nil, 20 // MNT3ERR_NOTDIR
+	}
+	return node, 0
 }

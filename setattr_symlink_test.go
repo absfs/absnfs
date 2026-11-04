@@ -63,11 +63,17 @@ func TestSetattrOnSymlink(t *testing.T) {
 		t.Fatalf("SETATTR owner on a symlink: status %d, want NFS_OK", got)
 	}
 	s.checkOutside("SETATTR owner on a symlink")
-	if after, err := os.Stat(canary); err != nil || gidOf(after) != targetGID {
-		t.Errorf("SETATTR owner on a symlink changed its target's group to %d (was %d), %v", gidOf(after), targetGID, err)
-	}
-	if li, err := os.Lstat(link); err != nil || gidOf(li) != other {
-		t.Errorf("link's group is %d after SETATTR, want %d (%v)", gidOf(li), other, err)
+	if other == targetGID {
+		// Chown and Lchown would leave the same groups behind: this run
+		// proves nothing about which was used.
+		t.Logf("the test user has no group besides %d: Lchown is not told apart from Chown", targetGID)
+	} else {
+		if after, err := os.Stat(canary); err != nil || gidOf(after) != targetGID {
+			t.Errorf("SETATTR owner on a symlink changed its target's group to %d (was %d), %v", gidOf(after), targetGID, err)
+		}
+		if li, err := os.Lstat(link); err != nil || gidOf(li) != other {
+			t.Errorf("link's group is %d after SETATTR, want %d (%v)", gidOf(li), other, err)
+		}
 	}
 
 	// A dangling link takes an owner too.

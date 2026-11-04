@@ -2,6 +2,8 @@ package absnfs
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/absfs/memfs"
@@ -129,4 +131,91 @@ func TestAllowedUIDs(t *testing.T) {
 	if call(4242) != MSG_ACCEPTED {
 		t.Error("an empty AllowedUIDs still limits uids")
 	}
+}
+
+// mntStatus sends MNT of p as AUTH_SYS uid through HandleCall and returns
+// the MNT3 status (fhs_status).
+func mntStatus(t *testing.T, h *NFSProcedureHandler, p string, uid uint32) uint32 {
+	t.Helper()
+	c := &RPCCall{Header: RPCMsgHeader{Program: MOUNT_PROGRAM, Version: MOUNT_V3, Procedure: 1},
+		Credential: RPCCredential{Flavor: AUTH_SYS, Body: authSysBody(uid, 20)}}
+	reply, err := h.HandleCall(c, bytes.NewReader(xdrArgs(p)), &AuthContext{ClientIP: "127.0.0.1", Credential: &c.Credential})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.Status != MSG_ACCEPTED || reply.AcceptStatus != SUCCESS {
+		t.Fatalf("MNT %s as uid %d: reply %d/%d", p, uid, reply.Status, reply.AcceptStatus)
+	}
+	return readStatusFromReply(reply)
+}
+
+// TestMountWithAllowedUIDs: with AllowedUIDs set, a uid not on the list may
+// mount the export's root (macOS mount_nfs sends MNT as uid 0) but no other
+// path, so MNT tells it nothing about which paths exist; a listed uid
+// mounts any directory.
+func TestMountWithAllowedUIDs(t *testing.T) {
+	mfs, err := memfs.NewFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mfs.Mkdir("/sub", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nfs, err := New(mfs, ExportOptions{AllowedUIDs: []uint32{1000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nfs.Close()
+	h := &NFSProcedureHandler{server: &Server{handler: nfs}}
+	handles := nfs.fileMap.Count()
+	for _, c := range []struct {
+		path string
+		uid  uint32
+		want uint32
+	}{
+		{"/", 0, 0},
+		{"/", 4242, 0},
+		{"/sub", 4242, 13},     // MNT3ERR_ACCES, whether it exists or not
+		{"/missing", 4242, 13}, // the same
+		{"/sub", 0, 13},
+		{"/sub", 1000, 0},
+		{"/missing", 1000, 2}, // MNT3ERR_NOENT
+	} {
+		if got := mntStatus(t, h, c.path, c.uid); got != c.want {
+			t.Errorf("MNT %s as uid %d: status %d, want %d", c.path, c.uid, got, c.want)
+		}
+	}
+	if got := nfs.fileMap.Count() - handles; got > 2 {
+		t.Errorf("MNT issued %d handles, want at most 2 (the root and /sub)", got)
+	}
+}
+
+// TestMountPathComponents: MNT walks no symbolic link and mounts only a
+// directory: a path through a link (which the host would follow out of the
+// export) answers MNT3ERR_NOENT whether its target exists or not, and a
+// link or file as the last component MNT3ERR_NOTDIR.
+func TestMountPathComponents(t *testing.T) {
+	s := newSwapEnv(t)
+	if err := os.Symlink(s.outside, filepath.Join(s.native, "export", "out")); err != nil {
+		t.Fatal(err)
+	}
+	s.writeFile(s.export+"/file", "x")
+	s.mkdir(s.export + "/dir")
+	h := &NFSProcedureHandler{server: &Server{handler: s.nfs}}
+	for _, c := range []struct {
+		path string
+		want uint32
+	}{
+		{s.export + "/dir", 0},
+		{s.export + "/out/sub", 2},
+		{s.export + "/out/nope", 2},
+		{s.export + "/out", 20},
+		{s.export + "/file", 20},
+		{s.export + "/missing", 2},
+	} {
+		if got := mntStatus(t, h, c.path, 0); got != c.want {
+			t.Errorf("MNT %s: status %d, want %d", c.path, got, c.want)
+		}
+	}
+	s.checkOutside("MNT")
 }

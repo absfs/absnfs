@@ -64,7 +64,8 @@ Returns an error only if the structured logger fails to close.
 func (s *AbsfsNFS) Export(mountPath string, port int) error
 ```
 
-Starts serving the export on `localhost` at the given TCP port, in the form
+Starts serving the export on `127.0.0.1` (always; use `NewServer` for another
+bind address) at the given TCP port, in the form
 kernel NFS clients (Linux, macOS `mount_nfs`) expect:
 
 - **One port for NFS and MOUNT.** The MOUNT protocol is served on the same

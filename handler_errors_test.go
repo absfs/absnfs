@@ -123,7 +123,9 @@ func wrap(fn func(body io.Reader, reply *RPCReply, auth *AuthContext) (*RPCReply
 }
 
 // TestHandlersReportVanishedDirectory: when the object behind a handle is
-// gone, procedures answer with NFS3ERR_NOENT instead of stale success.
+// gone, procedures answer with NFS3ERR_STALE (RFC 1813: the file the handle
+// refers to no longer exists) instead of stale success or NFS3ERR_NOENT,
+// which would tell the client a name is missing from a live directory.
 func TestHandlersReportVanishedDirectory(t *testing.T) {
 	e := newFaEnv(t, ExportOptions{})
 	h := e.handler
@@ -164,8 +166,8 @@ func TestHandlersReportVanishedDirectory(t *testing.T) {
 		{"READLINK", wrap(h.handleReadlink), linkFH.Bytes()},
 	}
 	for _, c := range cases {
-		if st := faCall(t, e, c.fn, c.body); st != NFSERR_NOENT {
-			t.Errorf("%s: status %d, want NFSERR_NOENT", c.name, st)
+		if st := faCall(t, e, c.fn, c.body); st != NFSERR_STALE {
+			t.Errorf("%s: status %d, want NFSERR_STALE", c.name, st)
 		}
 	}
 }

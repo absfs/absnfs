@@ -258,12 +258,13 @@ func TestFileSwappedForLink(t *testing.T) {
 	if got := s.call(NFSPROC3_READLINK, xdrArgs(ln)); got != NFSERR_INVAL {
 		t.Errorf("READLINK of a link replaced by a file: status %d, want NFS3ERR_INVAL", got)
 	}
-	// And one removed behind the server's back is gone.
+	// And one removed behind the server's back is gone: its handle is
+	// stale.
 	if err := os.Remove(filepath.Join(s.native, "export", "ln")); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.call(NFSPROC3_READLINK, xdrArgs(ln)); got != NFSERR_NOENT {
-		t.Errorf("READLINK of a link removed behind the server's back: status %d, want NFS3ERR_NOENT", got)
+	if got := s.call(NFSPROC3_READLINK, xdrArgs(ln)); got != NFSERR_STALE {
+		t.Errorf("READLINK of a link removed behind the server's back: status %d, want NFS3ERR_STALE", got)
 	}
 }
 

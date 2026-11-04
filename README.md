@@ -144,9 +144,10 @@ gid; a server not running as root can only give them its own. An UNCHECKED
 
 ## Security
 
-**Every local user can use a localhost export, as any uid.** `Export` and
-`NewServer` bind `localhost` by default, which keeps other machines out but
-not other accounts on the same machine: any local process can connect to the
+**Every local user can use a loopback export, as any uid.** `Export` binds
+`127.0.0.1` (always), and `NewServer` binds `ServerOptions.Hostname`, which
+defaults to `localhost`. Both keep other machines out but not other accounts
+on the same machine: any local process can connect to the
 port and speak NFS. NFSv3 clients identify themselves with AUTH_SYS, a uid
 and gids the client simply asserts, and absnfs (like any NFSv3 server without
 Kerberos) believes them. So a local user can claim the uid of the user
@@ -156,9 +157,12 @@ treat a running export as giving all of them the server's access to it.
 
 What limits it:
 
-- **Bind to `127.0.0.1`** (`ServerOptions.Hostname: "127.0.0.1"`) rather than
-  a name or a public address, and use `AllowedIPs` when clients come from
-  elsewhere. Both limit which machines connect, not which users.
+- **Bind to `127.0.0.1`** rather than a name or a public address. `Export`
+  always does; it takes no bind address, so for any other one build the
+  server with `NewServer` and set `ServerOptions.Hostname` (and say
+  `"127.0.0.1"` there rather than relying on the `localhost` default). Use
+  `AllowedIPs` when clients come from elsewhere. Both limit which machines
+  connect, not which users.
 - **`ExportOptions.AllowedUIDs`** (opt in) serves only AUTH_SYS requests
   carrying one of the listed uids, for example only the uid of the user who
   serves the export: `AllowedUIDs: []uint32{uint32(os.Getuid())}`. Other
@@ -166,8 +170,11 @@ What limits it:
   misuse (another account mounting the export as itself), **not a hostile
   local user**: the uid is still asserted by the client, and a program that
   writes its own RPC credentials can claim an allowed uid. NULL and the MOUNT
-  protocol, which reach no file, are answered for any uid (macOS `mount_nfs`
-  sends MNT as uid 0).
+  protocol are answered for any uid (macOS `mount_nfs` sends MNT as uid 0),
+  but a uid not on the list may MNT only the export's root
+  (`host:/`): MNT of any other path answers `MNT3ERR_ACCES` whether it
+  exists or not, so it reveals nothing. To mount a subdirectory with
+  `mount_nfs`, list uid 0 or mount the root.
 - **TLS with client certificates** (`ExportOptions.TLS`) is the only option
   that proves who the client is. `Squash: "all"` maps every client to nobody,
   and `ReadOnly` refuses every change.
@@ -182,13 +189,20 @@ decision on an object's type that gates an operation (is this handle still
 a directory? still a regular file?) is made from the object as it is now
 (`Lstat`), never from the attributes cached when its handle was issued. A
 directory replaced by a link behind the server's back answers
-`NFS3ERR_NOTDIR`, a file replaced by a link `NFS3ERR_INVAL`; neither is
-followed. Two gaps remain while other local processes can change the
-exported directory: a handle for an object *below* a directory that is
-replaced by a link is still resolved by its path, through the link (a client
-that had a file in it open reaches the file of the same name where the link
-leads); and a swap in the instant between the check and the operation is not
-caught. Do not let untrusted local users write to a directory you export.
+`NFS3ERR_NOTDIR`; a file replaced by a link answers `NFS3ERR_INVAL` to READ,
+WRITE and to SETATTR of its mode, size or times (an owner change applies to
+the link itself, with `Lchown`). Neither is followed. Every directory
+*above* a handle's object is checked the same way, so a handle below a
+directory that was replaced by a link is stale (`NFS3ERR_STALE`) rather than
+resolved through the link, and so is a handle whose object is gone. An
+UNCHECKED CREATE of a name that is a link or a directory answers
+`NFS3ERR_EXIST` (as Linux knfsd does) instead of opening it, and MNT walks
+no link. Remaining gaps while other local processes can change the exported
+directory: a swap in the instant between the check and the operation is not
+caught (only a backend that refuses to follow links could close that), and
+GETATTR and ACCESS, which change nothing, may report the attributes of what
+a swapped directory's link leads to. Do not let untrusted local users write
+to a directory you export.
 
 ## Features
 
@@ -229,7 +243,7 @@ caught. Do not let untrusted local users write to a directory you export.
 
 - **AUTH_SYS only.** Clients assert their own uid and gid; absnfs trusts them,
   like any NFSv3 server without Kerberos, so any local user can use a
-  `localhost` export as any uid. See [Security](#security): bind
+  loopback export as any uid. See [Security](#security): bind
   `127.0.0.1`, and use `AllowedIPs`, `AllowedUIDs`, squashing and TLS to
   limit who can connect.
 - **A symbolic link's mode and times cannot be set** (`NFS3ERR_INVAL`:
@@ -245,9 +259,11 @@ caught. Do not let untrusted local users write to a directory you export.
   filesystem resolves links within its own namespace (memfs, c4fs, unionfs).
   READLINK returns every target as stored either way.
 - **No hard links** (LINK returns `NFS3ERR_NOTSUPP`).
-- **UNCHECKED CREATE truncates an existing file** (keeping its owner and
-  mode), as `open(O_CREAT|O_TRUNC)` does. Clients send it only after a lookup
-  found no file, so this matters only when a create races another.
+- **UNCHECKED CREATE of an existing file sets only the size the request
+  sets** (keeping its owner and mode), as Linux knfsd does, and refuses a
+  name that is not a regular file with `NFS3ERR_EXIST`. Clients send it only
+  after a lookup found no file, so this matters only when a create races
+  another.
 - **Directory listings come in hash order**, not name order (`ls` sorts
   anyway). An entry added while a client pages through a directory may be
   missed by that listing, as on local filesystems with hashed directories.

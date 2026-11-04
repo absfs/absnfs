@@ -77,8 +77,10 @@ func TestIsWithin(t *testing.T) {
 }
 
 // TestUncheckedCreateKeepsExistingOwnerAndMode: an UNCHECKED CREATE of an
-// existing file truncates it, like open(O_CREAT|O_TRUNC), but keeps its owner
-// and mode; the request's attributes apply only to a file it creates.
+// existing file keeps its owner and mode and sets only the size its sattr3
+// asks for, as Linux knfsd does: without one the file keeps its content,
+// with size 0 it is truncated. The request's other attributes apply only to
+// a file it creates.
 func TestUncheckedCreateKeepsExistingOwnerAndMode(t *testing.T) {
 	e := newFaEnv(t, ExportOptions{})
 	if err := e.fs.Chown("/dir/file.txt", 1234, 5678); err != nil {
@@ -103,8 +105,21 @@ func TestUncheckedCreateKeepsExistingOwnerAndMode(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("mode after UNCHECKED CREATE = %o, want 600", info.Mode().Perm())
 	}
-	if info.Size() != 0 {
-		t.Errorf("size after UNCHECKED CREATE = %d, want 0 (truncated)", info.Size())
+	if info.Size() == 0 {
+		t.Error("UNCHECKED CREATE without a size truncated the existing file")
+	}
+	sizeZero := func(b *bytes.Buffer) {
+		b.Write(encodeSattr3(false, 0, false, 0, false, 0, true, 0, 0, 0, 0, 0, 0, 0))
+	}
+	body = faDirOp(e.handle(t, "/dir"), "file.txt", faU32(0), sizeZero)
+	if st := faCall(t, e, wrap(e.handler.handleCreate), body); st != NFS_OK {
+		t.Fatalf("status %d", st)
+	}
+	if info, err = e.fs.Lstat("/dir/file.txt"); err != nil || info.Size() != 0 {
+		t.Errorf("size after UNCHECKED CREATE with size 0 = %d (%v), want 0", info.Size(), err)
+	}
+	if uid, gid := memfsOwner(t, e.fs, "/dir/file.txt"); uid != 1234 || gid != 5678 {
+		t.Errorf("owner after truncating CREATE = %d:%d, want 1234:5678", uid, gid)
 	}
 
 	// A new name does get the requested owner and mode.

@@ -6,9 +6,10 @@ and TLS encryption.
 
 ## Who Can Use an Export
 
-Read this first. `Export` and `NewServer` bind `localhost` unless told
-otherwise (`ServerOptions.Hostname`). That keeps other machines out, but
-every account on the machine can connect to the port and speak NFS.
+Read this first. `Export` always binds `127.0.0.1`; it takes no bind
+address. `NewServer` binds `ServerOptions.Hostname`, which defaults to
+`localhost`. Either keeps other machines out, but every account on the
+machine can connect to the port and speak NFS.
 
 NFSv3 identifies callers with AUTH_SYS: the client puts a uid and gids in
 each request and the server believes them. absnfs does too, like every
@@ -21,7 +22,10 @@ running export gives all of them the server's access to it.
 Limit it with:
 
 1. **Bind to `127.0.0.1`**, not a name or an external address, and list
-   remote clients in `AllowedIPs`. These limit machines, not users.
+   remote clients in `AllowedIPs`. These limit machines, not users. `Export`
+   does this already; with `NewServer`, set
+   `ServerOptions.Hostname: "127.0.0.1"`, which is also how to bind any
+   other address (`Export` cannot).
 2. **`AllowedUIDs`** (below), so that only requests carrying the expected
    uids are served. It limits accidents and casual misuse, not a hostile
    local user, because the uid is still the client's claim.
@@ -44,10 +48,15 @@ nfs, err := absnfs.New(fs, absnfs.ExportOptions{
 })
 ```
 
-The NFS NULL procedure and the MOUNT protocol are answered for any uid: they
-reach no file (MNT hands out the root handle, which is of no use without NFS
-requests), and macOS `mount_nfs` sends MNT as uid 0 because it runs setuid
-root. `AllowedUIDs` is a policy option: `UpdateExportOptions` can change it.
+The NFS NULL procedure and the MOUNT protocol are answered for any uid,
+because clients probe with NULL (some with AUTH_NONE) and macOS `mount_nfs`
+sends MNT as uid 0, since it runs setuid root. A uid that is not on the
+list may MNT only the export's root (`host:/`), whose handle is of no use
+without NFS requests: MNT of any other path answers `MNT3ERR_ACCES` without
+looking it up, so it does not reveal whether the path exists. To mount a
+subdirectory with `mount_nfs` while `AllowedUIDs` is set, list uid 0 too, or
+mount the root. `AllowedUIDs` is a policy option: `UpdateExportOptions` can
+change it.
 
 What it is for: another account on the machine mounting your export as
 itself, a client mounted by the wrong user, a script running as root by
@@ -72,16 +81,28 @@ absnfs keeps clients inside the export:
   handle was issued with or the attribute cache. A directory replaced by a
   symbolic link behind the server's back answers `NFS3ERR_NOTDIR` to LOOKUP,
   READDIR, READDIRPLUS, CREATE, MKDIR, SYMLINK, REMOVE, RMDIR and RENAME; a
-  file replaced by one answers `NFS3ERR_INVAL` to READ, WRITE and SETATTR;
-  READLINK answers `NFS3ERR_INVAL` for an object that is no longer a link.
+  file replaced by one answers `NFS3ERR_INVAL` to READ, WRITE and SETATTR of
+  its mode, size or times (an owner change applies to the link itself, with
+  `Lchown`, and follows nothing); READLINK answers `NFS3ERR_INVAL` for an
+  object that is no longer a link.
+- Every directory above a handle's object, from the export's root down, is
+  checked the same way. A handle for an object below a directory that was
+  replaced by a link answers `NFS3ERR_STALE` to every procedure above
+  instead of reaching, for reading and writing, the subtree the link leads
+  to. A handle whose object is gone is stale too.
+- UNCHECKED CREATE of a name that is a symbolic link, a directory or
+  anything but a regular file answers `NFS3ERR_EXIST` (as Linux knfsd does)
+  without opening it, so it never truncates what a link points to.
+- MNT walks no symbolic link: every component of the path must be a
+  directory.
 
-Two gaps remain when other local processes can change the exported
-directory. A handle for an object below a directory that is later replaced
-by a link is resolved by its path, which the host follows through the link:
-a client holding the handle of `dir/file` reaches the file of that name
-where the new link leads. And a swap in the instant between a check and the
-operation it gates is not caught. Do not let untrusted local users write to
-an exported host directory.
+Gaps remain when other local processes can change the exported directory.
+A swap in the instant between a check and the operation it gates is not
+caught; only a backend that refuses to follow links on its own could close
+that. GETATTR and ACCESS, which change nothing, may report the attributes
+of what a swapped directory's link leads to until the handle is next used
+by a procedure above. Do not let untrusted local users write to an exported
+host directory.
 
 ## IP Filtering
 

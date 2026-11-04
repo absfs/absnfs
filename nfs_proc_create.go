@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path"
 	"strings"
@@ -39,8 +40,8 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithWcc(reply, status), nil
 	}
 
-	var createHow uint32
-	if err := binary.Read(body, binary.BigEndian, &createHow); err != nil {
+	var createMode uint32
+	if err := binary.Read(body, binary.BigEndian, &createMode); err != nil {
 		return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
 	}
 
@@ -49,10 +50,19 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 	newUID := authCtx.EffectiveUID
 	newGID := authCtx.EffectiveGID
 	var verf [8]byte
-	if createHow == 0 || createHow == 1 {
+	// UNCHECKED on an existing regular file sets only the size its sattr3
+	// asks for, as Linux knfsd does; without one the file is left as is.
+	existingSize := int64(-1)
+	if createMode == 0 || createMode == 1 {
 		sattr, err := decodeSattr3(body)
 		if err != nil {
 			return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
+		}
+		if sattr.SetSize {
+			if sattr.Size > uint64(math.MaxInt64) {
+				return nfsErrorWithWcc(reply, NFSERR_INVAL), nil
+			}
+			existingSize = int64(sattr.Size)
 		}
 		if sattr.SetMode {
 			mode = sattr.Mode
@@ -64,7 +74,7 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 		if sattr.SetGID && authCtx.EffectiveUID == 0 {
 			newGID = sattr.GID
 		}
-	} else if createHow == 2 {
+	} else if createMode == 2 {
 		// M14: Use io.ReadFull for the 8-byte EXCLUSIVE verifier
 		if _, err := io.ReadFull(body, verf[:]); err != nil {
 			return nfsErrorWithWcc(reply, GARBAGE_ARGS), nil
@@ -93,12 +103,12 @@ func (h *NFSProcedureHandler) handleCreate(body io.Reader, reply *RPCReply, auth
 	}
 
 	// GUARDED (1) and EXCLUSIVE (2) must not touch an existing file.
-	exclusive := createHow == 1 || createHow == 2
-	newNode, err := h.server.handler.createWithContext(context.Background(), node, name, attrs, exclusive)
-	if err == nil && createHow == 2 {
+	how := createHow{exclusive: createMode == 1 || createMode == 2, size: existingSize}
+	newNode, err := h.server.handler.createWithContext(context.Background(), node, name, attrs, how)
+	if err == nil && createMode == 2 {
 		newNode = h.stampVerifier(newNode, verf)
 	}
-	if err != nil && createHow == 2 && errors.Is(err, os.ErrExist) {
+	if err != nil && createMode == 2 && errors.Is(err, os.ErrExist) {
 		// A retransmitted EXCLUSIVE CREATE finds the file it made: the
 		// verifier is still in its times (RFC 1813 section 3.3.8).
 		existing, lookupErr := h.server.handler.Lookup(path.Join(node.path, name))

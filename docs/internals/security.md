@@ -47,9 +47,12 @@ guide).
 When `PolicyOptions.AllowedUIDs` is not empty, `ValidateAuthentication`
 refuses AUTH_SYS credentials whose uid (before squashing) is not listed, and
 every AUTH_NONE credential. `HandleCall` applies it to NFS procedures other
-than NULL: the MOUNT protocol and NULL reach no file, and macOS `mount_nfs`
-sends MNT as uid 0. It limits accidents and casual misuse, not a client that
-forges its credential.
+than NULL: clients probe with NULL, and macOS `mount_nfs` sends MNT as uid
+0. MNT itself (`mountAllowed` in mount_handlers.go) answers an unlisted uid
+only for the export's root and gives `MNT3ERR_ACCES` for any other path
+before looking it up, so MNT is no existence oracle and issues no handle
+for it. It limits accidents and casual misuse, not a client that forges its
+credential.
 
 ### Unsupported Flavors
 
@@ -148,7 +151,12 @@ replaced behind the server's back. A directory replaced by a symbolic link
 would then be used as a directory, and a host-backed filesystem would follow
 the link out of the export. So every type decision that gates an operation
 on a path is made from a fresh `Lstat` (`freshAttrs`, `requireDir`,
-`requireRegular` in operations.go):
+`requireRegular` in operations.go). `freshAttrs` first `Lstat`s every
+directory above the object, from the export's root down
+(`checkAncestors`), and answers `NFS3ERR_STALE` if one is not a directory
+now; the object itself gone (`ENOENT`, `ENOTDIR`) is stale too, as is
+GETATTR of it (RFC 1813: the file the handle refers to no longer exists).
+SETATTR and the Go API's `SetAttr` and `Readlink` use the same checks.
 
 | Procedure                                                                          | Requires        | Otherwise                                             |
 | ---------------------------------------------------------------------------------- | --------------- | ----------------------------------------------------- |
@@ -161,6 +169,12 @@ LINK and MKNOD are not supported (`NFS3ERR_NOTSUPP`) and touch nothing. A
 handle that has left the cache is resolved by path and is stale if the
 object there is of another type.
 
+UNCHECKED CREATE of an existing name `Lstat`s it (`createExisting`): only a
+regular file is changed, and only to the size the request's `sattr3` sets;
+anything else answers `NFS3ERR_EXIST`, as Linux knfsd does. Opening it with
+`O_TRUNC` would follow a link on the host and truncate its target. MNT
+requires every component of its path to be a directory (`mountNode`).
+
 SETATTR on a symbolic link applies only its owner, with `Lchown`. Its mode,
 size and times are refused with `NFS3ERR_INVAL` before anything changes:
 absfs's `Chmod`, `Truncate` and `Chtimes` follow the link on a host. (Linux
@@ -169,10 +183,13 @@ refuses all three with `NFS4ERR_INVAL`.)
 
 Residual gaps, with other local processes changing the exported directory:
 the check and the operation are separate calls, so a swap in between is not
-caught; and only the final component is checked, so a handle for an object
-below a directory later replaced by a link is resolved through the link.
-Closing either needs a backend that refuses to follow links itself (openat
-with `O_NOFOLLOW` per component).
+caught, which needs a backend that refuses to follow links itself (openat
+with `O_NOFOLLOW` per component) to close. GETATTR and ACCESS read through
+the attribute cache and a plain `Lstat` of the path without the ancestor
+walk; they change nothing but may report the attributes of what a swapped
+directory's link leads to. The ancestor walk costs one `Lstat` per path
+component on every gated procedure; it cannot be cached by generation,
+because a change behind the server's back moves no generation.
 
 ## XDR Input Bounds
 

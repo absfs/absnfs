@@ -15,11 +15,13 @@ to the macOS NFS client, which is stricter than Linux's.
 - `ExportOptions.AllowedUIDs` (and `PolicyOptions.AllowedUIDs`): when not
   empty, only AUTH_SYS requests carrying a listed uid reach NFS procedures;
   other uids and AUTH_NONE get `AUTH_ERROR`. NULL and MOUNT are answered for
-  any uid (macOS `mount_nfs` sends MNT as uid 0). AUTH_SYS uids are the
-  client's claim, so this limits accidents and casual misuse, not forged
-  credentials. Changeable at runtime.
+  any uid (macOS `mount_nfs` sends MNT as uid 0), but an unlisted uid may
+  MNT only the export's root: any other path answers `MNT3ERR_ACCES`
+  whether it exists or not. AUTH_SYS uids are the client's claim, so this
+  limits accidents and casual misuse, not forged credentials. Changeable at
+  runtime.
 - README "Security" section and security guide sections on who can use an
-  export (any local user, as any uid, on a `localhost` bind), limiting uids,
+  export (any local user, as any uid, on a loopback bind), limiting uids,
   and exports of a host directory.
 - `ExportOptions.MaxHandles` (and `TuningOptions.MaxHandles`): the capacity
   of the file handle cache, default 100,000 (<= 0). It bounds memory and the
@@ -81,8 +83,19 @@ to the macOS NFS client, which is stricter than Linux's.
   outside. Each now checks a fresh `Lstat`: `NFS3ERR_NOTDIR` for a directory
   argument that is not one, `NFS3ERR_ISDIR` or `NFS3ERR_INVAL` for READ,
   WRITE and SETATTR size on anything but a regular file (as Linux knfsd),
-  `NFS3ERR_INVAL` for READLINK on what is no longer a link. A handle below a
-  replaced directory is still resolved through it (see README, Security).
+  `NFS3ERR_INVAL` for READLINK on what is no longer a link. Every directory
+  above a handle's object is checked too: a handle below a directory
+  replaced by a link answers `NFS3ERR_STALE` instead of reaching, read and
+  write, the subtree the link leads to.
+- **UNCHECKED CREATE of a symbolic link truncated its target.** It opened an
+  existing name with `O_TRUNC`, which the host resolves through a link, even
+  one leading out of the export, and answered `NFS3_OK`. A name that is a
+  link, a directory or anything but a regular file now answers
+  `NFS3ERR_EXIST` without being opened, as Linux knfsd does; `Create`
+  returns an `os.ErrExist` error for it.
+- **MNT walked symbolic links.** It looked up any client path, through links
+  that lead out of the export. Every component must now be a directory:
+  `MNT3ERR_NOENT` on the way, `MNT3ERR_NOTDIR` for the last.
 - **SETATTR on a symbolic link changed its target.** Chmod, Chtimes and
   Truncate were applied to the link's path, which a host follows, and the
   owner was set with Chown. The owner is now set with `Lchown`, on the link;
@@ -91,6 +104,11 @@ to the macOS NFS client, which is stricter than Linux's.
   refuses them with `NFS4ERR_INVAL`. `SetAttr` refuses them too.
 - The `StaleHandles` metric was never incremented: nothing recorded STALE
   errors. Every `NFS3ERR_STALE` reply is now counted.
+- A handle whose object was removed behind the server's back answered
+  `NFS3ERR_NOENT` (LOOKUP, CREATE, READDIR, READ, READLINK and others), which
+  tells a client a name is missing from a directory it still trusts. It now
+  answers `NFS3ERR_STALE`, as RFC 1813 defines; NOENT is kept for a missing
+  name. `Lookup`-based Go API errors still match `os.ErrNotExist`.
 - The attribute cache never answered GETATTR (or ACCESS, or any procedure
   reporting pre- or post-operation attributes): it dropped the validity time
   when handing out a copy, so every request stat'ed the filesystem. It now
@@ -222,6 +240,12 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Changed
 
+- **UNCHECKED CREATE of an existing regular file sets only the size its
+  `sattr3` asks for**, as Linux knfsd does: without one the file keeps its
+  content, with size 0 it is truncated. Before, it was always truncated.
+  The Go API's `Create` still truncates.
+- **`Export` binds `127.0.0.1`** instead of `localhost` (which Go resolved
+  to the same address). For another bind address use `NewServer`.
 - **Handles are 10 to 64 bytes and name paths.** Handles from earlier
   versions (8 bytes) report `NFS3ERR_STALE`: clients remount once after
   upgrading (macOS: `umount -f`, then mount). Without `HandleStateDir`, a

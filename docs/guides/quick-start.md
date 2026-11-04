@@ -107,7 +107,7 @@ if err := nfs.Export("/", 2049); err != nil {
 }
 ```
 
-`Export` binds `localhost`, serves the MOUNT protocol on the same port, and
+`Export` binds `127.0.0.1`, serves the MOUNT protocol on the same port, and
 uses RPC record marking, so kernel NFS clients can mount it directly. Port 0
 picks a free port, which `nfs.ExportPort()` returns. It does not start a
 portmapper, so clients name the port (`port=P,mountport=P`). TLS from

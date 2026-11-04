@@ -533,8 +533,9 @@ func TestLookupReplyCarriesCurrentDirAttrs(t *testing.T) {
 }
 
 // TestLookupInVanishedDirectory: once the directory behind a handle is
-// gone (and its cached attributes have expired), LOOKUP reports NOENT with
-// the attributes the handle last had. A regression guard for currentAttrs's
+// gone (and its cached attributes have expired), LOOKUP reports STALE with
+// the attributes the handle last had: the handle's own object no longer
+// exists (RFC 1813), which NOENT would misreport as a missing name. A regression guard for currentAttrs's
 // fallback; it passes on the code before it too.
 func TestLookupInVanishedDirectory(t *testing.T) {
 	e := newCacheEnv(t, ExportOptions{})
@@ -553,8 +554,8 @@ func TestLookupInVanishedDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := getReplyData(reply)
-	if status := readStatusFromReply(reply); status != NFSERR_NOENT {
-		t.Fatalf("LOOKUP status %d, want NFSERR_NOENT", status)
+	if status := readStatusFromReply(reply); status != NFSERR_STALE {
+		t.Fatalf("LOOKUP status %d, want NFSERR_STALE", status)
 	}
 	if len(data) != 4+4+84 || binary.BigEndian.Uint32(data[4:8]) != 1 {
 		t.Fatalf("LOOKUP reply is %d bytes, want status and the directory's attributes", len(data))

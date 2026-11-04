@@ -52,17 +52,64 @@ var (
 // as what it was. A backend that follows links on the host (osfs, basefs
 // over osfs) would otherwise follow the link out of the export.
 //
+// The same holds for every directory above node: each is checked to be a
+// directory now (checkAncestors), so a directory swapped for a link above
+// a handle's object is not followed either. A handle whose object is no
+// longer where it was, gone or below something that is no longer a
+// directory, is stale (NFS3ERR_STALE, RFC 1813 section 2.6).
+//
 // The check and the operation that follows it are separate calls, so a
 // swap in the instant between them is not caught; only a backend that
 // refuses to follow links on its own could close that.
 func (s *AbsfsNFS) freshAttrs(node *NFSNode) (*NFSAttrs, error) {
+	if err := s.checkAncestors(node.path); err != nil {
+		return nil, err
+	}
 	gen := s.attrCache.generation()
 	attrs, err := s.statAttrs(node.path)
 	if err != nil {
-		return nil, err
+		return nil, goneIsStale(node.path, err)
 	}
 	s.attrCache.putAt(node.path, attrs, gen)
 	return attrs, nil
+}
+
+// goneIsStale turns the error of a stat of a handle's own object into a
+// stale error when the object is gone: RFC 1813 answers NFS3ERR_STALE when
+// "the file referred to by that file handle no longer exists", and
+// NFS3ERR_NOENT would tell a client that a name is missing from a
+// directory it still believes in. Other errors are returned as they are.
+func goneIsStale(p string, err error) error {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+		return staleError(p, err)
+	}
+	return err
+}
+
+// checkAncestors returns a stale error unless every directory above p, from
+// the export's root down, is a directory now (Lstat, never a cache). A
+// directory replaced by a symbolic link must not be walked through: the
+// host would follow it.
+func (s *AbsfsNFS) checkAncestors(p string) error {
+	for i := 1; i < len(p); i++ {
+		if p[i] != '/' {
+			continue
+		}
+		info, err := s.fs.Lstat(p[:i])
+		if err != nil {
+			return staleError(p, err)
+		}
+		if !info.IsDir() {
+			return staleError(p, syscall.ENOTDIR)
+		}
+	}
+	return nil
+}
+
+// staleError reports that the object at p is not where its handle says.
+// It wraps cause, so errors.Is still sees os.ErrNotExist and the like.
+func staleError(p string, cause error) error {
+	return &statusError{NFSERR_STALE, fmt.Sprintf("stale file handle %s: %v", p, cause), cause}
 }
 
 // requireDir returns dir's attributes now (freshAttrs), or errNotDir when
@@ -283,7 +330,7 @@ func (s *AbsfsNFS) GetAttr(node *NFSNode) (*NFSAttrs, error) {
 	// Get fresh attributes (Lstat, so a symlink is described as itself)
 	attrs, err := s.statAttrs(node.path)
 	if err != nil {
-		return nil, fmt.Errorf("getattr: %w", err)
+		return nil, fmt.Errorf("getattr: %w", goneIsStale(node.path, err))
 	}
 
 	s.attrCache.putAt(node.path, attrs, gen)
@@ -301,12 +348,12 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 
 	// The request is compared with what the filesystem holds now, never
 	// with cached attributes: a field changed behind the server's back
-	// since then must still be set.
-	info, err := s.fs.Lstat(node.path)
+	// since then must still be set. freshAttrs also refuses a node below a
+	// directory that has become a symbolic link.
+	current, err := s.freshAttrs(node)
 	if err != nil {
 		return fmt.Errorf("setattr: %w", err)
 	}
-	current := s.attrsFromInfo(node.path, info)
 	// Forget the cached attributes once done, also when a later change
 	// fails after an earlier one was applied.
 	defer s.attrCache.Invalidate(node.path)
@@ -623,14 +670,27 @@ func (s *AbsfsNFS) Create(dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode,
 }
 
 // CreateWithContext implements the CREATE operation with timeout support.
-// An existing file is truncated (NFS UNCHECKED semantics).
+// An existing regular file is truncated, keeping its mode and owner;
+// anything else that exists under the name (a directory, a symbolic link)
+// is left alone and the call fails with an os.ErrExist error
+// (NFS3ERR_EXIST).
 func (s *AbsfsNFS) CreateWithContext(ctx context.Context, dir *NFSNode, name string, attrs *NFSAttrs) (*NFSNode, error) {
-	return s.createWithContext(ctx, dir, name, attrs, false)
+	return s.createWithContext(ctx, dir, name, attrs, createHow{size: 0})
 }
 
-// createWithContext creates a file. With exclusive set it fails with an
-// os.ErrExist error when the name exists (NFS GUARDED and EXCLUSIVE).
-func (s *AbsfsNFS) createWithContext(ctx context.Context, dir *NFSNode, name string, attrs *NFSAttrs, exclusive bool) (*NFSNode, error) {
+// createHow says what a create does when the name exists.
+type createHow struct {
+	// exclusive fails with an os.ErrExist error (NFS GUARDED and
+	// EXCLUSIVE).
+	exclusive bool
+	// size is what an existing regular file is truncated to when not
+	// exclusive (NFS UNCHECKED with a size in its sattr3), or -1 to leave
+	// it as it is.
+	size int64
+}
+
+// createWithContext creates a file, or handles an existing one as how says.
+func (s *AbsfsNFS) createWithContext(ctx context.Context, dir *NFSNode, name string, attrs *NFSAttrs, how createHow) (*NFSNode, error) {
 	if dir == nil {
 		return nil, fmt.Errorf("nil directory node")
 	}
@@ -691,7 +751,7 @@ func (s *AbsfsNFS) createWithContext(ctx context.Context, dir *NFSNode, name str
 
 	// A failed attempt may still have changed the directory (a file made
 	// and removed again), so the caches forget both either way.
-	err = s.createFile(path, attrs, exclusive)
+	err = s.createFile(path, attrs, how)
 	s.invalidate(dir.path, path)
 	if err != nil {
 		return nil, err
@@ -699,30 +759,48 @@ func (s *AbsfsNFS) createWithContext(ctx context.Context, dir *NFSNode, name str
 	return s.Lookup(path)
 }
 
-// createFile makes the file at path, or truncates it unless exclusive.
+// createFile makes the file at path, or handles an existing one as how
+// says.
 //
 // It tries to make a new file first. Only a file this call created gets the
 // requested mode and owner, and only such a file is removed on failure:
-// UNCHECKED on an existing file truncates it but keeps its mode and owner,
-// as open(O_CREAT|O_TRUNC) does.
-func (s *AbsfsNFS) createFile(path string, attrs *NFSAttrs, exclusive bool) error {
-	created := true
+// UNCHECKED on an existing regular file sets at most its size, keeping its
+// mode and owner. An existing object that is not a regular file is never
+// opened: a symbolic link would be followed on the host, truncating its
+// target wherever it is, so it and a directory answer NFS3ERR_EXIST, as
+// Linux knfsd answers UNCHECKED on a name that is not a regular file.
+func (s *AbsfsNFS) createFile(path string, attrs *NFSAttrs, how createHow) error {
 	f, err := s.fs.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, attrs.Mode&os.ModePerm)
-	if err != nil && !exclusive && errors.Is(err, os.ErrExist) {
-		created = false
-		f, err = s.fs.OpenFile(path, os.O_RDWR|os.O_TRUNC, 0)
+	if err != nil && !how.exclusive && errors.Is(err, os.ErrExist) {
+		return s.createExisting(path, how.size)
 	}
 	if err != nil {
 		return fmt.Errorf("create: failed to create %s: %w", path, err)
 	}
 	if err := f.Close(); err != nil {
-		if created {
-			s.fs.Remove(path)
-		}
+		s.fs.Remove(path)
 		return fmt.Errorf("create: failed to close %s: %w", path, err)
 	}
-	if created {
-		return s.applyNewFileAttrs(path, attrs)
+	return s.applyNewFileAttrs(path, attrs)
+}
+
+// createExisting is UNCHECKED CREATE on a name that exists: a regular file
+// is truncated to size (left alone when size is negative), anything else
+// fails with an os.ErrExist error. Like every type check here it is a
+// separate call from the change it gates (see freshAttrs).
+func (s *AbsfsNFS) createExisting(path string, size int64) error {
+	info, err := s.fs.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("create: failed to stat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("create: %s exists and is not a regular file: %w", path, os.ErrExist)
+	}
+	if size < 0 {
+		return nil
+	}
+	if err := s.fs.Truncate(path, size); err != nil {
+		return fmt.Errorf("create: failed to truncate %s: %w", path, err)
 	}
 	return nil
 }
@@ -1169,7 +1247,7 @@ func (s *AbsfsNFS) ReadDirPlus(dir *NFSNode) ([]*NFSNode, error) {
 	return nodes, nil
 }
 
-// Export starts serving the NFS export on localhost at port, with the MOUNT
+// Export starts serving the NFS export on 127.0.0.1 at port, with the MOUNT
 // protocol on the same port and RPC record marking, as kernel NFS clients
 // expect. Port 0 picks a free port; ExportPort reports it. No portmapper is
 // started, so clients pass the port explicitly (mount_nfs -o
@@ -1177,8 +1255,9 @@ func (s *AbsfsNFS) ReadDirPlus(dir *NFSNode) ([]*NFSNode, error) {
 // address, a portmapper or more listener options, build a Server with
 // NewServer instead. ExportOptions.TLS applies here too.
 //
-// mountPath is informational: clients mount filesystem paths (localhost:/
-// for the whole tree, localhost:/sub for a subdirectory), whatever it is.
+// mountPath is informational: clients mount filesystem paths (127.0.0.1:/
+// or localhost:/ for the whole tree, localhost:/sub for a subdirectory),
+// whatever it is.
 func (s *AbsfsNFS) Export(mountPath string, port int) error {
 	if mountPath == "" {
 		return fmt.Errorf("empty mount path")
@@ -1195,7 +1274,7 @@ func (s *AbsfsNFS) Export(mountPath string, port int) error {
 		GID:              0,
 		ReadOnly:         s.policy.Load().ReadOnly,
 		Port:             port, // MOUNT is served on the same listener
-		Hostname:         "localhost",
+		Hostname:         "127.0.0.1",
 		UseRecordMarking: true,
 	})
 	if err != nil {
@@ -1264,6 +1343,9 @@ func (s *AbsfsNFS) Readlink(node *NFSNode) (string, error) {
 		return "", fmt.Errorf("nil node")
 	}
 
+	if err := s.checkAncestors(node.path); err != nil {
+		return "", fmt.Errorf("readlink: %w", err)
+	}
 	// s.fs is absfs.SymlinkFileSystem, so Readlink is always available
 	target, err := s.fs.Readlink(node.path)
 	if err != nil {

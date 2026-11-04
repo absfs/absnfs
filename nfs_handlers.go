@@ -95,11 +95,11 @@ func (h *NFSProcedureHandler) HandleCall(call *RPCCall, body io.Reader, authCtx 
 	defer cancel()
 
 	// Validate authentication using policy snapshot. AllowedUIDs limits
-	// the NFS procedures that reach files. NULL does nothing, and the
-	// MOUNT protocol only hands out the export's root handle, which is of
-	// no use without NFS requests: they are answered whatever it says,
-	// because macOS mount_nfs sends MNT as uid 0 (it runs setuid root)
-	// and clients probe with NULL, some with AUTH_NONE.
+	// the NFS procedures that reach files. NULL and the MOUNT protocol are
+	// answered whatever uid the call carries, because macOS mount_nfs
+	// sends MNT as uid 0 (it runs setuid root) and clients probe with
+	// NULL, some with AUTH_NONE. MNT itself serves an unlisted uid only
+	// the export's root (mountAllowed), so it reveals no other path.
 	policy := opts.Policy
 	if len(policy.AllowedUIDs) > 0 && (call.Header.Program != NFS_PROGRAM || call.Header.Procedure == NFSPROC3_NULL) {
 		unlimited := *policy

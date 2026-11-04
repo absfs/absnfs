@@ -532,6 +532,9 @@ type ExportOptions struct {
 	// whose credential carries one of these uids (as sent, before any
 	// squashing). Other requests, and every AUTH_NONE request, are
 	// refused with AUTH_ERROR (AUTH_BADCRED). Default: empty, any uid.
+	// NULL and the MOUNT protocol are answered for any uid (macOS
+	// mount_nfs sends MNT as uid 0), but an unlisted uid may MNT only the
+	// export's root: any other path answers MNT3ERR_ACCES.
 	//
 	// AUTH_SYS uids are asserted by the client, not proven: a program
 	// that can reach the server can put any uid in its credential. So this

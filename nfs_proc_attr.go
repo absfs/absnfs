@@ -100,8 +100,9 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 	}
 
 	// Fresh attributes, not cached ones: the guard and the fields the
-	// request leaves alone must reflect the file as it is now.
-	preAttrs, err := h.server.handler.statAttrs(node.path)
+	// request leaves alone must reflect the file as it is now, and none of
+	// the directories above it may have become a symbolic link.
+	preAttrs, err := h.server.handler.freshAttrs(node)
 	if err != nil {
 		return nfsErrorWithWcc(reply, mapError(err)), nil
 	}
