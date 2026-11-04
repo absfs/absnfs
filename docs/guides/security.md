@@ -133,11 +133,11 @@ This can be toggled at runtime via `UpdateExportOptions` or `UpdatePolicyOptions
 
 UID/GID squashing controls how client credentials are mapped on the server.
 
-| Mode | Behavior |
-|------|----------|
-| `"none"` or `""` | No mapping. Client credentials are used as-is. |
-| `"root"` | Maps UID 0 (root) to nobody (65534). Non-root users pass through. |
-| `"all"` | Maps all users to nobody (65534). |
+| Mode             | Behavior                                                          |
+| ---------------- | ----------------------------------------------------------------- |
+| `"none"` or `""` | No mapping. Client credentials are used as-is.                    |
+| `"root"`         | Maps UID 0 (root) to nobody (65534). Non-root users pass through. |
+| `"all"`          | Maps all users to nobody (65534).                                 |
 
 ```go
 nfs, err := absnfs.New(fs, absnfs.ExportOptions{

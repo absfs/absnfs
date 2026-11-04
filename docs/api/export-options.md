@@ -51,18 +51,18 @@ type ExportOptions struct {
 
 ## Security Fields
 
-| Field                | Type                 | Default           | Description                                       |
-| -------------------- | -------------------- | ----------------- | ------------------------------------------------- |
-| `ReadOnly`           | `bool`               | `false`           | Reject all write operations                       |
-| `Secure`             | `bool`               | `false`           | Require privileged source ports (< 1024)          |
-| `AllowedIPs`         | `[]string`           | `nil` (allow all) | IP addresses or CIDR subnets permitted to connect |
-| `Squash`             | `string`             | `""` (none)       | UID/GID mapping: `"root"`, `"all"`, or `"none"`   |
-| `MaxFileSize`        | `int64`              | `0`               | Maximum file size in bytes (0 = unlimited)        |
-| `EnableRateLimiting` | `bool`               | `false`           | Enable per-IP and global rate limiting            |
-| `RateLimitConfig`    | `*RateLimiterConfig` | default config    | Detailed rate limiting parameters                 |
-| `TLS`                | `*TLSConfig`         | `nil` (disabled)  | TLS/mTLS configuration                            |
-| `AllowedUIDs`        | `[]uint32`           | `nil` (any uid)   | AUTH_SYS uids served (see below)                  |
-| `AllowAnySymlinkTarget` | `bool`            | `false`           | Let SYMLINK make absolute and `..` targets        |
+| Field                   | Type                 | Default           | Description                                       |
+| ----------------------- | -------------------- | ----------------- | ------------------------------------------------- |
+| `ReadOnly`              | `bool`               | `false`           | Reject all write operations                       |
+| `Secure`                | `bool`               | `false`           | Require privileged source ports (< 1024)          |
+| `AllowedIPs`            | `[]string`           | `nil` (allow all) | IP addresses or CIDR subnets permitted to connect |
+| `Squash`                | `string`             | `""` (none)       | UID/GID mapping: `"root"`, `"all"`, or `"none"`   |
+| `MaxFileSize`           | `int64`              | `0`               | Maximum file size in bytes (0 = unlimited)        |
+| `EnableRateLimiting`    | `bool`               | `false`           | Enable per-IP and global rate limiting            |
+| `RateLimitConfig`       | `*RateLimiterConfig` | default config    | Detailed rate limiting parameters                 |
+| `TLS`                   | `*TLSConfig`         | `nil` (disabled)  | TLS/mTLS configuration                            |
+| `AllowedUIDs`           | `[]uint32`           | `nil` (any uid)   | AUTH_SYS uids served (see below)                  |
+| `AllowAnySymlinkTarget` | `bool`               | `false`           | Let SYMLINK make absolute and `..` targets        |
 
 **Note on AllowedUIDs:** when not empty, only AUTH_SYS requests whose credential carries a listed uid (as sent, before squashing) reach NFS procedures; other uids and AUTH_NONE are refused with `AUTH_ERROR`. NULL and the MOUNT protocol are answered for any uid (macOS `mount_nfs` sends MNT as uid 0). AUTH_SYS uids are asserted by the client, so this limits accidents and casual misuse, not a local user who forges credentials. Changeable at runtime. See the [security guide](../guides/security.md#limiting-uids).
 

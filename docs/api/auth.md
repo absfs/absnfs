@@ -58,12 +58,12 @@ If any check fails, `AuthResult.Allowed` is false and `Reason` describes the fai
 
 The `Squash` field in `PolicyOptions` controls user ID mapping:
 
-| Mode | Behavior |
-|------|----------|
-| `"none"` or `""` | No mapping. Credentials used as-is. |
-| `"root"` | UID 0 is mapped to 65534 (nobody) along with its GID. GID 0 in auxiliary groups is also squashed. Non-root users keep their UIDs. |
-| `"all"` | All UIDs and GIDs are mapped to 65534. |
-| (unknown) | Fails closed -- all users mapped to 65534. |
+| Mode             | Behavior                                                                                                                          |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `"none"` or `""` | No mapping. Credentials used as-is.                                                                                               |
+| `"root"`         | UID 0 is mapped to 65534 (nobody) along with its GID. GID 0 in auxiliary groups is also squashed. Non-root users keep their UIDs. |
+| `"all"`          | All UIDs and GIDs are mapped to 65534.                                                                                            |
+| (unknown)        | Fails closed -- all users mapped to 65534.                                                                                        |
 
 Root squashing also handles the edge case of a non-root user whose primary GID is 0: the GID alone is squashed while the UID is preserved. Auxiliary GID arrays are copied before modification to avoid mutating shared slices.
 

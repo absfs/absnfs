@@ -150,12 +150,12 @@ the link out of the export. So every type decision that gates an operation
 on a path is made from a fresh `Lstat` (`freshAttrs`, `requireDir`,
 `requireRegular` in operations.go):
 
-| Procedure                                                       | Requires          | Otherwise                                |
-| --------------------------------------------------------------- | ----------------- | ---------------------------------------- |
-| LOOKUP, READDIR, READDIRPLUS, CREATE, MKDIR, SYMLINK, REMOVE, RMDIR, RENAME (both) | a directory | `NFS3ERR_NOTDIR`                         |
-| READ, WRITE                                                     | a regular file    | `NFS3ERR_ISDIR` for a directory, else `NFS3ERR_INVAL` |
-| SETATTR size                                                    | a regular file    | `NFS3ERR_ISDIR` for a directory, else `NFS3ERR_INVAL` |
-| READLINK                                                        | a symbolic link   | `NFS3ERR_INVAL`                          |
+| Procedure                                                                          | Requires        | Otherwise                                             |
+| ---------------------------------------------------------------------------------- | --------------- | ----------------------------------------------------- |
+| LOOKUP, READDIR, READDIRPLUS, CREATE, MKDIR, SYMLINK, REMOVE, RMDIR, RENAME (both) | a directory     | `NFS3ERR_NOTDIR`                                      |
+| READ, WRITE                                                                        | a regular file  | `NFS3ERR_ISDIR` for a directory, else `NFS3ERR_INVAL` |
+| SETATTR size                                                                       | a regular file  | `NFS3ERR_ISDIR` for a directory, else `NFS3ERR_INVAL` |
+| READLINK                                                                           | a symbolic link | `NFS3ERR_INVAL`                                       |
 
 LINK and MKNOD are not supported (`NFS3ERR_NOTSUPP`) and touch nothing. A
 handle that has left the cache is resolved by path and is stale if the
@@ -178,14 +178,14 @@ with `O_NOFOLLOW` per component).
 
 All XDR decoding enforces maximum sizes to prevent memory exhaustion attacks:
 
-| Bound | Value | Purpose |
-|-------|-------|---------|
-| `MAX_XDR_STRING_LENGTH` | 8,192 bytes | Limits string allocations (filenames, paths) |
-| `MAX_RPC_AUTH_LENGTH` | 400 bytes | Per RFC 1831, limits credential and verifier sizes |
-| File handle max length | 64 bytes | NFS3 maximum, prevents large allocations from malformed handles |
-| Auxiliary GID max count | 16 | Limits AUTH_SYS auxiliary group array |
-| `DefaultMaxRecordSize` | 1 MB | Limits total reassembled record size across fragments |
-| Write data max | `TransferSize` | Limits write payload to server's advertised maximum |
+| Bound                   | Value          | Purpose                                                         |
+| ----------------------- | -------------- | --------------------------------------------------------------- |
+| `MAX_XDR_STRING_LENGTH` | 8,192 bytes    | Limits string allocations (filenames, paths)                    |
+| `MAX_RPC_AUTH_LENGTH`   | 400 bytes      | Per RFC 1831, limits credential and verifier sizes              |
+| File handle max length  | 64 bytes       | NFS3 maximum, prevents large allocations from malformed handles |
+| Auxiliary GID max count | 16             | Limits AUTH_SYS auxiliary group array                           |
+| `DefaultMaxRecordSize`  | 1 MB           | Limits total reassembled record size across fragments           |
+| Write data max          | `TransferSize` | Limits write payload to server's advertised maximum             |
 
 ## TLS Support
 
