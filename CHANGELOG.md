@@ -288,15 +288,19 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Changed
 
-- **Requires basefs master (79e9a01, which confines a basefs over osfs to
-  its root with `os.Root` on Go 1.25 or later on Unix), osfs master
-  (26d9c50, which adds `OpenRoot`) and unionfs with absfs/unionfs#11**,
-  which compares file identities through the `FileInfo` wrappers basefs
-  returns, so a case-only rename in a union over basefs renames the file
-  whether it is in the lower layer or was copied up. All three are pinned at
-  pseudo-versions of those commits until they are tagged. CI now runs on Go
-  1.25 and the latest release as well as 1.23, so the confined stack is
-  tested.
+- **Requires basefs with absfs/basefs#9 (a7e0a24, on master 79e9a01), osfs
+  master (26d9c50) and unionfs with absfs/unionfs#11 (d70ffdc).** basefs
+  master confines a basefs over osfs to its root with `os.Root` (osfs
+  `OpenRoot`) on Go 1.25 or later on Unix. #9 returns the host's own
+  `FileInfo` below the root again, so `os.SameFile` works through basefs.
+  Without it, basefs master's wrapped infos record no file identity on
+  Windows. Exports could then not tell one file from another there, and
+  `TestSameFile` fails. unionfs#11 compares file identities through
+  wrapped infos, so a case-only rename in a union over basefs renames the
+  file whether it is in the lower layer or was copied up. All three are
+  pinned at pseudo-versions of those commits until they are tagged. CI now
+  runs on Go 1.25 and the latest release as well as 1.23, so the confined
+  stack is tested.
 - **PATHCONF reports case sensitivity truthfully by default**
   (`CaseInsensitiveAuto`): an export of a directory on a case-insensitive
   host volume (APFS, NTFS by default) now answers `case_insensitive` true,

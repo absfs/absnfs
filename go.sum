@@ -1,7 +1,7 @@
 github.com/absfs/absfs v1.0.0 h1:T+OoA3wbDimdMXt5y2IpGss1qBHF9UbK0XfxXwCyu/c=
 github.com/absfs/absfs v1.0.0/go.mod h1:30jxoFsix2CEDiZdsZD6KCOm6F+SCO/JVK3CFrj1SVo=
-github.com/absfs/basefs v1.0.1-0.20261104001807-79e9a01613ed h1:rTnyyhq8vNQDXha84tyxPX5QK13U2hpqSry5v/BQzeA=
-github.com/absfs/basefs v1.0.1-0.20261104001807-79e9a01613ed/go.mod h1:K45WohWe6ahXOMnbe5xy2gEn9vNt+u6ygd3ilJIBPDM=
+github.com/absfs/basefs v1.0.1-0.20261104034130-a7e0a24939a3 h1:qmQySl1NlnVe2VsJF/fuc4OYhYmZGgitWPjMhI47370=
+github.com/absfs/basefs v1.0.1-0.20261104034130-a7e0a24939a3/go.mod h1:K45WohWe6ahXOMnbe5xy2gEn9vNt+u6ygd3ilJIBPDM=
 github.com/absfs/cachefs v1.0.0 h1:pHsf6YRN59JrE7Ojf7fWafMrBl+X5D7MWR7Ynqu3d1Y=
 github.com/absfs/cachefs v1.0.0/go.mod h1:UBwYoFUe+p6u7g+v/KKgwKmYp+rvQCaVUIH4qLHQPtQ=
 github.com/absfs/corfs v1.0.0 h1:MvTOEE4YgKb5UihEb8poWg3Vn79ReShR3H1/exbfCig=

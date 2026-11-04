@@ -4,7 +4,7 @@ go 1.23.0
 
 require (
 	github.com/absfs/absfs v1.0.0
-	github.com/absfs/basefs v1.0.1-0.20261104001807-79e9a01613ed
+	github.com/absfs/basefs v1.0.1-0.20261104034130-a7e0a24939a3
 	github.com/absfs/cachefs v1.0.0
 	github.com/absfs/lockfs v1.0.0
 	github.com/absfs/memfs v1.1.0
