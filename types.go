@@ -77,6 +77,9 @@ type AbsfsNFS struct {
 	// handleStateDir is ExportOptions.HandleStateDir. Fixed at New.
 	handleStateDir string
 
+	// handleGeneration is ExportOptions.HandleGeneration. Fixed at New.
+	handleGeneration string
+
 	// ownerWriteMu serializes owner-override opens (see openForOwnerWrite).
 	ownerWriteMu sync.Mutex
 

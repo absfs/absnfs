@@ -50,11 +50,13 @@ type handleEntry struct {
 func newFileHandleMap(maxHandles int) *FileHandleMap {
 	key := make([]byte, handleKeySize)
 	rand.Read(key)
-	return newFileHandleMapWithKey(maxHandles, key)
+	return newFileHandleMapWithKey(maxHandles, key, "")
 }
 
-func newFileHandleMapWithKey(maxHandles int, key []byte) *FileHandleMap {
-	codec := newHandleCodec(key)
+// newFileHandleMapWithKey returns an empty cache whose handles are tagged
+// with key and generation (see newHandleCodec).
+func newFileHandleMapWithKey(maxHandles int, key []byte, generation string) *FileHandleMap {
+	codec := newHandleCodec(key, generation)
 	return &FileHandleMap{
 		handles:    make(map[string]*handleEntry),
 		paths:      make(map[string]string),

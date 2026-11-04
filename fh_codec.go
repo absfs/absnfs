@@ -15,10 +15,12 @@
 //	  kind 10 opaque: 8 random bytes; resolves only from the handle cache
 //
 // path is the object's path below the export's root without the leading
-// "/" (the root is ""), g its change-log epoch (see fh_changelog.go). The
-// encoding of a (type, g, path) is unique: the decoder re-encodes what it
-// read and refuses anything else, so no two byte strings name one object
-// and no padding bit can be flipped into an alias.
+// "/" (the root is ""), g its change-log epoch (see fh_changelog.go), and
+// K_tag and K_tail are derived from the server's key and handle generation
+// (newHandleCodec). The encoding of a (type, g, path) is unique: the
+// decoder re-encodes what it read and refuses anything else, so no two
+// byte strings name one object and no padding bit can be flipped into an
+// alias.
 package absnfs
 
 import (
@@ -96,17 +98,28 @@ func validCanonical(p string) bool {
 	}
 }
 
-// handleCodec encodes and verifies handles with one server's key.
+// handleCodec encodes and verifies handles with one server's key and
+// handle generation.
 type handleCodec struct {
 	tagKey  []byte
 	tailKey [8]byte
 	macs    sync.Pool // of hash.Hash keyed with tagKey
 }
 
-func newHandleCodec(key []byte) *handleCodec {
+// newHandleCodec returns the codec for key and generation (see
+// ExportOptions.HandleGeneration). The generation is folded into both
+// derived keys, HMAC-SHA256(key, label || uvarint(len(generation)) ||
+// generation), so a handle issued under one generation fails its tag under
+// any other. The empty generation derives them as before generations
+// existed, HMAC-SHA256(key, label), so its handles are unchanged.
+func newHandleCodec(key []byte, generation string) *handleCodec {
 	derive := func(label string) []byte {
 		m := hmac.New(sha256.New, key)
 		m.Write([]byte(label))
+		if generation != "" {
+			m.Write(binary.AppendUvarint(nil, uint64(len(generation))))
+			m.Write([]byte(generation))
+		}
 		return m.Sum(nil)
 	}
 	c := &handleCodec{tagKey: derive("absnfs fh v1 tag")}

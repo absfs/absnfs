@@ -508,9 +508,44 @@ type ExportOptions struct {
 	// remount. Deleting or changing the directory has the same effect. The
 	// files hold paths of the exported filesystem and are made mode 0600.
 	//
+	// Handles name objects by path, so HandleStateDir assumes the exported
+	// namespace is stable across restarts: a path names the same object
+	// before and after, but for the changes the journal records. Those are
+	// the changes made through the server; a namespace rebuilt at start
+	// (switchfs route names reassigned, a backend swapped for one with
+	// other content) is not recorded, and a handle to the old object at a
+	// reused path silently reaches the new one. Route names and backends
+	// must not be reused for different content. A caller that cannot
+	// guarantee a stable namespace sets HandleGeneration, and changes it
+	// whenever the namespace changes.
+	//
 	// Fixed when the export is created: UpdateExportOptions rejects a
 	// different non-empty value, and empty there means "unchanged".
 	HandleStateDir string
+
+	// HandleGeneration names the version of the exported namespace that
+	// handles are issued for. It is an opaque byte string, compared
+	// exactly, and folded into the keys handles are tagged with: a handle
+	// issued under one generation is NFS3ERR_STALE under any other, decided
+	// by its tag alone (with no filesystem I/O, but for a tail handle,
+	// which costs at most its capped walk first). Use a value that changes
+	// whenever paths may come to name other objects, such as a per-run ID
+	// or a hash of the route set, when a restart with HandleStateDir cannot
+	// promise that the same path names the same object.
+	//
+	// It matters only with HandleStateDir: without it every restart
+	// already makes every handle stale. With it, the generation is kept in
+	// the directory (handle.gen); a start with a different generation makes
+	// the key and the journal afresh, so every older handle is stale even
+	// if that generation comes back later. A start with the same generation
+	// keeps handles valid as HandleStateDir describes. The empty generation
+	// (the default) tags handles exactly as servers before it existed did,
+	// so a directory made by one keeps its handles.
+	//
+	// Fixed when the export is created: UpdateExportOptions rejects a
+	// different non-empty value, and empty there means "unchanged". To
+	// change it, Close the server and make a new one, as a restart does.
+	HandleGeneration string
 
 	// AllowAnySymlinkTarget lets clients create symbolic links with any
 	// target, including absolute ones and ones with ".." components, such

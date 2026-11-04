@@ -33,8 +33,61 @@ func TestHuffmanTableGolden(t *testing.T) {
 	}
 }
 
+// The empty handle generation derives K_tag and K_tail as servers did
+// before generations existed, so handles they persisted with
+// HandleStateDir stay valid. The vectors were computed by that code.
+func TestHandleCodecEmptyGenerationGolden(t *testing.T) {
+	c := testCodec()
+	long := "repo/" + strings.Repeat("long_name_", 8) + "/x"
+	for _, v := range []struct{ what, got, want string }{
+		{"K_tag", hex.EncodeToString(c.tagKey), "9993d082b31b755b5bb7c0a4c567a00215560696dac9546a46ba70e19017f6ad"},
+		{"K_tail", hex.EncodeToString(c.tailKey[:]), "b55eabbb9988e3f7"},
+		{"inline handle", hex.EncodeToString(c.encode(fhTypeRegular, 0, "repo/.git/index")), "4414c962a4df5989f252b208686e2759176e00"},
+		{"inline handle with epoch", hex.EncodeToString(c.encode(fhTypeDir, 5, "a/b")), "42cd8e5a5180449e760580e7c0"},
+		{"tail handle", hex.EncodeToString(c.encode(fhTypeRegular, 3, long)), "5648c242bbbb417be2030ac5e8282d52b270"},
+		{"path hash", fmt.Sprintf("%x", c.pathHash("repo/x")), "e7815052a91dc05c"},
+	} {
+		if v.got != v.want {
+			t.Errorf("%s under the empty generation: %s, want %s", v.what, v.got, v.want)
+		}
+	}
+}
+
+// A handle issued under one generation fails its tag under every other,
+// with the same key: inline and tail alike, and the empty generation is
+// one of them. The length prefix keeps generations that share a prefix
+// apart.
+func TestHandleGenerationSeparatesHandles(t *testing.T) {
+	key := bytes.Repeat([]byte{7}, handleKeySize)
+	gens := []string{"", "a", "b", "ab", "a\x00", "\x01a", "run 2026-11-03T10:00:00Z"}
+	codecs := make([]*handleCodec, len(gens))
+	tails := make(map[[8]byte]string)
+	for i, g := range gens {
+		codecs[i] = newHandleCodec(key, g)
+		if other, ok := tails[codecs[i].tailKey]; ok {
+			t.Errorf("generations %q and %q share K_tail", other, g)
+		}
+		tails[codecs[i].tailKey] = g
+	}
+	paths := []string{"", "w1/x", "w1/" + strings.Repeat("long_name_", 8) + "/x"}
+	for i, ci := range codecs {
+		for _, p := range paths {
+			fh := ci.encode(fhTypeRegular, 0, p)
+			ph, ok := parseHandle(fh)
+			if !ok {
+				t.Fatalf("generation %q: handle of %q does not parse", gens[i], p)
+			}
+			for j, cj := range codecs {
+				if got := cj.verify(fh, ph, p); got != (i == j) {
+					t.Errorf("handle of %q from generation %q verifies under %q: %v", p, gens[i], gens[j], got)
+				}
+			}
+		}
+	}
+}
+
 func testCodec() *handleCodec {
-	return newHandleCodec(bytes.Repeat([]byte{7}, handleKeySize))
+	return newHandleCodec(bytes.Repeat([]byte{7}, handleKeySize), "")
 }
 
 // randomPath makes a path of up to depth components, mostly printable
@@ -227,7 +280,7 @@ func TestHandleCodecRejects(t *testing.T) {
 		t.Error("a path spelled with ESC is accepted")
 	}
 	// Another key's handle is refused.
-	other := newHandleCodec(bytes.Repeat([]byte{8}, handleKeySize))
+	other := newHandleCodec(bytes.Repeat([]byte{8}, handleKeySize), "")
 	if verifies(other, fh) {
 		t.Error("a handle verifies under another key")
 	}

@@ -168,7 +168,7 @@ func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error
 
 Updates both tuning and policy settings at runtime. Tuning changes apply immediately via atomic swap. Policy changes use drain-and-swap.
 
-- Returns an error, and applies nothing, if `Squash`, `DefaultOwner` or `ForceOwner` differs from the current value (immutable at runtime). An empty `Squash` and a nil `DefaultOwner` mean "unchanged", so the result of `GetExportOptions` can always be passed back.
+- Returns an error, and applies nothing, if `Squash`, `DefaultOwner`, `ForceOwner`, `HandleStateDir` or `HandleGeneration` differs from the current value (immutable at runtime). An empty `Squash`, `HandleStateDir` or `HandleGeneration` and a nil `DefaultOwner` mean "unchanged", so the result of `GetExportOptions` can always be passed back.
 - If `newOptions.Timeouts` or `newOptions.Log` is nil, current values are preserved.
 
 See [TuningOptions / PolicyOptions](tuning-policy.md) for the drain-and-swap mechanism.

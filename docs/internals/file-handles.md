@@ -61,9 +61,12 @@ body by kind:
   touched by a REMOVE or RENAME have g = 0 and pay no bytes for it.
 - **path**: the node's path without its leading `/`; the root is `""`.
   Components are never empty, `.` or `..`, and contain no NUL.
-- **Keys**: `K_tag = HMAC-SHA256(Key, "absnfs fh v1 tag")`,
-  `K_tail = HMAC-SHA256(Key, "absnfs fh v1 tail")[:8]`. `Key` is 32 random
-  bytes per server, or the one kept in `HandleStateDir`.
+- **Keys**: `K_tag = HMAC-SHA256(Key, "absnfs fh v1 tag" || G)`,
+  `K_tail = HMAC-SHA256(Key, "absnfs fh v1 tail" || G)[:8]`. `Key` is 32
+  random bytes per server, or the one kept in `HandleStateDir`. `G` is
+  `uvarint(len(gen)) || gen` for a non-empty `ExportOptions.HandleGeneration`
+  `gen`, and nothing for the empty one, which therefore derives the keys
+  byte for byte as before the option existed.
 - **Tail hashes**: `h(name) = FNV-1a-64(K_tail || name)`, XOR-folded to 16 or
   8 bits. The encoder tries 16-bit hashes with the fewest trailing components
   that fit, then 8-bit ones, then the opaque kind.
@@ -241,6 +244,40 @@ next start makes a new one and every old handle is stale. A persisted key
 alone would let the handle of `index.lock` that a client holds as `index`
 after git's rename resolve to a new `index.lock` after a restart: another
 object. For the same reason the key is not an option, and is never logged.
+
+### A stable namespace, or a handle generation
+
+The journal records what happened through the server, so a restart with
+`HandleStateDir` assumes the namespace is otherwise stable: the same path
+names the same object before and after. A namespace rebuilt at start breaks
+that silently. A switchfs whose routes are named `/w1`, `/w2`... in the order
+workspaces are mounted each run gives `/w1` to another workspace after a
+restart; a persisted handle for the old `/w1/x` decodes, passes its tag, finds
+a file at `w1/x`, and resolves into the other workspace. Route names and
+backends must not be reused for different content across restarts.
+
+A caller that cannot promise that sets `ExportOptions.HandleGeneration` and
+changes it whenever the namespace changes (per server run, or per version of
+the route set). The generation is folded into `K_tag` and `K_tail`, so a
+handle issued under one generation fails its tag under another and answers
+`NFS3ERR_STALE`; clients look the names up again. An inline handle fails with
+no filesystem call; a tail handle costs at most its capped walk first, like a
+forged one (its hashes are keyed by the old `K_tail` too, so the walk rarely
+finds a candidate to check).
+
+The generation is kept in `handle.gen` (absent for the empty generation, so
+directories made before the option load as they did). A start whose
+generation differs from the recorded one does not refuse: it makes the key
+and the log afresh, as for a missing file. The old log is useless under the
+new generation (its tombstones hash paths with the old `K_tail`), and a new
+key keeps the old generation's handles stale should that generation come
+back, by when its log is gone. The old key is removed first and the new one
+written last, so a crash in between starts afresh again.
+
+The generation is fixed at `New`. Changing it at runtime would mean swapping
+the codec, the change log, the directory hash index and the cache, and
+resetting the journal, under live requests, for what a restart already
+does: `UpdateExportOptions` rejects a different non-empty value.
 
 ## Security
 

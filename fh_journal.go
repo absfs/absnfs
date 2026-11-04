@@ -11,6 +11,13 @@
 // it. The key alone is never trusted without the log: if either file is
 // missing, both are made afresh and every older handle is stale.
 //
+// handle.gen holds ExportOptions.HandleGeneration when it is not empty
+// (absent means the empty generation, so a directory made before
+// generations existed loads as it did). A start with a different generation
+// makes the key and the log afresh: the old handles fail their tag under
+// the new generation anyway, and a new key keeps them stale if the old
+// generation ever comes back, by which time its log is gone.
+//
 // handle.lock is held locked while a server uses the directory, so a second
 // server cannot share it.
 package absnfs
@@ -33,6 +40,7 @@ import (
 const (
 	handleKeyFile  = "handle.key"
 	handleLogFile  = "handle.log"
+	handleGenFile  = "handle.gen"
 	handleLockFile = "handle.lock"
 	handleKeySize  = 32
 
@@ -70,9 +78,10 @@ type handleJournal struct {
 }
 
 // newFileHandleMapWithState returns a handle cache whose key and change log
-// are kept in dir: it locks dir, loads or makes the key and the log, and
-// replays the log. onFail is called if a later write fails.
-func newFileHandleMapWithState(maxHandles int, dir string, onFail func(error)) (*FileHandleMap, error) {
+// are kept in dir, with handles of generation gen: it locks dir, loads or
+// makes the key and the log, and replays the log. onFail is called if a
+// later write fails.
+func newFileHandleMapWithState(maxHandles int, dir, gen string, onFail func(error)) (*FileHandleMap, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("handle state: %w", err)
 	}
@@ -80,7 +89,7 @@ func newFileHandleMapWithState(maxHandles int, dir string, onFail func(error)) (
 	if err != nil {
 		return nil, fmt.Errorf("handle state %s: %w", dir, err)
 	}
-	fm, f, err := loadHandleState(maxHandles, dir)
+	fm, f, err := loadHandleState(maxHandles, dir, gen)
 	if err != nil {
 		lock.Close()
 		return nil, fmt.Errorf("handle state %s: %w", dir, err)
@@ -104,17 +113,22 @@ func newFileHandleMapWithState(maxHandles int, dir string, onFail func(error)) (
 
 // loadHandleState returns a handle cache with the key in dir and the log's
 // records replayed, and the log opened for appending. Both files are made
-// new unless both exist.
-func loadHandleState(maxHandles int, dir string) (*FileHandleMap, *os.File, error) {
+// new unless both exist and were made for generation gen.
+func loadHandleState(maxHandles int, dir, gen string) (*FileHandleMap, *os.File, error) {
 	keyPath, logPath := filepath.Join(dir, handleKeyFile), filepath.Join(dir, handleLogFile)
+	genPath := filepath.Join(dir, handleGenFile)
 	key, keyErr := os.ReadFile(keyPath)
 	logData, logErr := os.ReadFile(logPath)
+	stored, genErr := os.ReadFile(genPath)
+	if errors.Is(genErr, os.ErrNotExist) {
+		stored, genErr = nil, nil // the empty generation
+	}
 	switch {
-	case keyErr == nil && logErr == nil:
+	case keyErr == nil && logErr == nil && genErr == nil && string(stored) == gen:
 		if len(key) != handleKeySize {
 			return nil, nil, fmt.Errorf("%s is %d bytes, want %d", handleKeyFile, len(key), handleKeySize)
 		}
-		fm := newFileHandleMapWithKey(maxHandles, key)
+		fm := newFileHandleMapWithKey(maxHandles, key, gen)
 		// Drop a record torn by a crash, so appends follow good ones. (A
 		// file open for appending cannot be truncated on Windows.)
 		if good := fm.log.replay(logData); good < len(logData) {
@@ -131,11 +145,28 @@ func loadHandleState(maxHandles int, dir string) (*FileHandleMap, *os.File, erro
 		return nil, nil, keyErr
 	case logErr != nil && !errors.Is(logErr, os.ErrNotExist):
 		return nil, nil, logErr
+	case genErr != nil:
+		return nil, nil, genErr
 	}
-	// Start afresh. The log is made first: a crash in between leaves a log
-	// without a key, which starts afresh again.
+	// Start afresh. The old key is removed first and the new one written
+	// last: a crash in between leaves no key, which starts afresh again.
+	if err := os.Remove(keyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
+	}
 	f, err := os.OpenFile(logPath, os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
+		return nil, nil, err
+	}
+	if gen == "" {
+		err = os.Remove(genPath)
+		if errors.Is(err, os.ErrNotExist) {
+			err = nil
+		}
+	} else {
+		err = writeFileSync(genPath, []byte(gen))
+	}
+	if err != nil {
+		f.Close()
 		return nil, nil, err
 	}
 	key = make([]byte, handleKeySize)
@@ -147,7 +178,7 @@ func loadHandleState(maxHandles int, dir string) (*FileHandleMap, *os.File, erro
 		f.Close()
 		return nil, nil, err
 	}
-	return newFileHandleMapWithKey(maxHandles, key), f, nil
+	return newFileHandleMapWithKey(maxHandles, key, gen), f, nil
 }
 
 func writeFileSync(name string, data []byte) error {

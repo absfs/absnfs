@@ -45,7 +45,8 @@ type ExportOptions struct {
     ForceOwner   bool
 
     // File handles across restarts (fixed at New)
-    HandleStateDir string
+    HandleStateDir   string
+    HandleGeneration string
 }
 ```
 
@@ -131,10 +132,11 @@ timeout applies to entries already cached.
 
 ## File Handle Fields
 
-| Field            | Type     | Default            | Description                                                  |
-| ---------------- | -------- | ------------------ | ------------------------------------------------------------ |
-| `MaxHandles`     | `int`    | `100000` (if <= 0) | Capacity of the file handle cache; changeable at runtime     |
-| `HandleStateDir` | `string` | `""` (none)        | Directory keeping the handle key and journal across restarts |
+| Field              | Type     | Default            | Description                                                            |
+| ------------------ | -------- | ------------------ | ---------------------------------------------------------------------- |
+| `MaxHandles`       | `int`    | `100000` (if <= 0) | Capacity of the file handle cache; changeable at runtime               |
+| `HandleStateDir`   | `string` | `""` (none)        | Directory keeping the handle key and journal across restarts           |
+| `HandleGeneration` | `string` | `""`               | Namespace version handles are issued for; another one makes them stale |
 
 File handles name their objects by path and are checked against a log of the
 server's own REMOVEs, RMDIRs and RENAMEs, so the server resolves any handle it
@@ -158,6 +160,35 @@ directory, locked against a second server, so handles mean exactly what they
 did after a restart and clients carry on. Deleting the directory, or giving a
 new one, invalidates every handle. It is fixed at `New`: `UpdateExportOptions`
 rejects a different non-empty value (empty means unchanged).
+
+**`HandleStateDir` assumes a stable namespace.** Handles name paths, so after
+a restart a handle reaches whatever is at its path then. The journal covers
+changes made through the server; it cannot cover a namespace rebuilt while
+the server was down. If a path can name a different object after a restart
+(route names reassigned at start, such as switchfs routes numbered `/w1`,
+`/w2`... per run; a backend replaced by one with other content), an old
+handle silently resolves to the new object: not `NFS3ERR_STALE`, the wrong
+file. Route names and backends must not be reused for different content
+across restarts. A caller that cannot guarantee that sets `HandleGeneration`
+and changes it whenever the namespace changes: per server run, or per
+version of the route set.
+
+`HandleGeneration` is an opaque byte string, compared exactly, folded into
+the keys handles are tagged with. A handle issued under one generation is
+`NFS3ERR_STALE` under any other, decided by its tag alone: no filesystem call
+for an inline handle (all but paths too long to spell in 64 bytes; a tail
+handle costs at most its capped walk, as a forged one does). The generation
+is recorded in the state directory (`handle.gen`, absent for the empty
+generation). A start with a different generation makes the key and journal
+afresh rather than refusing, since bumping the generation per run is the
+intended use; so handles of a generation stay stale even if it comes back
+later. A start with the same generation keeps handles valid. The empty
+generation (the default) tags handles exactly as before the option existed,
+so existing state directories keep their handles. Without `HandleStateDir`
+the generation has no effect: every restart already makes every handle stale.
+It is fixed at `New`: `UpdateExportOptions` rejects a different non-empty
+value (empty means unchanged); to change it, close the server and make a new
+one.
 
 ## Connection Fields
 

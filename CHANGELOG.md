@@ -29,7 +29,19 @@ to the macOS NFS client, which is stricter than Linux's.
 - `ExportOptions.HandleStateDir`: keeps the handle key and a journal of the
   server's REMOVEs, RMDIRs and RENAMEs in a directory (locked against a
   second server), so file handles survive a restart with exactly their old
-  meaning. Fixed at `New`.
+  meaning. Fixed at `New`. It assumes the namespace is stable across
+  restarts: the same path names the same object, and route names and
+  backends are not reused for different content.
+- `ExportOptions.HandleGeneration` (`string`): a version of the exported
+  namespace, folded into the keys handles are tagged with, for callers that
+  cannot keep the namespace stable across restarts (switchfs routes named
+  `/w1`, `/w2`... per run would otherwise let a persisted handle resolve into
+  another workspace). Handles issued under one generation are
+  `NFS3ERR_STALE` under another, by their tag (no filesystem call for an
+  inline handle). Kept in the state directory as `handle.gen`; a start with
+  a different generation makes the key and journal afresh. The empty
+  generation (default) derives the keys as before, so existing state
+  directories keep their handles. Fixed at `New`.
 - `NFSMetrics` handle cache counters: `HandleCacheSize`,
   `HandleCacheCapacity`, `HandleCacheMisses`, `HandleTailWalkFailures`,
   `HandleTombstoneFolds`, `HandleRedirectsDropped`, `HandleInflightTimeouts`.

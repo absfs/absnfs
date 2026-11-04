@@ -3,6 +3,7 @@ package absnfs
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -264,7 +265,7 @@ func TestHandleJournalWriteFailure(t *testing.T) {
 	writeFile(t, fs, "/d/b", 2)
 	dir := t.TempDir()
 	var failed error
-	fm, err := newFileHandleMapWithState(0, dir, func(err error) { failed = err })
+	fm, err := newFileHandleMapWithState(0, dir, "", func(err error) { failed = err })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,4 +425,159 @@ func TestRestartAfterCompactionKeepsRemovedStale(t *testing.T) {
 	e = r.start(ExportOptions{})
 	defer e.nfs.Close()
 	e.stale(a2, "removed object after the restart, another at its path")
+}
+
+// The consumer case HandleGeneration exists for: a server that rebuilds
+// its namespace at start, so /w1 names other content after a restart. With
+// the same generation a handle means what it meant (here, the new content
+// at its path, which is why such a server must change the generation);
+// with a new generation every older handle is stale by its tag alone, with
+// no filesystem call, and the state starts afresh, so the old generation's
+// handles stay stale if it comes back.
+func TestHandleGenerationAcrossRestarts(t *testing.T) {
+	cfs := &ioCountingFS{SymlinkFileSystem: newMemFS(t)}
+	mustMkdir(t, cfs, "/w1")
+	writeFile(t, cfs, "/w1/x", 10)
+	r := &restartEnv{t: t, fs: cfs, dir: filepath.Join(t.TempDir(), "state")}
+	keyPath, genPath := filepath.Join(r.dir, handleKeyFile), filepath.Join(r.dir, handleGenFile)
+
+	e := r.start(ExportOptions{HandleGeneration: "A"})
+	root := e.mount("/")
+	x := e.walk(root, "w1/x")
+	e.nfs.Close()
+	if g, err := os.ReadFile(genPath); err != nil || string(g) != "A" {
+		t.Fatalf("handle.gen %q, %v; want \"A\"", g, err)
+	}
+	keyA, _ := os.ReadFile(keyPath)
+
+	e = r.start(ExportOptions{HandleGeneration: "A"})
+	e.size(x, 10, "a handle after a restart with the same generation")
+	if again := e.mount("/"); !bytes.Equal(again, root) {
+		t.Error("the root's handle changed across a restart with the same generation")
+	}
+	if got := e.nfs.GetExportOptions().HandleGeneration; got != "A" {
+		t.Errorf("GetExportOptions().HandleGeneration %q, want \"A\"", got)
+	}
+	e.nfs.Close()
+
+	// The namespace is rebuilt while the server is down: /w1/x is another
+	// object now.
+	writeFile(t, cfs, "/w1/x", 20)
+	e = r.start(ExportOptions{HandleGeneration: "B"})
+	before := cfs.calls.Load()
+	e.stale(x, "a handle from generation A under B")
+	e.stale(root, "the root's handle from generation A under B")
+	if n := cfs.calls.Load() - before; n != 0 {
+		t.Errorf("handles from another generation cost %d filesystem calls", n)
+	}
+	if again := e.mount("/"); bytes.Equal(again, root) {
+		t.Error("the root's handle is the same under a new generation")
+	}
+	e.size(e.walk(e.mount("/"), "w1/x"), 20, "a handle issued under B")
+	e.nfs.Close()
+	if keyB, _ := os.ReadFile(keyPath); bytes.Equal(keyB, keyA) {
+		t.Error("a new generation kept the old key")
+	}
+
+	e = r.start(ExportOptions{HandleGeneration: "A"})
+	e.stale(x, "a handle from generation A after B, then A again")
+	e.nfs.Close()
+
+	// The empty generation leaves no handle.gen, as before generations.
+	e = r.start(ExportOptions{})
+	e.stale(x, "a handle from generation A under the empty generation")
+	e.nfs.Close()
+	if _, err := os.Stat(genPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("handle.gen after a start with the empty generation: %v", err)
+	}
+}
+
+// A state directory made before HandleGeneration existed (handle.key and
+// handle.log, no handle.gen) loads under the empty generation, and the
+// handles it issued stay valid: the server issues the same bytes.
+func TestHandleStateDirFromBeforeGenerations(t *testing.T) {
+	fs := newMemFS(t)
+	mustMkdir(t, fs, "/repo/.git")
+	writeFile(t, fs, "/repo/.git/index", 10)
+	r := &restartEnv{t: t, fs: fs, dir: t.TempDir()}
+	if err := os.WriteFile(filepath.Join(r.dir, handleKeyFile), bytes.Repeat([]byte{7}, handleKeySize), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.dir, handleLogFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Issued for /repo/.git/index with this key by the server before
+	// HandleGeneration (TestHandleCodecEmptyGenerationGolden).
+	old, _ := hex.DecodeString("4414c962a4df5989f252b208686e2759176e00")
+
+	e := r.start(ExportOptions{})
+	e.size(old, 10, "a handle persisted before generations")
+	if fh := e.walk(e.mount("/"), "repo/.git/index"); !bytes.Equal(fh, old) {
+		t.Errorf("handle issued now %x, before generations %x", fh, old)
+	}
+	e.nfs.Close()
+	if _, err := os.Stat(filepath.Join(r.dir, handleGenFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("handle.gen written for the empty generation: %v", err)
+	}
+
+	e = r.start(ExportOptions{HandleGeneration: "v2"})
+	e.stale(old, "a handle persisted before generations, under a generation set later")
+	e.nfs.Close()
+
+	// A handle.gen that cannot be read is an error, not a silent reset.
+	genPath := filepath.Join(r.dir, handleGenFile)
+	os.Remove(genPath)
+	if err := os.Mkdir(genPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if nfs, err := New(fs, ExportOptions{HandleStateDir: r.dir, HandleGeneration: "v2"}); err == nil {
+		nfs.Close()
+		t.Error("an unreadable handle.gen was accepted")
+	}
+}
+
+// HandleGeneration is fixed at New: UpdateExportOptions rejects a
+// different non-empty value and applies nothing, and takes an empty one,
+// or the current one, as unchanged.
+func TestHandleGenerationFixedAtNew(t *testing.T) {
+	fs := newMemFS(t)
+	writeFile(t, fs, "/f", 1)
+	e := newFhEnv(t, fs, ExportOptions{HandleStateDir: t.TempDir(), HandleGeneration: "g1"})
+	f := e.walk(e.mount("/"), "f")
+	opts := e.nfs.GetExportOptions()
+	if opts.HandleGeneration != "g1" {
+		t.Fatalf("GetExportOptions().HandleGeneration %q, want \"g1\"", opts.HandleGeneration)
+	}
+	if err := e.nfs.UpdateExportOptions(opts); err != nil {
+		t.Errorf("passing GetExportOptions back: %v", err)
+	}
+	opts.HandleGeneration = ""
+	if err := e.nfs.UpdateExportOptions(opts); err != nil {
+		t.Errorf("an empty HandleGeneration (unchanged): %v", err)
+	}
+	opts.HandleGeneration, opts.ReadOnly = "g2", true
+	if err := e.nfs.UpdateExportOptions(opts); err == nil {
+		t.Error("HandleGeneration changed at runtime")
+	}
+	if got := e.nfs.GetExportOptions(); got.HandleGeneration != "g1" || got.ReadOnly {
+		t.Errorf("after a rejected update: generation %q, ReadOnly %v", got.HandleGeneration, got.ReadOnly)
+	}
+	e.size(f, 1, "a handle after a rejected generation change")
+}
+
+// Failing to record a new generation is an error, and leaves no key: the
+// next start makes the state afresh again.
+func TestHandleGenerationWriteFailure(t *testing.T) {
+	fs := newMemFS(t)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, handleGenFile+".tmp", "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if nfs, err := New(fs, ExportOptions{HandleStateDir: dir, HandleGeneration: "g"}); err == nil {
+		nfs.Close()
+		t.Fatal("New succeeded without recording its generation")
+	}
+	if _, err := os.Stat(filepath.Join(dir, handleKeyFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a key was written without its generation: %v", err)
+	}
 }

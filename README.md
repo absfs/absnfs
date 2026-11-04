@@ -290,6 +290,16 @@ to a directory you export.
   carry on. An operating system crash can lose the last second of the
   journal. Handles from servers before v1.2.0 (8 bytes) are always stale:
   remount once after upgrading.
+- **`HandleStateDir` assumes the same path names the same object after a
+  restart.** The journal covers changes made through the server, not a
+  namespace rebuilt at start: if route names or backends are reused for
+  different content (switchfs routes numbered `/w1`, `/w2`... per run), an
+  old handle silently reaches the new object at its path. If you cannot
+  guarantee a stable namespace, set `HandleGeneration` and change it
+  whenever the namespace changes (per server run, or per route-set version):
+  handles from another generation fail their tag and report
+  `NFS3ERR_STALE`. The empty generation (the default) keeps existing
+  handles valid. Fixed at `New`.
 - **Changes made behind the server's back are seen after a delay.** absnfs
   caches attributes for `AttrCacheTimeout` (5s by default), and, when
   enabled, misses for `NegativeCacheTimeout` and listings for

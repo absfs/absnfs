@@ -162,13 +162,14 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 	server := &AbsfsNFS{
 		fs:               fs,
 		handleStateDir:   options.HandleStateDir,
+		handleGeneration: options.HandleGeneration,
 		logger:           log.New(os.Stderr, "[absnfs] ", log.LstdFlags),
 		structuredLogger: structuredLogger,
 		attrCache:        NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
 	}
 
 	if options.HandleStateDir != "" {
-		fm, err := newFileHandleMapWithState(options.MaxHandles, options.HandleStateDir, func(err error) {
+		fm, err := newFileHandleMapWithState(options.MaxHandles, options.HandleStateDir, options.HandleGeneration, func(err error) {
 			server.logger.Printf("file handle journal failed, handles will not survive a restart: %v", err)
 		})
 		if err != nil {
@@ -339,6 +340,7 @@ func (n *AbsfsNFS) GetExportOptions() ExportOptions {
 	opts.DefaultOwner = &owner
 	opts.ForceOwner = n.forceOwner
 	opts.HandleStateDir = n.handleStateDir
+	opts.HandleGeneration = n.handleGeneration
 	return opts
 }
 
@@ -347,11 +349,11 @@ func (n *AbsfsNFS) GetExportOptions() ExportOptions {
 // Tuning changes apply immediately via atomic swap.
 // Policy changes use drain-and-swap to ensure in-flight requests complete first.
 //
-// Squash, DefaultOwner, ForceOwner and HandleStateDir are fixed when the
-// export is created. An update that changes one of them is rejected with an
-// error and nothing is applied; an empty Squash or HandleStateDir and a nil
-// DefaultOwner mean "unchanged", so the result of GetExportOptions can
-// always be passed back.
+// Squash, DefaultOwner, ForceOwner, HandleStateDir and HandleGeneration are
+// fixed when the export is created. An update that changes one of them is
+// rejected with an error and nothing is applied; an empty Squash,
+// HandleStateDir or HandleGeneration and a nil DefaultOwner mean
+// "unchanged", so the result of GetExportOptions can always be passed back.
 func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
 	if n == nil {
 		return fmt.Errorf("nil server")
@@ -370,6 +372,9 @@ func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
 	}
 	if newOptions.HandleStateDir != "" && newOptions.HandleStateDir != n.handleStateDir {
 		return fmt.Errorf("cannot change HandleStateDir at runtime (requires restart)")
+	}
+	if newOptions.HandleGeneration != "" && newOptions.HandleGeneration != n.handleGeneration {
+		return fmt.Errorf("cannot change HandleGeneration at runtime (requires restart)")
 	}
 
 	// Apply tuning changes (lock-free, immediate).
