@@ -456,7 +456,8 @@ func TestRenameCaseOnlyUnion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	layer := func(dir string) absfs.SymlinkFileSystem {
+	layer := func(t *testing.T, dir string) absfs.SymlinkFileSystem {
+		t.Helper()
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -469,10 +470,10 @@ func TestRenameCaseOnlyUnion(t *testing.T) {
 	for _, copyUp := range []bool{false, true} {
 		t.Run(fmt.Sprintf("copied up %v", copyUp), func(t *testing.T) {
 			base := filepath.Join(scratch, fmt.Sprint(copyUp))
-			lower := layer(filepath.Join(base, "lower"))
+			lower := layer(t, filepath.Join(base, "lower"))
 			writeFile(t, lower, "/README.md", 7)
 			upperDir := filepath.Join(base, "upper")
-			upper := layer(upperDir)
+			upper := layer(t, upperDir)
 			u := unionfs.New(unionfs.WithWritableLayer(upper), unionfs.WithReadOnlyLayer(lower)).SymlinkFileSystem()
 			size := int64(7)
 			if copyUp {
