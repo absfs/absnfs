@@ -588,17 +588,27 @@ type ExportOptions struct {
 	// CaseInsensitiveAuto (the zero value, the default) answers for each
 	// handle what the filesystem it is in does. It probes, reading only:
 	// it lists a few names of the handle's directory (a file's parent),
-	// looks a few of them up with each ASCII letter's case swapped and
-	// compares what it finds with the entry (device and inode, a memfs
-	// inode, else type, size and modification time). A name that finds the
-	// same file means names fold there; one that finds nothing or another
-	// file means they do not. A directory with no name to try (empty, or
-	// no name with an ASCII letter) takes the answer of its nearest
-	// ancestor that has one, and false when none does. Answers are cached
-	// per directory for AttrCacheTimeout, and dropped when the server
-	// removes, renames or replaces the directory. Since a union may fold
-	// names in one layer and not another, a directory where any probed
-	// name folds is reported case-insensitive.
+	// looks a few of them up with the case of their letters swapped (ASCII
+	// letters where a name has one, else letters with exactly one other
+	// case) and compares what it finds with the entry (device and inode, a
+	// memfs inode, else type, size and modification time). A name that
+	// finds the same file means names fold there; one that finds nothing or
+	// another file means they do not. A directory with no name to try
+	// (empty, or only digits or kana) takes the answer of its nearest
+	// ancestor that has one, and when none does the export's: the answer
+	// of the first probe that decided one, else a guess from a name
+	// looked up composed and decomposed (a filesystem that matches those,
+	// as APFS does, is guessed to fold), kept for the server's lifetime
+	// once there is one, else false. Answers are cached per directory for
+	// AttrCacheTimeout, and dropped when the server removes, renames or
+	// replaces the directory. Since a union may fold names in one layer
+	// and not another, a directory where any probed name folds is
+	// reported case-insensitive.
+	//
+	// Where the answer is true, every spelling of an object reports one
+	// fileid (names folded as APFS matches them), except two names one
+	// directory lists that fold alike, which keep one each. See
+	// docs/api/export-options.md.
 	//
 	// The answers can differ between handles, so in auto mode FSINFO does
 	// not report FSF3_HOMOGENEOUS, and clients ask PATHCONF for each

@@ -128,10 +128,23 @@ to the macOS NFS client, which is stricter than Linux's.
   entries, which carry the stored spelling, report the fileid LOOKUP of any
   other spelling reports. Case-sensitive exports report exactly the fileids
   they did. Adds a dependency on `golang.org/x/text` (v0.28.0, the last that
-  supports Go 1.23). Covered by `TestFileIDFoldsSpellings`,
+  supports Go 1.23). Two names one directory lists that fold alike (`w1`
+  and `W1` in a union whose case-sensitive writable layer sits over a
+  folding host layer, or a case-sensitive root under `CaseInsensitiveTrue`)
+  are two files and keep the fileid of their own spelling; finding them
+  reads the directory's listing once per `AttrCacheTimeout`. With auto the
+  probe now also decides by names without an ASCII letter (`Фото`, swapping
+  letters with exactly one other case), caches undecided directories, and a
+  directory nothing up to the root decides takes the export's answer (the
+  first decided, else a guess from a name looked up composed and
+  decomposed), kept for the server's lifetime, so a fileid it folded does
+  not change when names are added. Covered by `TestFileIDFoldsSpellings`,
   `TestFileIDFoldsPerDirectory`, `TestFileIDFoldsOnHost` (APFS or NTFS
-  through basefs and unionfs), the golden `TestFileIDCaseSensitiveUnchanged`,
-  and `mv docs Docs` subtests of `TestMacOSCaseOnlyRename`.
+  through basefs and unionfs, the volume deciding which non-ASCII pairs are
+  one name), `TestFileIDSharedKeysKeptApart`,
+  `TestFileIDStableAsDirectoryGrows`, `TestFileIDKanaDirectoryInherits`,
+  `TestCaseVariant`, the golden `TestFileIDCaseSensitiveUnchanged`, and
+  `mv docs Docs` subtests of `TestMacOSCaseOnlyRename`.
 - **Two Lstats of a union file with a metadata marker compared as two
   files** (#88). unionfs reports such a file (a lower-layer file after chmod,
   chown or chtimes) with a fresh merged `*inode.Inode` on every Lstat, and

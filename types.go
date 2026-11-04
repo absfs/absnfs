@@ -81,9 +81,12 @@ type AbsfsNFS struct {
 	handleGeneration string
 
 	// caseMode is ExportOptions.CaseInsensitive. Fixed at New. caseCache
-	// holds the answers CaseInsensitiveAuto probed (see case.go).
-	caseMode  CaseInsensitivity
-	caseCache caseCache
+	// holds the answers CaseInsensitiveAuto probed and the fold keys
+	// directories share, caseVolume the export's answer once it has one
+	// (see case.go and fileid.go).
+	caseMode   CaseInsensitivity
+	caseCache  caseCache
+	caseVolume atomic.Uint32
 
 	// ownerWriteMu serializes owner-override opens (see openForOwnerWrite).
 	ownerWriteMu sync.Mutex

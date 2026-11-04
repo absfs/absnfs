@@ -3,9 +3,12 @@
 package absnfs
 
 import (
+	"errors"
 	"hash/fnv"
+	"io"
 	"path"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/text/cases"
@@ -48,14 +51,15 @@ func (s *AbsfsNFS) objectID(p string) uint64 {
 }
 
 // identityPath returns the path whose hash is p's fileid: p (absolute, as
-// every node's path is) cleaned, with each name in a directory that folds
-// replaced by its fold key. On an export that answers names as
-// case-sensitive it is p cleaned.
+// every node's path is) cleaned, with each name replaced by its fold key
+// where its directory folds and lists no other name with that key (see
+// foldsKey). On an export that answers names as case-sensitive it is p
+// cleaned.
 //
 // Only a name its fold key changes needs its directory's answer, so a path
 // of lowercase ASCII names costs nothing more than before, and any other
-// name one cached lookup of its directory's answer (a probe when that is
-// not cached, see caseInsensitive).
+// name cached lookups of its directory's answer and shared keys (a probe or
+// a listing when they are not cached).
 func (s *AbsfsNFS) identityPath(p string) string {
 	p = path.Clean(p)
 	if s.caseMode == CaseInsensitiveFalse || folded(p) {
@@ -75,7 +79,7 @@ func (s *AbsfsNFS) identityPath(p string) string {
 			dir = "/"
 		}
 		key := foldName(name)
-		if key != name && !s.caseInsensitive(dir, true) {
+		if key != name && !s.foldsKey(dir, key) {
 			key = name
 		}
 		b.WriteByte('/')
@@ -83,6 +87,42 @@ func (s *AbsfsNFS) identityPath(p string) string {
 		start = end + 1
 	}
 	return b.String()
+}
+
+// foldsKey reports whether a name in dir whose fold key is key reports
+// that key in its fileid: dir folds names, and lists no two names with
+// that key. Two such names are two files (a union of a case-sensitive
+// layer over a folding one can hold w1 and W1), so each keeps the fileid
+// of its own spelling, as do spellings dir does not list.
+func (s *AbsfsNFS) foldsKey(dir, key string) bool {
+	return s.caseInsensitive(dir, true) && !s.sharedKey(dir, key)
+}
+
+// sharedKey reports whether two or more of the names dir lists have the
+// fold key key. It lists the whole directory when a probe did not (it has
+// more names than a probe reads, or the export does not probe), and caches
+// what it found as the probe's answer is cached. A directory it cannot
+// list shares no keys.
+func (s *AbsfsNFS) sharedKey(dir, key string) bool {
+	now := time.Now()
+	a, ok, gen := s.caseCache.get(dir, now)
+	if ok && a.listed {
+		return a.shared[key]
+	}
+	f, err := s.fs.Open(dir)
+	if err != nil {
+		return false
+	}
+	names, err := f.Readdirnames(-1)
+	f.Close()
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false
+	}
+	shared := sharedKeys(names)
+	s.caseCache.set(dir, gen, now, now.Add(s.tuning.Load().AttrCacheTimeout), func(a *caseAnswer) {
+		a.listed, a.shared = true, shared
+	})
+	return shared[key]
 }
 
 // folded reports whether s is its own fold key, cheaply: it is ASCII with

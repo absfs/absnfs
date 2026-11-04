@@ -287,8 +287,8 @@ func TestCaseAutoBothSpellingsListed(t *testing.T) {
 	writeFile(t, fs, "/a", 1)
 	writeFile(t, fs, "/A", 2)
 	nfs := newCaseNFS(t, fs, ExportOptions{})
-	if folds, ok := nfs.probeCase("/"); folds || !ok {
-		t.Fatalf("probeCase = %v, %v; want false, true", folds, ok)
+	if r := nfs.probeCase("/"); r.folds || !r.decided {
+		t.Fatalf("probeCase = folds %v, decided %v; want false, true", r.folds, r.decided)
 	}
 }
 
@@ -328,14 +328,14 @@ func TestCaseAutoCache(t *testing.T) {
 	for _, p := range []string{"/w1/d", "/w1/d/e"} {
 		pathconfCase(t, nfs, p)
 	}
-	if _, ok := nfs.caseCache.get("/w1/d/e", time.Now()); !ok {
+	if _, ok, _ := nfs.caseCache.get("/w1/d/e", time.Now()); !ok {
 		t.Fatal("/w1/d/e not cached")
 	}
 	root, _ := nfs.Lookup("/w1")
 	if err := nfs.Rename(root, "d", root, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := nfs.caseCache.get("/w1/d/e", time.Now()); ok {
+	if _, ok, _ := nfs.caseCache.get("/w1/d/e", time.Now()); ok {
 		t.Error("/w1/d/e still cached after /w1/d was renamed")
 	}
 	if got, _ := pathconfCase(t, nfs, "/w1/x/e"); got != 1 {
@@ -362,9 +362,9 @@ func TestCaseAutoCacheExpires(t *testing.T) {
 
 func TestCaseCacheBounded(t *testing.T) {
 	var c caseCache
-	exp := time.Now().Add(time.Hour)
+	now := time.Now()
 	for i := 0; i < caseCacheMax+10; i++ {
-		c.put(fmt.Sprintf("/d%d", i), true, exp)
+		c.set(fmt.Sprintf("/d%d", i), 0, now, now.Add(time.Hour), func(a *caseAnswer) { a.probed = true })
 	}
 	if n := len(c.m); n > caseCacheMax {
 		t.Fatalf("cache holds %d answers, cap %d", n, caseCacheMax)

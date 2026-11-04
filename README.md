@@ -168,14 +168,17 @@ switchfs routes to host directories on APFS, should set
 `CaseInsensitiveTrue`; auto would report its root, and so the volume, as
 case-sensitive. Fixed at `New`. Names are always passed to the filesystem as
 spelled: a case-only rename (`mv README.md Readme.md`) reaches the
-filesystem as a RENAME whatever the answer. The probe detects only ASCII
-case folding; Unicode normalisation (APFS treats composed and decomposed
-`é` as one name) and non-ASCII case are left to the filesystem, and
-PATHCONF says nothing about them. Where the answer is true, every spelling
-of an object reports one fileid (`docs`, `Docs`, READDIR's `docs`), as on
-the host volume, so `mv docs Docs` and same-file checks in `cp` and `rsync`
-see one file; names are folded for that as APFS matches them (Unicode case
-folding and normalisation). See
+filesystem as a RENAME whatever the answer. The probe swaps the case of
+ASCII letters, or of other letters with one other case (`Фото`) in a name
+with none; Unicode normalisation (APFS treats composed and decomposed `é`
+as one name) is left to the filesystem, and PATHCONF says nothing about
+it. Where the answer is true, every spelling of an object reports one
+fileid (`docs`, `Docs`, READDIR's `docs`), as on the host volume, so `mv
+docs Docs` and same-file checks in `cp` and `rsync` see one file; names are
+folded for that as APFS matches them (Unicode case folding and
+normalisation). Two names one directory lists that fold alike (`w1` and
+`W1` in a union with a case-sensitive writable layer) are two files and
+keep a fileid each. See
 [ExportOptions](docs/api/export-options.md#case-insensitive-names).
 
 ## Security

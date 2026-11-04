@@ -211,16 +211,18 @@ one.
 
 **Auto** answers for the directory a handle is (or, for anything else, is
 in). It probes reading only: it reads up to 64 names of the directory, looks
-up to 4 of them up with the case of each ASCII letter swapped (`README.md`
-as `readme.MD`), and compares what it finds with the entry: device and inode
+up to 4 of them up with the case of their letters swapped (`README.md` as
+`readme.MD`; see Unicode below for names without an ASCII letter), and
+compares what it finds with the entry: device and inode
 numbers (also through wrappers such as basefs, which `os.SameFile` cannot
 see through), a memfs inode, else type, size and modification time. A
 swapped name that finds the same file means names fold there; one that finds
 nothing or another file, or two listed names differing only in case, mean
 they do not. Any probed name that folds decides it, since a union may fold
 names in one layer and not in another. A directory with no name to try
-(empty, or no name with an ASCII letter) takes the answer of its nearest
-ancestor that has one, and `false` when none does. Answers are cached per
+(empty, or no name with a letter that has another case) takes the answer
+of its nearest ancestor that has one, and the export's when none does (see
+Unicode below). Answers, undecided ones too, are cached per
 directory for `AttrCacheTimeout` (at most 4,096 directories) and dropped
 when the server removes, renames or replaces the directory, so a backend
 swapped behind the server's back (a switchfs route) is seen within the
@@ -242,15 +244,26 @@ its writable layer folds. Such exports set `CaseInsensitiveTrue`. It is
 harmless over the case-sensitive root: the client sends the names it is
 given and the root answers them exactly.
 
-**Unicode.** The probe swaps only ASCII letters (`a`-`z`, `A`-`Z`), so
-it detects only ASCII case folding; a directory whose names have no ASCII
-letter takes its ancestor's answer. Hosts such as APFS also fold non-ASCII
-case (`Ü` and `ü`) and treat a composed and a decomposed spelling (`é` as
-U+00E9, or as `e` followed by U+0301) as one name. `case_insensitive` says
-nothing about either: PATHCONF has no field for normalisation, and absnfs
-neither normalises nor folds names it passes to the filesystem. It passes
-them as the client spelled them, and the filesystem decides what they find
-(it folds them only into fileids, see below).
+**Unicode.** A name with an ASCII letter is probed with its ASCII letters
+swapped, and nothing else, since every folding filesystem folds those
+alike. A name with no ASCII letter is probed with each letter that has
+exactly one other case swapped (`Фото` as `фОТО`, `Ü` as `ü`); letters whose
+case is not one to one (`İ`, `ı`, `ß`, `ς`) are left alone, as filesystems
+fold them differently. A directory whose names have no such letter (only
+digits, or kana) takes its nearest ancestor's answer. Where no ancestor up
+to the root has one, it takes the export's answer: that of the first probe
+on the export that decided one, or failing that a guess from a name that
+is spelled differently composed and decomposed (`é` as U+00E9, or as `e`
+followed by U+0301; `が`), looked up the other way: a filesystem that finds
+the same file (APFS, HFS+) is guessed to fold, one that does not (ext4,
+NTFS) not to. Once the export has an answer it keeps it for the server's
+lifetime, so fileids folded by it (see below) do not change when names are
+added; with none, the answer is false. Undecided directories are cached
+like decided ones. `case_insensitive` says nothing about normalisation:
+PATHCONF has no field for it, and absnfs neither normalises nor folds names
+it passes to the filesystem. It passes them as the client spelled them, and
+the filesystem decides what they find (it folds them only into fileids, see
+below).
 
 The answer does not change what the server does with names: LOOKUP, CREATE
 and RENAME pass names to the filesystem as spelled. File handles name paths
@@ -274,11 +287,29 @@ even with folding routes below it; a name that is its own key (lowercase
 ASCII) needs no answer and costs nothing. Rare differences from the host:
 Cherokee letters fold on APFS but keep a fileid per case here, and on NTFS,
 which neither normalises nor folds `ß`, two files named `straße` and
-`STRASSE` (or `é` composed and decomposed) report one fileid. With
-`CaseInsensitiveTrue` over content that keeps two such names apart (a
-case-sensitive memfs root holding both `W1` and `w1`), both report one
-fileid. Where the answer is false, fileids are exactly what absnfs reported
-before.
+`STRASSE` (or `é` composed and decomposed) report one fileid.
+
+A directory that folds can still list two names with one fold key: a union
+whose writable layer is case-sensitive (memfs) over a folding host layer
+holds both `w1` and `W1` once a client creates both, and so does a
+case-sensitive root under `CaseInsensitiveTrue`. Those names are two files,
+so each keeps the fileid of its own spelling, as before folding, while the
+directory's other names still fold; a spelling it does not list (`READme`
+when it lists `Readme` and `README`) also reports its own. Finding the
+shared keys reads the directory's whole listing, once per directory per
+`AttrCacheTimeout` (the probe's listing serves when it read every name, 64
+or fewer). When a second spelling of a name appears, the first one's fileid
+changes from the folded one to that of its own spelling (unless it is
+spelled as its key, as `w1` is), a change the directory's content makes.
+
+Fileids folded by an answer that later changes change with it. That
+happens only where the answer was not the directory's own: an undecided
+directory that later gets a name to probe by, when the export's answer
+differed (on case-sensitive APFS, which matches composed and decomposed
+names and so is guessed to fold, or on NTFS, which does not and so is
+guessed not to, for names such as `が` before anything on the export
+decided), or a union whose layers answer differently. Where the answer is
+false, fileids are exactly what absnfs reported before.
 
 It is fixed by `New()`: `UpdateExportOptions` rejects a different value, and
 `GetExportOptions` reports the value in effect. `New()` rejects a value
