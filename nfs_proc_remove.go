@@ -39,14 +39,7 @@ func (h *NFSProcedureHandler) handleRemove(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithWcc(reply, st), nil
 	}
 
-	node.mu.RLock()
-	isDir := node.attrs.Mode&os.ModeDir != 0
-	node.mu.RUnlock()
-
-	if !isDir {
-		return nfsErrorWithWcc(reply, NFSERR_NOTDIR), nil
-	}
-
+	// Remove answers NFS3ERR_NOTDIR unless node is a directory now.
 	// R23: Return NFS error instead of nil,err
 	dirPreAttrs, err := h.server.handler.GetAttr(node)
 	if err != nil {
@@ -120,16 +113,9 @@ func (h *NFSProcedureHandler) handleRmdir(body io.Reader, reply *RPCReply, authC
 		return nfsErrorWithWcc(reply, st), nil
 	}
 
-	node.mu.RLock()
-	isDir := node.attrs.Mode&os.ModeDir != 0
-	node.mu.RUnlock()
-
-	if !isDir {
-		return nfsErrorWithWcc(reply, NFSERR_NOTDIR), nil
-	}
-
-	// R23: Return NFS error instead of nil,err
-	dirPreAttrs, err := h.server.handler.GetAttr(node)
+	// A directory now, not only when its handle was issued: the name is
+	// removed from the path, which a host would follow through a link.
+	dirPreAttrs, err := h.server.handler.requireDir(node)
 	if err != nil {
 		return nfsErrorWithWcc(reply, mapError(err)), nil
 	}

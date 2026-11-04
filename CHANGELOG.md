@@ -12,6 +12,15 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Added
 
+- `ExportOptions.AllowedUIDs` (and `PolicyOptions.AllowedUIDs`): when not
+  empty, only AUTH_SYS requests carrying a listed uid reach NFS procedures;
+  other uids and AUTH_NONE get `AUTH_ERROR`. NULL and MOUNT are answered for
+  any uid (macOS `mount_nfs` sends MNT as uid 0). AUTH_SYS uids are the
+  client's claim, so this limits accidents and casual misuse, not forged
+  credentials. Changeable at runtime.
+- README "Security" section and security guide sections on who can use an
+  export (any local user, as any uid, on a `localhost` bind), limiting uids,
+  and exports of a host directory.
 - `ExportOptions.MaxHandles` (and `TuningOptions.MaxHandles`): the capacity
   of the file handle cache, default 100,000 (<= 0). It bounds memory and the
   miss rate only; changeable at runtime, and a smaller value evicts at once.
@@ -43,9 +52,12 @@ to the macOS NFS client, which is stricter than Linux's.
   Overrides are serialized so parallel WRITEs to one file all succeed.
 - A macOS end-to-end test, `TestMacOSUserMount`, run with
   `ABSNFS_MACOS_MOUNT=1`: mounts osfs and memfs exports as the current user
-  and checks listing, ownership, symlinks, file operations, locking with
-  `locallocks`, removing a large directory while listing it, and a git
-  commit.
+  and checks listing, ownership, symlinks (`chmod -h` and `touch -h` on a
+  link fail without touching its target), a directory swapped for a link
+  behind the server's back (nothing outside the export changes), file
+  operations, locking with `locallocks`, removing a large directory while
+  listing it, a git commit, and an `AllowedUIDs` export. It mounts with
+  `locallocks,noatime`.
 - macOS end-to-end file handle tests, run with `ABSNFS_MACOS_MOUNT=1`:
   `TestMacOSHandlesSurviveEviction` (git in one workspace with a 64-handle
   cache) and `TestMacOSWorkspacesWarmStatus` (four unionfs workspaces under
@@ -58,6 +70,27 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Fixed
 
+- **Type decisions that gate an operation use the object as it is now.**
+  LOOKUP, READDIR, READDIRPLUS, REMOVE and RMDIR decided whether a handle
+  named a directory from the attributes it was issued with, and CREATE,
+  MKDIR, SYMLINK and RENAME did not check at all, so a directory replaced by
+  a symbolic link behind the server's back was still used as a directory:
+  over osfs or basefs the host followed the link, and a client could list,
+  read, create, remove and rename files outside the export. READ, WRITE and
+  SETATTR likewise opened or truncated a file that had become a link to one
+  outside. Each now checks a fresh `Lstat`: `NFS3ERR_NOTDIR` for a directory
+  argument that is not one, `NFS3ERR_ISDIR` or `NFS3ERR_INVAL` for READ,
+  WRITE and SETATTR size on anything but a regular file (as Linux knfsd),
+  `NFS3ERR_INVAL` for READLINK on what is no longer a link. A handle below a
+  replaced directory is still resolved through it (see README, Security).
+- **SETATTR on a symbolic link changed its target.** Chmod, Chtimes and
+  Truncate were applied to the link's path, which a host follows, and the
+  owner was set with Chown. The owner is now set with `Lchown`, on the link;
+  mode, size and times are refused with `NFS3ERR_INVAL` before anything
+  changes (`chmod -h` and `touch -h` report "Invalid argument"), as absnfs4
+  refuses them with `NFS4ERR_INVAL`. `SetAttr` refuses them too.
+- The `StaleHandles` metric was never incremented: nothing recorded STALE
+  errors. Every `NFS3ERR_STALE` reply is now counted.
 - The attribute cache never answered GETATTR (or ACCESS, or any procedure
   reporting pre- or post-operation attributes): it dropped the validity time
   when handing out a copy, so every request stat'ed the filesystem. It now

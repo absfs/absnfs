@@ -41,6 +41,8 @@ func NewServer(options ServerOptions) (*Server, error)
 
 Creates a new NFS server. Returns an error if `Port` is negative. If `Hostname` is empty, it defaults to `"localhost"`. Port 0 lets the OS assign a random port (useful for testing).
 
+**Security:** a loopback bind keeps other machines out, not other users of the same machine. Any local process can connect and, since AUTH_SYS uids are asserted by the client, act as any uid, including the user running the server. Bind `"127.0.0.1"` explicitly, and see `ExportOptions.AllowedUIDs` and the [security guide](../guides/security.md#who-can-use-an-export) for what limits it.
+
 ```go
 server, err := absnfs.NewServer(absnfs.ServerOptions{
     Port:             2049,

@@ -55,6 +55,7 @@ func TestMacOSUserMount(t *testing.T) {
 		backend string
 		opts    string // extra mount options
 		export  bool   // serve with AbsfsNFS.Export instead of NewServer
+		ownUID  bool   // limit the export to the test user's uid (AllowedUIDs)
 	}{
 		{name: "osfs", backend: "osfs"},
 		{name: "osfs-rdirplus", backend: "osfs", opts: "rdirplus"},
@@ -62,10 +63,15 @@ func TestMacOSUserMount(t *testing.T) {
 		{name: "memfs-rdirplus", backend: "memfs", opts: "rdirplus"},
 		{name: "memfs-export", backend: "memfs", export: true},
 		{name: "osfs-locallocks", backend: "osfs", opts: "locallocks"},
+		{name: "osfs-alloweduids", backend: "osfs", ownUID: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			runMacOSMount(t, tc.backend, tc.opts, tc.export)
+			var opts ExportOptions
+			if tc.ownUID {
+				opts.AllowedUIDs = []uint32{uint32(os.Getuid())}
+			}
+			runMacOSMount(t, tc.backend, tc.opts, tc.export, opts)
 		})
 	}
 }
@@ -118,7 +124,7 @@ func newMacOSBackend(t *testing.T, backend, scratch string) absfs.SymlinkFileSys
 	return fs
 }
 
-func runMacOSMount(t *testing.T, backend, extraOpts string, viaExport bool) {
+func runMacOSMount(t *testing.T, backend, extraOpts string, viaExport bool, exportOpts ExportOptions) {
 	scratch, err := os.MkdirTemp("", "absnfs-macos-")
 	if err != nil {
 		t.Fatal(err)
@@ -127,13 +133,16 @@ func runMacOSMount(t *testing.T, backend, extraOpts string, viaExport bool) {
 	if scratch, err = filepath.EvalSymlinks(scratch); err != nil {
 		t.Fatal(err)
 	}
-	mnt := filepath.Join(scratch, "mnt")
-	if err := os.Mkdir(mnt, 0o700); err != nil {
+	// The mount point sits a level deeper than the osfs export
+	// (<scratch>/export), so a relative link the client resolves itself
+	// never reaches what the server would reach following it on the host.
+	mnt := filepath.Join(scratch, "m", "mnt")
+	if err := os.MkdirAll(mnt, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
 	fs := newMacOSBackend(t, backend, scratch)
-	nfs, err := New(fs, ExportOptions{})
+	nfs, err := New(fs, exportOpts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,11 +177,11 @@ func runMacOSMount(t *testing.T, backend, extraOpts string, viaExport bool) {
 		os.RemoveAll(scratch)
 	}()
 
-	locking := "nolocks"
+	locking := "locallocks"
 	if strings.Contains(extraOpts, "locallocks") {
 		locking = ""
 	}
-	opts := fmt.Sprintf("vers=3,tcp,port=%d,mountport=%d,noresvport,soft,intr,timeo=10,retrans=2", port, port)
+	opts := fmt.Sprintf("vers=3,tcp,port=%d,mountport=%d,noresvport,soft,intr,timeo=10,retrans=2,noatime", port, port)
 	for _, o := range []string{locking, extraOpts} {
 		if o != "" {
 			opts += "," + o
@@ -288,6 +297,81 @@ func runMacOSMount(t *testing.T, backend, extraOpts string, viaExport bool) {
 			t.Fatalf("ln -s ../hello.txt sub/up2: %v, want permission denied", err)
 		}
 	})
+
+	t.Run("SETATTR on a symlink never reaches its target", func(t *testing.T) {
+		link := filepath.Join(mnt, "link")
+		before, err := fs.Stat("/hello.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{
+			{"/bin/chmod", "-h", "600", link},
+			{"/usr/bin/touch", "-h", "-t", "200001010000", link},
+		} {
+			out, err := runWithTimeout(20*time.Second, "", nil, args[0], args[1:]...)
+			t.Logf("%s: %v %s", strings.Join(args[:len(args)-1], " "), err, bytes.TrimSpace(out))
+			if err == nil {
+				t.Errorf("%v succeeded; a symbolic link's mode and times cannot be set", args)
+			}
+		}
+		out, err := runWithTimeout(20*time.Second, "", nil, "/usr/sbin/chown", "-h", fmt.Sprintf("%d:%d", uid, gid), link)
+		if err != nil {
+			t.Errorf("chown -h on a symlink: %v %s", err, out)
+		}
+		after, err := fs.Stat("/hello.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.Mode() != before.Mode() || !after.ModTime().Equal(before.ModTime()) {
+			t.Errorf("hello.txt changed through the link: %v %v, was %v %v", after.Mode(), after.ModTime(), before.Mode(), before.ModTime())
+		}
+		if target, err := os.Readlink(link); err != nil || target != "hello.txt" {
+			t.Errorf("readlink after SETATTR = %q, %v", target, err)
+		}
+	})
+
+	if backend == "osfs" {
+		t.Run("a directory swapped for a link is not used", func(t *testing.T) {
+			outside := filepath.Join(scratch, "outside")
+			if err := os.Mkdir(outside, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			canary := filepath.Join(outside, "canary")
+			if err := os.WriteFile(canary, []byte("canary"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// The client holds the directory's handle (and none below it:
+			// see "Handles name paths" in the README for those).
+			swap := filepath.Join(mnt, "swapme")
+			if err := os.Mkdir(swap, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			readDirNames(t, swap)
+			// Behind the server's back, the directory becomes a link to
+			// <scratch>/outside, as the server resolves it on the host.
+			host := filepath.Join(scratch, "export", "swapme")
+			if err := os.RemoveAll(host); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("../outside", host); err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(host)
+
+			_, rerr := os.ReadFile(filepath.Join(swap, "canary"))
+			werr := os.WriteFile(filepath.Join(swap, "new"), []byte("x"), 0o644)
+			cerr := os.WriteFile(filepath.Join(swap, "canary"), []byte("pwned"), 0o644)
+			xerr := os.Remove(filepath.Join(swap, "canary"))
+			_, lerr := os.ReadDir(swap)
+			t.Logf("through the swapped directory: read %v; create %v; overwrite %v; remove %v; list %v", rerr, werr, cerr, xerr, lerr)
+			if data, err := os.ReadFile(canary); err != nil || string(data) != "canary" {
+				t.Errorf("the canary outside the export changed: %q, %v", data, err)
+			}
+			if names := readDirNames(t, outside); !equalStrings(names, []string{"canary"}) {
+				t.Errorf("outside the export now lists %v, want [canary]", names)
+			}
+		})
+	}
 
 	t.Run("write read rename rm mkdir rmdir", func(t *testing.T) {
 		f1 := filepath.Join(mnt, "new.txt")

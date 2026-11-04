@@ -51,6 +51,9 @@ type PolicyOptions struct {
 
 	// AllowAnySymlinkTarget is ExportOptions.AllowAnySymlinkTarget.
 	AllowAnySymlinkTarget bool
+
+	// AllowedUIDs is ExportOptions.AllowedUIDs.
+	AllowedUIDs []uint32
 }
 
 // RequestOptions is a per-request snapshot of both tuning and policy options.
@@ -116,6 +119,7 @@ func policyFromExportOptions(opts *ExportOptions) *PolicyOptions {
 		p.AllowedIPs = make([]string, len(opts.AllowedIPs))
 		copy(p.AllowedIPs, opts.AllowedIPs)
 	}
+	p.AllowedUIDs = cloneUIDs(opts.AllowedUIDs)
 	if opts.RateLimitConfig != nil {
 		rc := *opts.RateLimitConfig
 		p.RateLimitConfig = &rc
@@ -158,6 +162,7 @@ func exportOptionsFromSnapshots(t *TuningOptions, p *PolicyOptions) ExportOption
 		opts.AllowedIPs = make([]string, len(p.AllowedIPs))
 		copy(opts.AllowedIPs, p.AllowedIPs)
 	}
+	opts.AllowedUIDs = cloneUIDs(p.AllowedUIDs)
 	if p.RateLimitConfig != nil {
 		rc := *p.RateLimitConfig
 		opts.RateLimitConfig = &rc
@@ -225,6 +230,7 @@ func (n *AbsfsNFS) UpdatePolicyOptions(newPolicy PolicyOptions) error {
 		snapshot.AllowedIPs = make([]string, len(newPolicy.AllowedIPs))
 		copy(snapshot.AllowedIPs, newPolicy.AllowedIPs)
 	}
+	snapshot.AllowedUIDs = cloneUIDs(newPolicy.AllowedUIDs)
 	if newPolicy.RateLimitConfig != nil {
 		rc := *newPolicy.RateLimitConfig
 		snapshot.RateLimitConfig = &rc
@@ -521,6 +527,21 @@ type ExportOptions struct {
 	// says: reading a link's text gives the client nothing it could not
 	// already reach, since the client resolves links itself.
 	AllowAnySymlinkTarget bool
+
+	// AllowedUIDs, when not empty, limits the export to AUTH_SYS requests
+	// whose credential carries one of these uids (as sent, before any
+	// squashing). Other requests, and every AUTH_NONE request, are
+	// refused with AUTH_ERROR (AUTH_BADCRED). Default: empty, any uid.
+	//
+	// AUTH_SYS uids are asserted by the client, not proven: a program
+	// that can reach the server can put any uid in its credential. So this
+	// stops accidents and casual misuse (another local user mounting the
+	// export with their own uid, a client mounted as the wrong user), not
+	// a hostile user who crafts RPC credentials. Combine it with binding
+	// to 127.0.0.1 or an AllowedIPs list, and TLS client certificates
+	// where clients must be proven. A typical value is the uid of the
+	// user the server serves: []uint32{uint32(os.Getuid())}.
+	AllowedUIDs []uint32
 }
 
 // TimeoutConfig defines timeout durations for various NFS operations
@@ -617,4 +638,12 @@ type LogConfig struct {
 	// Only applicable when Output is a file path
 	// Default: false
 	Compress bool
+}
+
+// cloneUIDs returns a copy of uids, nil when it is empty.
+func cloneUIDs(uids []uint32) []uint32 {
+	if len(uids) == 0 {
+		return nil
+	}
+	return append([]uint32(nil), uids...)
 }

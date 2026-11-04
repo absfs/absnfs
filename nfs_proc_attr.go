@@ -116,6 +116,23 @@ func (h *NFSProcedureHandler) handleSetattr(body io.Reader, reply *RPCReply, aut
 		}
 	}
 
+	// The type decisions come from those fresh attributes. A symbolic
+	// link takes only an owner (applied with Lchown): its mode, size and
+	// times could only be set through the link, changing its target on a
+	// host, so they are refused with NFS3ERR_INVAL, as absnfs4 refuses
+	// them with NFS4ERR_INVAL. A size is set only on a regular file: a
+	// directory answers NFS3ERR_ISDIR, anything else NFS3ERR_INVAL (as
+	// Linux knfsd does).
+	switch {
+	case preAttrs.Mode&os.ModeSymlink != 0 &&
+		(sattr.SetMode || sattr.SetSize || sattr.SetAtime != 0 || sattr.SetMtime != 0):
+		return nfsErrorWithWcc(reply, NFSERR_INVAL), nil
+	case sattr.SetSize && preAttrs.Mode.IsDir():
+		return nfsErrorWithWcc(reply, NFSERR_ISDIR), nil
+	case sattr.SetSize && !preAttrs.Mode.IsRegular():
+		return nfsErrorWithWcc(reply, NFSERR_INVAL), nil
+	}
+
 	// Apply truncation before other attribute changes.
 	// This is critical for file overwrites: the NFS client sends
 	// SETATTR(size=0) before WRITE(offset=0, data) to clear old content.

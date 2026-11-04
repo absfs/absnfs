@@ -401,6 +401,7 @@ func (n *AbsfsNFS) UpdateExportOptions(newOptions ExportOptions) error {
 		newPolicy.AllowedIPs = make([]string, len(newOptions.AllowedIPs))
 		copy(newPolicy.AllowedIPs, newOptions.AllowedIPs)
 	}
+	newPolicy.AllowedUIDs = cloneUIDs(newOptions.AllowedUIDs)
 	if newOptions.RateLimitConfig != nil {
 		rc := *newOptions.RateLimitConfig
 		newPolicy.RateLimitConfig = &rc

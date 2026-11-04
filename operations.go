@@ -36,10 +36,64 @@ func (e *statusError) Error() string { return e.msg }
 func (e *statusError) Unwrap() error { return e.errno }
 
 var (
-	errNotDir   = &statusError{NFSERR_NOTDIR, "not a directory", syscall.ENOTDIR}
-	errIsDir    = &statusError{NFSERR_ISDIR, "is a directory", syscall.EISDIR}
-	errNotEmpty = &statusError{NFSERR_NOTEMPTY, "directory not empty", syscall.ENOTEMPTY}
+	errNotDir     = &statusError{NFSERR_NOTDIR, "not a directory", syscall.ENOTDIR}
+	errIsDir      = &statusError{NFSERR_ISDIR, "is a directory", syscall.EISDIR}
+	errNotEmpty   = &statusError{NFSERR_NOTEMPTY, "directory not empty", syscall.ENOTEMPTY}
+	errNotRegular = &statusError{NFSERR_INVAL, "not a regular file", syscall.EINVAL}
+	errSymlinkSet = &statusError{NFSERR_INVAL, "a symbolic link's mode and times cannot be set", syscall.EINVAL}
 )
+
+// freshAttrs returns the attributes the filesystem holds for node now,
+// read with Lstat and never from a cache, and caches them. Every decision
+// on an object's type that gates an operation on its path is made from
+// them: the attributes a handle was issued with, and the attribute cache,
+// describe the object as it was, and an object replaced behind the
+// server's back (a directory swapped for a symbolic link) must not be used
+// as what it was. A backend that follows links on the host (osfs, basefs
+// over osfs) would otherwise follow the link out of the export.
+//
+// The check and the operation that follows it are separate calls, so a
+// swap in the instant between them is not caught; only a backend that
+// refuses to follow links on its own could close that.
+func (s *AbsfsNFS) freshAttrs(node *NFSNode) (*NFSAttrs, error) {
+	gen := s.attrCache.generation()
+	attrs, err := s.statAttrs(node.path)
+	if err != nil {
+		return nil, err
+	}
+	s.attrCache.putAt(node.path, attrs, gen)
+	return attrs, nil
+}
+
+// requireDir returns dir's attributes now (freshAttrs), or errNotDir when
+// it is not a directory now.
+func (s *AbsfsNFS) requireDir(dir *NFSNode) (*NFSAttrs, error) {
+	attrs, err := s.freshAttrs(dir)
+	if err != nil {
+		return nil, err
+	}
+	if !attrs.Mode.IsDir() {
+		return nil, errNotDir
+	}
+	return attrs, nil
+}
+
+// requireRegular returns nil when node is a regular file now (freshAttrs),
+// errIsDir for a directory and errNotRegular (NFS3ERR_INVAL, as Linux knfsd
+// answers) for anything else, a symbolic link above all: READ and WRITE
+// open the path, which a host follows.
+func (s *AbsfsNFS) requireRegular(node *NFSNode) error {
+	attrs, err := s.freshAttrs(node)
+	switch {
+	case err != nil:
+		return err
+	case attrs.Mode.IsDir():
+		return errIsDir
+	case !attrs.Mode.IsRegular():
+		return errNotRegular
+	}
+	return nil
+}
 
 // mapError converts absfs errors to NFS status codes
 func mapError(err error) uint32 {
@@ -263,6 +317,24 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 	currentMtime := current.Mtime()
 	currentAtime := current.Atime()
 
+	// A symbolic link's owner is set with Lchown, on the link itself.
+	// absfs cannot set its mode or times without following it (Chmod and
+	// Chtimes change the target on a host), so those are refused, before
+	// anything is changed.
+	if currentMode&os.ModeSymlink != 0 {
+		timesSet := !attrs.Atime().IsZero() || !attrs.Mtime().IsZero()
+		if attrs.Mode&os.ModePerm != currentMode&os.ModePerm ||
+			timesSet && (attrs.Mtime() != currentMtime || attrs.Atime() != currentAtime) {
+			return fmt.Errorf("setattr: %s: %w", node.path, errSymlinkSet)
+		}
+		if attrs.Uid != currentUid || attrs.Gid != currentGid {
+			if err := s.fs.Lchown(node.path, int(attrs.Uid), int(attrs.Gid)); err != nil {
+				return fmt.Errorf("setattr: lchown failed: %w", err)
+			}
+		}
+		return s.refreshAfterSetAttr(node)
+	}
+
 	if attrs.Mode&os.ModePerm != currentMode&os.ModePerm {
 		if err := s.fs.Chmod(node.path, attrs.Mode&os.ModePerm); err != nil {
 			return fmt.Errorf("setattr: chmod failed: %w", err)
@@ -281,7 +353,11 @@ func (s *AbsfsNFS) SetAttr(node *NFSNode, attrs *NFSAttrs) error {
 			return fmt.Errorf("setattr: chtimes failed: %w", err)
 		}
 	}
+	return s.refreshAfterSetAttr(node)
+}
 
+// refreshAfterSetAttr gives node what the filesystem records after SetAttr.
+func (s *AbsfsNFS) refreshAfterSetAttr(node *NFSNode) error {
 	// Re-read what the filesystem now records rather than trusting the
 	// request, so the node keeps its file id and real owner.
 	fresh, err := s.statAttrs(node.path)
@@ -344,6 +420,10 @@ func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset in
 	// Limit the read size to TransferSize if it exceeds the configured limit
 	if count > int64(tuning.TransferSize) {
 		count = int64(tuning.TransferSize)
+	}
+
+	if err := s.requireRegular(node); err != nil {
+		return nil, fmt.Errorf("read: %w", err)
 	}
 
 	// Standard read path
@@ -457,6 +537,10 @@ func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset i
 	// Forget the cached attributes once the file is written and closed (or
 	// the attempt failed, perhaps after an owner override changed the mode).
 	defer s.attrCache.Invalidate(node.path)
+
+	if err := s.requireRegular(node); err != nil {
+		return 0, fmt.Errorf("write: %w", err)
+	}
 
 	// Standard write path
 	f, err := s.fs.OpenFile(node.path, os.O_WRONLY, 0)
@@ -601,6 +685,9 @@ func (s *AbsfsNFS) createWithContext(ctx context.Context, dir *NFSNode, name str
 	if err != nil {
 		return nil, fmt.Errorf("create: failed to sanitize path: %w", err)
 	}
+	if _, err := s.requireDir(dir); err != nil {
+		return nil, fmt.Errorf("create: %w", err)
+	}
 
 	// A failed attempt may still have changed the directory (a file made
 	// and removed again), so the caches forget both either way.
@@ -718,6 +805,9 @@ func (s *AbsfsNFS) RemoveWithContext(ctx context.Context, dir *NFSNode, name str
 	if err != nil {
 		return fmt.Errorf("remove: failed to sanitize path: %w", err)
 	}
+	if _, err := s.requireDir(dir); err != nil {
+		return fmt.Errorf("remove: %w", err)
+	}
 
 	// Handles of path wait while it is removed, then are stale.
 	canon, _ := canonicalPath(path)
@@ -779,6 +869,14 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 	newPath, err := sanitizePath(newDir.path, newName)
 	if err != nil {
 		return fmt.Errorf("rename: failed to sanitize new path: %w", err)
+	}
+	if _, err := s.requireDir(oldDir); err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+	if newDir.path != oldDir.path {
+		if _, err := s.requireDir(newDir); err != nil {
+			return fmt.Errorf("rename: %w", err)
+		}
 	}
 
 	// A directory cannot be moved inside itself (POSIX and RFC 1813 require
@@ -932,6 +1030,11 @@ func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFS
 		}
 		return nil, ErrTimeout
 	default:
+	}
+
+	// The directory cache could still list a directory replaced since.
+	if _, err := s.requireDir(dir); err != nil {
+		return nil, fmt.Errorf("readdir: %w", err)
 	}
 
 	// Check directory cache first if enabled
@@ -1140,6 +1243,9 @@ func (s *AbsfsNFS) Symlink(dir *NFSNode, name string, target string, attrs *NFSA
 	path, err := sanitizePath(dir.path, name)
 	if err != nil {
 		return nil, fmt.Errorf("symlink: failed to sanitize path: %w", err)
+	}
+	if _, err := s.requireDir(dir); err != nil {
+		return nil, fmt.Errorf("symlink: %w", err)
 	}
 
 	// Create the symlink (s.fs is absfs.SymlinkFileSystem). The caches

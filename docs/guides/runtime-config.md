@@ -26,8 +26,9 @@ takes effect atomically.
 
 ### Policy Fields
 
-`ReadOnly`, `Secure`, `AllowedIPs`, `Squash` (immutable after creation),
-`MaxFileSize`, `EnableRateLimiting`, `RateLimitConfig`, `TLS`.
+`ReadOnly`, `Secure`, `AllowedIPs`, `AllowedUIDs`, `Squash` (immutable after
+creation), `MaxFileSize`, `EnableRateLimiting`, `RateLimitConfig`, `TLS`,
+`AllowAnySymlinkTarget`.
 
 ### Immutable Fields
 

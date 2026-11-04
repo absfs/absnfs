@@ -66,7 +66,7 @@ type NFSMetrics struct {
     ErrorCount        uint64
     AuthFailures      uint64
     AccessViolations  uint64
-    StaleHandles      uint64
+    StaleHandles      uint64 // NFS3ERR_STALE replies, every procedure
     ResourceErrors    uint64
     RateLimitExceeded uint64
 

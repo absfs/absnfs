@@ -47,8 +47,8 @@ Validates a client request against the current policy. Runs four checks in order
 2. **Secure port**: If `policy.Secure` is true, the client port must be below 1024 (privileged port).
 
 3. **Credential flavor**: Only `AUTH_NONE` and `AUTH_SYS` are accepted.
-   - `AUTH_NONE` maps to nobody (UID/GID 65534).
-   - `AUTH_SYS` parses the credential body to extract UID, GID, and auxiliary GIDs.
+   - `AUTH_NONE` maps to nobody (UID/GID 65534). It is refused when `policy.AllowedUIDs` is not empty: it carries no uid.
+   - `AUTH_SYS` parses the credential body to extract UID, GID, and auxiliary GIDs. When `policy.AllowedUIDs` is not empty, the UID as sent must be in it. The UID is the client's claim, so this limits accidents, not forged credentials.
 
 4. **UID/GID squashing**: Applied to `AUTH_SYS` credentials based on `policy.Squash`.
 

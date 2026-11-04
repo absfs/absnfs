@@ -142,6 +142,54 @@ on filesystems without an OS owner the reported owner stays `DefaultOwner`.
 gid; a server not running as root can only give them its own. An UNCHECKED
 `CREATE` of an existing file keeps that file's owner and mode.
 
+## Security
+
+**Every local user can use a localhost export, as any uid.** `Export` and
+`NewServer` bind `localhost` by default, which keeps other machines out but
+not other accounts on the same machine: any local process can connect to the
+port and speak NFS. NFSv3 clients identify themselves with AUTH_SYS, a uid
+and gids the client simply asserts, and absnfs (like any NFSv3 server without
+Kerberos) believes them. So a local user can claim the uid of the user
+running the server, or root, and read and write everything the server
+process can reach through the export. On a machine shared with other users,
+treat a running export as giving all of them the server's access to it.
+
+What limits it:
+
+- **Bind to `127.0.0.1`** (`ServerOptions.Hostname: "127.0.0.1"`) rather than
+  a name or a public address, and use `AllowedIPs` when clients come from
+  elsewhere. Both limit which machines connect, not which users.
+- **`ExportOptions.AllowedUIDs`** (opt in) serves only AUTH_SYS requests
+  carrying one of the listed uids, for example only the uid of the user who
+  serves the export: `AllowedUIDs: []uint32{uint32(os.Getuid())}`. Other
+  uids and AUTH_NONE get `AUTH_ERROR`. This stops accidents and casual
+  misuse (another account mounting the export as itself), **not a hostile
+  local user**: the uid is still asserted by the client, and a program that
+  writes its own RPC credentials can claim an allowed uid. NULL and the MOUNT
+  protocol, which reach no file, are answered for any uid (macOS `mount_nfs`
+  sends MNT as uid 0).
+- **TLS with client certificates** (`ExportOptions.TLS`) is the only option
+  that proves who the client is. `Squash: "all"` maps every client to nobody,
+  and `ReadOnly` refuses every change.
+
+**Exports of a host directory** (osfs, or basefs over osfs) are served by a
+process whose host follows symbolic links. absnfs keeps clients inside the
+export: SYMLINK refuses targets that could lead out of it (see Caveats),
+SETATTR on a link sets only its owner (with `Lchown`) and refuses its mode,
+size and times (`NFS3ERR_INVAL`; `chmod -h` and `touch -h` report "Invalid
+argument") because setting them would change the link's target, and every
+decision on an object's type that gates an operation (is this handle still
+a directory? still a regular file?) is made from the object as it is now
+(`Lstat`), never from the attributes cached when its handle was issued. A
+directory replaced by a link behind the server's back answers
+`NFS3ERR_NOTDIR`, a file replaced by a link `NFS3ERR_INVAL`; neither is
+followed. Two gaps remain while other local processes can change the
+exported directory: a handle for an object *below* a directory that is
+replaced by a link is still resolved by its path, through the link (a client
+that had a file in it open reaches the file of the same name where the link
+leads); and a swap in the instant between the check and the operation is not
+caught. Do not let untrusted local users write to a directory you export.
+
 ## Features
 
 - **NFSv3** (RFC 1813): LOOKUP, GETATTR, SETATTR, ACCESS, READ, WRITE, CREATE,
@@ -168,7 +216,8 @@ gid; a server not running as root can only give them its own. An UNCHECKED
   without touching the file, so `O_EXCL` lock files work; a retransmitted
   EXCLUSIVE CREATE is recognised by its verifier.
 - **Security**: IP allow lists with CIDR, read-only exports, root or all
-  squashing, TLS and mutual TLS, rate limiting.
+  squashing, an opt-in uid allow list, TLS and mutual TLS, rate limiting
+  (see [Security](#security) for what each protects against).
 - **Performance**: attribute and directory caches, worker pool, TCP tuning.
   The caches are coherent with the server's own changes (see Caveats for
   changes made behind its back).
@@ -179,8 +228,14 @@ gid; a server not running as root can only give them its own. An UNCHECKED
 ## Caveats
 
 - **AUTH_SYS only.** Clients assert their own uid and gid; absnfs trusts them,
-  like any NFSv3 server without Kerberos. Use `AllowedIPs`, squashing and TLS
-  to limit who can connect.
+  like any NFSv3 server without Kerberos, so any local user can use a
+  `localhost` export as any uid. See [Security](#security): bind
+  `127.0.0.1`, and use `AllowedIPs`, `AllowedUIDs`, squashing and TLS to
+  limit who can connect.
+- **A symbolic link's mode and times cannot be set** (`NFS3ERR_INVAL`:
+  `chmod -h` and `touch -h` fail with "Invalid argument"), because absfs can
+  set them only through the link, which changes its target. `chown -h`
+  works.
 - **No NLM lock manager.** Mount with `locallocks` (or `nolocks`, if no
   tool locks files).
 - **SYMLINK refuses absolute and `..` targets by default** (`NFS3ERR_ACCES`,
@@ -249,8 +304,11 @@ go test -race ./...
 ```
 
 The macOS end-to-end test mounts real exports with the kernel NFS client, as
-the current user, and checks listing, ownership, symlinks, file operations,
-removing a large directory while listing it, and a git commit. It is skipped unless asked for:
+the current user, and checks listing, ownership, symlinks (SETATTR on a link
+never reaching its target), a directory swapped for a link behind the
+server's back, file operations, removing a large directory while listing it,
+a git commit, and an export limited to the user's uid (`AllowedUIDs`). It is
+skipped unless asked for:
 
 ```bash
 ABSNFS_MACOS_MOUNT=1 go test -run TestMacOSUserMount -v

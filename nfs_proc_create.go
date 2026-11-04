@@ -214,8 +214,10 @@ func (h *NFSProcedureHandler) handleMkdir(body io.Reader, reply *RPCReply, authC
 		return nfsErrorWithWcc(reply, st), nil
 	}
 
-	// R23: Return NFS error instead of nil,err
-	dirPreAttrs, err := h.server.handler.GetAttr(node)
+	// A directory now, not only when its handle was issued: the new one
+	// is made at a path through it, which a host would follow if it had
+	// become a link.
+	dirPreAttrs, err := h.server.handler.requireDir(node)
 	if err != nil {
 		return nfsErrorWithWcc(reply, mapError(err)), nil
 	}

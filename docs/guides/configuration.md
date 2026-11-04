@@ -18,6 +18,7 @@ Fields that are not set use sensible defaults.
 |-------|------|---------|-------------|
 | `Secure` | `bool` | `false` | Require privileged source ports (<1024) |
 | `AllowedIPs` | `[]string` | `nil` (all allowed) | IP addresses or CIDR ranges allowed to connect |
+| `AllowedUIDs` | `[]uint32` | `nil` (any uid) | AUTH_SYS uids served; the uid is the client's claim (see [Security](security.md#limiting-uids)) |
 | `Squash` | `string` | `""` (none) | UID mapping: `"root"`, `"all"`, or `"none"` |
 
 ## Caching

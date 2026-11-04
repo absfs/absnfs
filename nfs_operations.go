@@ -6,6 +6,7 @@
 package absnfs
 
 import (
+	"encoding/binary"
 	"io"
 	"runtime"
 	"strings"
@@ -108,5 +109,22 @@ func (h *NFSProcedureHandler) handleNFSCall(call *RPCCall, body io.Reader, reply
 		return reply, nil
 	}
 
-	return handler(h, body, reply, authCtx)
+	result, err := handler(h, body, reply, authCtx)
+	h.countStale(result)
+	return result, err
+}
+
+// countStale counts an NFS3ERR_STALE reply in the StaleHandles metric. Every
+// NFSv3 result starts with its status, and handlers answer STALE from
+// several places (handle resolution, a vanished object), so the reply is
+// where every one of them is seen.
+func (h *NFSProcedureHandler) countStale(reply *RPCReply) {
+	m := h.server.handler.metrics
+	if m == nil {
+		return
+	}
+	data, ok := reply.Data.([]byte)
+	if ok && len(data) >= 4 && binary.BigEndian.Uint32(data) == NFSERR_STALE {
+		m.RecordError("STALE")
+	}
 }

@@ -45,6 +45,9 @@ type PolicyOptions struct {
     EnableRateLimiting bool
     RateLimitConfig    *RateLimiterConfig
     TLS                *TLSConfig
+
+    AllowAnySymlinkTarget bool
+    AllowedUIDs           []uint32
 }
 ```
 

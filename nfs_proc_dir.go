@@ -11,7 +11,6 @@ import (
 	"cmp"
 	"encoding/binary"
 	"io"
-	"os"
 	"path"
 	"slices"
 )
@@ -99,15 +98,7 @@ func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, aut
 		return nfsErrorWithPostOp(reply, st), nil
 	}
 
-	// R4: Copy attrs under RLock for dir check
-	dir.mu.RLock()
-	dirMode := dir.attrs.Mode
-	dir.mu.RUnlock()
-
-	if dirMode&os.ModeDir == 0 {
-		return nfsErrorWithPostOp(reply, NFSERR_NOTDIR), nil
-	}
-
+	// ReadDir answers NFS3ERR_NOTDIR unless dir is a directory now.
 	// R22: Return NFS error instead of nil,err
 	entries, err := h.server.handler.ReadDir(dir)
 	if err != nil {
@@ -206,15 +197,7 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 		return nfsErrorWithPostOp(reply, st), nil
 	}
 
-	// R4: Copy attrs under RLock for dir check
-	dir.mu.RLock()
-	dirMode := dir.attrs.Mode
-	dir.mu.RUnlock()
-
-	if dirMode&os.ModeDir == 0 {
-		return nfsErrorWithPostOp(reply, NFSERR_NOTDIR), nil
-	}
-
+	// ReadDir answers NFS3ERR_NOTDIR unless dir is a directory now.
 	// R22: Return NFS error instead of nil,err
 	entries, err := h.server.handler.ReadDirPlus(dir)
 	if err != nil {

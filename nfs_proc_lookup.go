@@ -34,16 +34,19 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithPostOp(reply, st), nil
 	}
 
-	node.mu.RLock()
-	isDir := node.attrs.Mode&os.ModeDir != 0
-	node.mu.RUnlock()
-
-	if !isDir {
-		nodeAttrsCopy := h.currentAttrs(node)
+	// The directory as it is now, not as it was when its handle was
+	// issued: one replaced by a symbolic link must not be looked through.
+	// One that is gone reports the attributes the handle last had.
+	dirAttrs, err := h.server.handler.freshAttrs(node)
+	status := uint32(NFSERR_NOTDIR)
+	if err != nil {
+		status, dirAttrs = mapError(err), h.currentAttrs(node)
+	}
+	if err != nil || !dirAttrs.Mode.IsDir() {
 		var buf bytes.Buffer
-		xdrEncodeUint32(&buf, NFSERR_NOTDIR)
+		xdrEncodeUint32(&buf, status)
 		xdrEncodeUint32(&buf, 1)
-		if err := encodeFileAttributes(&buf, &nodeAttrsCopy); err != nil {
+		if err := encodeFileAttributes(&buf, dirAttrs); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 		}
 		reply.Data = buf.Bytes()
@@ -60,11 +63,10 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 		if h.server.options.Debug {
 			h.server.logger.Printf("LOOKUP: '%s' not found: %v", lookupPath, err)
 		}
-		nodeAttrsCopy := h.currentAttrs(node)
 		var buf bytes.Buffer
 		xdrEncodeUint32(&buf, mapError(err))
 		xdrEncodeUint32(&buf, 1)
-		if err := encodeFileAttributes(&buf, &nodeAttrsCopy); err != nil {
+		if err := encodeFileAttributes(&buf, dirAttrs); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 		}
 		reply.Data = buf.Bytes()
@@ -80,7 +82,6 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 	lookupNode.mu.RLock()
 	lookupAttrsCopy := *lookupNode.attrs
 	lookupNode.mu.RUnlock()
-	nodeAttrsCopy := h.currentAttrs(node)
 
 	var buf bytes.Buffer
 	xdrEncodeUint32(&buf, NFS_OK)
@@ -90,7 +91,7 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 	}
 	xdrEncodeUint32(&buf, 1)
-	if err := encodeFileAttributes(&buf, &nodeAttrsCopy); err != nil {
+	if err := encodeFileAttributes(&buf, dirAttrs); err != nil {
 		return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 	}
 	reply.Data = buf.Bytes()
@@ -100,13 +101,14 @@ func (h *NFSProcedureHandler) handleLookup(body io.Reader, reply *RPCReply, auth
 // currentAttrs returns the attributes to report for node, as GETATTR would
 // (from the attribute cache within its TTL), or the snapshot the handle
 // holds when they cannot be read, as when the object is gone.
-func (h *NFSProcedureHandler) currentAttrs(node *NFSNode) NFSAttrs {
+func (h *NFSProcedureHandler) currentAttrs(node *NFSNode) *NFSAttrs {
 	if current, err := h.server.handler.GetAttr(node); err == nil {
-		return *current
+		return current
 	}
 	node.mu.RLock()
 	defer node.mu.RUnlock()
-	return *node.attrs
+	attrs := *node.attrs
+	return &attrs
 }
 
 // handleReadlink handles NFSPROC3_READLINK - read symbolic link
@@ -121,11 +123,12 @@ func (h *NFSProcedureHandler) handleReadlink(body io.Reader, reply *RPCReply, au
 		return nfsErrorWithPostOp(reply, st), nil
 	}
 
-	node.mu.RLock()
-	isSymlink := node.attrs.Mode&os.ModeSymlink != 0
-	node.mu.RUnlock()
-
-	if !isSymlink {
+	// Whether it is a symbolic link now, not when its handle was issued.
+	current, err := h.server.handler.freshAttrs(node)
+	if err != nil {
+		return nfsErrorWithPostOp(reply, mapError(err)), nil
+	}
+	if current.Mode&os.ModeSymlink == 0 {
 		return nfsErrorWithPostOp(reply, NFSERR_INVAL), nil
 	}
 

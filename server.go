@@ -26,16 +26,21 @@ import (
 
 // ServerOptions defines the configuration for the NFS server
 type ServerOptions struct {
-	Name             string // Server name
-	UID              uint32 // Server UID
-	GID              uint32 // Server GID
-	ReadOnly         bool   // Read-only mode
-	Port             int    // Port to listen on (0 = random port, default NFS port is 2049)
-	MountPort        int    // Port for mount daemon (0 = same as NFS port, 635 = standard mountd port)
-	Hostname         string // Hostname to bind to
-	Debug            bool   // Enable debug logging
-	UsePortmapper    bool   // Whether to start portmapper service (requires root for port 111)
-	UseRecordMarking bool   // Use RPC record marking (required for standard NFS clients)
+	Name      string // Server name
+	UID       uint32 // Server UID
+	GID       uint32 // Server GID
+	ReadOnly  bool   // Read-only mode
+	Port      int    // Port to listen on (0 = random port, default NFS port is 2049)
+	MountPort int    // Port for mount daemon (0 = same as NFS port, 635 = standard mountd port)
+	// Hostname is the address to bind to; empty means "localhost". A
+	// loopback address keeps other machines out but not other local
+	// users: any of them can connect and, AUTH_SYS uids being the
+	// client's claim, act as any uid. Prefer "127.0.0.1", and see
+	// ExportOptions.AllowedUIDs and the README's Security section.
+	Hostname         string
+	Debug            bool // Enable debug logging
+	UsePortmapper    bool // Whether to start portmapper service (requires root for port 111)
+	UseRecordMarking bool // Use RPC record marking (required for standard NFS clients)
 }
 
 // connectionState tracks the state of an active connection

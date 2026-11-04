@@ -38,6 +38,18 @@ The credential body is parsed into `AuthSysCredential`:
 - Up to 16 auxiliary GIDs (enforced limit prevents DoS)
 
 The parsed UID/GID are used as the effective identity, subject to squashing.
+They are the client's claim: any process that can connect can send any uid,
+so on a loopback bind every local user can act as any uid (see the security
+guide).
+
+### AllowedUIDs
+
+When `PolicyOptions.AllowedUIDs` is not empty, `ValidateAuthentication`
+refuses AUTH_SYS credentials whose uid (before squashing) is not listed, and
+every AUTH_NONE credential. `HandleCall` applies it to NFS procedures other
+than NULL: the MOUNT protocol and NULL reach no file, and macOS `mount_nfs`
+sends MNT as uid 0. It limits accidents and casual misuse, not a client that
+forges its credential.
 
 ### Unsupported Flavors
 
@@ -122,12 +134,45 @@ Applied when constructing full paths from directory + name:
 
 ### Symlink Target Validation
 
-The SYMLINK handler rejects:
+Unless `AllowAnySymlinkTarget` is set, the SYMLINK handler rejects:
 - Absolute symlink targets (paths starting with `/`).
 - Targets containing `..` components.
 
-The READLINK handler additionally validates returned targets, rejecting relative
-paths with `..` components.
+READLINK returns targets as stored: the client resolves them itself.
+
+### Type Decisions From the Object as It Is Now
+
+A handle's node carries the attributes it was issued with, and the attribute
+cache keeps attributes for `AttrCacheTimeout`; neither sees an object
+replaced behind the server's back. A directory replaced by a symbolic link
+would then be used as a directory, and a host-backed filesystem would follow
+the link out of the export. So every type decision that gates an operation
+on a path is made from a fresh `Lstat` (`freshAttrs`, `requireDir`,
+`requireRegular` in operations.go):
+
+| Procedure                                                       | Requires          | Otherwise                                |
+| --------------------------------------------------------------- | ----------------- | ---------------------------------------- |
+| LOOKUP, READDIR, READDIRPLUS, CREATE, MKDIR, SYMLINK, REMOVE, RMDIR, RENAME (both) | a directory | `NFS3ERR_NOTDIR`                         |
+| READ, WRITE                                                     | a regular file    | `NFS3ERR_ISDIR` for a directory, else `NFS3ERR_INVAL` |
+| SETATTR size                                                    | a regular file    | `NFS3ERR_ISDIR` for a directory, else `NFS3ERR_INVAL` |
+| READLINK                                                        | a symbolic link   | `NFS3ERR_INVAL`                          |
+
+LINK and MKNOD are not supported (`NFS3ERR_NOTSUPP`) and touch nothing. A
+handle that has left the cache is resolved by path and is stale if the
+object there is of another type.
+
+SETATTR on a symbolic link applies only its owner, with `Lchown`. Its mode,
+size and times are refused with `NFS3ERR_INVAL` before anything changes:
+absfs's `Chmod`, `Truncate` and `Chtimes` follow the link on a host. (Linux
+knfsd ignores a mode on a link and sets times on the link itself; absnfs4
+refuses all three with `NFS4ERR_INVAL`.)
+
+Residual gaps, with other local processes changing the exported directory:
+the check and the operation are separate calls, so a swap in between is not
+caught; and only the final component is checked, so a handle for an object
+below a directory later replaced by a link is resolved through the link.
+Closing either needs a backend that refuses to follow links itself (openat
+with `O_NOFOLLOW` per component).
 
 ## XDR Input Bounds
 

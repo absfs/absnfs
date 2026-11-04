@@ -1,7 +1,87 @@
 # Security
 
 absnfs provides several layers of access control: IP filtering, privileged port
-enforcement, read-only mode, user ID squashing, rate limiting, and TLS encryption.
+enforcement, read-only mode, user ID squashing, a uid allow list, rate limiting,
+and TLS encryption.
+
+## Who Can Use an Export
+
+Read this first. `Export` and `NewServer` bind `localhost` unless told
+otherwise (`ServerOptions.Hostname`). That keeps other machines out, but
+every account on the machine can connect to the port and speak NFS.
+
+NFSv3 identifies callers with AUTH_SYS: the client puts a uid and gids in
+each request and the server believes them. absnfs does too, like every
+NFSv3 server without Kerberos. A local user who writes their own RPC
+requests (or runs any NFS client library) can therefore claim to be the user
+running the server, or root, and read and write whatever the server process
+can reach through the export. On a machine shared with other users, a
+running export gives all of them the server's access to it.
+
+Limit it with:
+
+1. **Bind to `127.0.0.1`**, not a name or an external address, and list
+   remote clients in `AllowedIPs`. These limit machines, not users.
+2. **`AllowedUIDs`** (below), so that only requests carrying the expected
+   uids are served. It limits accidents and casual misuse, not a hostile
+   local user, because the uid is still the client's claim.
+3. **TLS with client certificates**, the only option that proves who the
+   client is (see the [TLS guide](tls.md)).
+4. **`Squash: "all"`** or **`ReadOnly`** where clients need less.
+
+## Limiting UIDs
+
+`AllowedUIDs` serves only AUTH_SYS requests whose credential carries one of
+the listed uids, as sent by the client (before squashing). Requests with
+another uid, and every AUTH_NONE request, are refused with `AUTH_ERROR`
+(`AUTH_BADCRED`) and counted in `AuthFailures`. Empty (the default) means any
+uid.
+
+```go
+nfs, err := absnfs.New(fs, absnfs.ExportOptions{
+	// Serve only the user running the server.
+	AllowedUIDs: []uint32{uint32(os.Getuid())},
+})
+```
+
+The NFS NULL procedure and the MOUNT protocol are answered for any uid: they
+reach no file (MNT hands out the root handle, which is of no use without NFS
+requests), and macOS `mount_nfs` sends MNT as uid 0 because it runs setuid
+root. `AllowedUIDs` is a policy option: `UpdateExportOptions` can change it.
+
+What it is for: another account on the machine mounting your export as
+itself, a client mounted by the wrong user, a script running as root by
+mistake. What it is not: AUTH_SYS credentials are not authenticated, so a
+user who crafts RPC requests can put an allowed uid in them. Use TLS client
+certificates where clients must be proven.
+
+## Exports of a Host Directory
+
+When the exported filesystem is a host directory (osfs, or basefs over
+osfs), the host follows symbolic links whenever the server opens a path.
+absnfs keeps clients inside the export:
+
+- SYMLINK refuses absolute targets and targets with `..` components unless
+  `AllowAnySymlinkTarget` is set.
+- SETATTR on a symbolic link sets only its owner, with `Lchown`. Its mode,
+  size and times are refused with `NFS3ERR_INVAL` (`chmod -h` and `touch -h`
+  report "Invalid argument" on macOS): absfs can set them only through the
+  link, which would change its target.
+- Every decision on an object's type that gates an operation is made from
+  the object as it is now (a fresh `Lstat`), never from the attributes its
+  handle was issued with or the attribute cache. A directory replaced by a
+  symbolic link behind the server's back answers `NFS3ERR_NOTDIR` to LOOKUP,
+  READDIR, READDIRPLUS, CREATE, MKDIR, SYMLINK, REMOVE, RMDIR and RENAME; a
+  file replaced by one answers `NFS3ERR_INVAL` to READ, WRITE and SETATTR;
+  READLINK answers `NFS3ERR_INVAL` for an object that is no longer a link.
+
+Two gaps remain when other local processes can change the exported
+directory. A handle for an object below a directory that is later replaced
+by a link is resolved by its path, which the host follows through the link:
+a client holding the handle of `dir/file` reaches the file of that name
+where the new link leads. And a swap in the instant between a check and the
+operation it gates is not caught. Do not let untrusted local users write to
+an exported host directory.
 
 ## IP Filtering
 
@@ -112,6 +192,7 @@ nfs, err := absnfs.New(fs, absnfs.ExportOptions{
 	Secure:     true,
 	Squash:     "root",
 	AllowedIPs: []string{"192.168.1.0/24"},
+	AllowedUIDs: []uint32{1000, 1001},
 	TLS: &absnfs.TLSConfig{
 		Enabled:    true,
 		CertFile:   "/etc/nfs/server.crt",

@@ -565,7 +565,10 @@ func TestLookupInVanishedDirectory(t *testing.T) {
 }
 
 // TestCacheSavesBackendStats counts the backend stats a client's usual
-// revalidation traffic (GETATTR, ACCESS, LOOKUP) costs.
+// revalidation traffic (GETATTR, ACCESS, LOOKUP) costs. GETATTR, ACCESS
+// and the looked-up name are served from the cache; LOOKUP stats its
+// directory every time, because whether it is still a directory (not a
+// link swapped in for one) is never decided from cached attributes.
 func TestCacheSavesBackendStats(t *testing.T) {
 	e := newCacheEnv(t, ExportOptions{AttrCacheTimeout: time.Minute})
 	e.writeFile("/f", "hello")
@@ -593,8 +596,8 @@ func TestCacheSavesBackendStats(t *testing.T) {
 	}
 	calls := e.fs.lstats.Load() + e.fs.stats.Load() - before
 	t.Logf("%d GETATTR+ACCESS+LOOKUP rounds within the TTL: %d backend stat calls", rounds, calls)
-	if calls > 2 {
-		t.Errorf("%d rounds made %d backend stat calls, want at most one per object (2)", rounds, calls)
+	if calls > rounds+2 {
+		t.Errorf("%d rounds made %d backend stat calls, want at most one per LOOKUP's directory and one per object (%d)", rounds, calls, rounds+2)
 	}
 }
 

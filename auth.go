@@ -60,6 +60,11 @@ func ValidateAuthentication(ctx *AuthContext, policy *PolicyOptions) *AuthResult
 	// Step 3: Validate credential flavor
 	switch ctx.Credential.Flavor {
 	case AUTH_NONE:
+		// An AUTH_NONE request carries no uid to check against AllowedUIDs.
+		if len(policy.AllowedUIDs) > 0 {
+			result.Reason = "AUTH_NONE refused: AllowedUIDs requires AUTH_SYS"
+			return result
+		}
 		// AUTH_NONE is intentionally accepted per standard NFS server behavior.
 		// NFS servers commonly accept AUTH_NONE for public/shared exports where
 		// authentication is not required. The client is mapped to nobody/nobody
@@ -79,6 +84,14 @@ func ValidateAuthentication(ctx *AuthContext, policy *PolicyOptions) *AuthResult
 			ctx.AuthSys = authSys
 		}
 
+		// The uid as the client asserted it, before squashing. This limits
+		// accidents and casual misuse, not a client that forges its
+		// credential (see ExportOptions.AllowedUIDs).
+		if len(policy.AllowedUIDs) > 0 && !uidAllowed(ctx.AuthSys.UID, policy.AllowedUIDs) {
+			result.Reason = fmt.Sprintf("uid %d not in AllowedUIDs", ctx.AuthSys.UID)
+			return result
+		}
+
 		// AUTH_SYS is accepted
 		result.Allowed = true
 		result.UID = ctx.AuthSys.UID
@@ -94,6 +107,16 @@ func ValidateAuthentication(ctx *AuthContext, policy *PolicyOptions) *AuthResult
 	}
 
 	return result
+}
+
+// uidAllowed reports whether uid is one of allowed.
+func uidAllowed(uid uint32, allowed []uint32) bool {
+	for _, a := range allowed {
+		if a == uid {
+			return true
+		}
+	}
+	return false
 }
 
 // applySquashing applies user ID squashing/mapping according to the export options
