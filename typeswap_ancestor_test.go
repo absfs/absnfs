@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -185,5 +186,21 @@ func TestCreateUncheckedOverLinkOrDirectory(t *testing.T) {
 	huge := encodeSattr3(false, 0, false, 0, false, 0, true, 1<<63, 0, 0, 0, 0, 0, 0)
 	if got := s.call(NFSPROC3_CREATE, append(xdrArgs(root, "file", uint32(0)), huge...)); got != NFSERR_INVAL {
 		t.Errorf("UNCHECKED CREATE with a size beyond int64: status %d, want NFS3ERR_INVAL", got)
+	}
+}
+
+// TestCreateOverDirectoryWithoutEEXIST: a backend that refuses O_EXCL on a
+// directory with another error than EEXIST (Windows answers "is a
+// directory" or "access denied") still gets NFS3ERR_EXIST for every create
+// mode: the name exists.
+func TestCreateOverDirectoryWithoutEEXIST(t *testing.T) {
+	e := newFaEnv(t, ExportOptions{})
+	root := e.handle(t, "/")
+	e.nfs.fs = &faHookFS{SymlinkFileSystem: e.fs, openErr: map[string]error{"/dir": syscall.EISDIR}}
+	for _, how := range []uint32{0, 1} {
+		body := faDirOp(root, "dir", faU32(how), faNoSattr)
+		if st := faCall(t, e, wrap(e.handler.handleCreate), body); st != NFSERR_EXIST {
+			t.Errorf("CREATE mode %d over a directory: status %d, want NFS3ERR_EXIST", how, st)
+		}
 	}
 }

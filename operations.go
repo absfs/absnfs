@@ -771,6 +771,13 @@ func (s *AbsfsNFS) createWithContext(ctx context.Context, dir *NFSNode, name str
 // Linux knfsd answers UNCHECKED on a name that is not a regular file.
 func (s *AbsfsNFS) createFile(path string, attrs *NFSAttrs, how createHow) error {
 	f, err := s.fs.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, attrs.Mode&os.ModePerm)
+	if err != nil && !errors.Is(err, os.ErrExist) {
+		// Windows refuses O_EXCL on a directory with "is a directory"
+		// or "access denied", not EEXIST: an object that is there exists.
+		if info, lerr := s.fs.Lstat(path); lerr == nil && !info.Mode().IsRegular() {
+			err = fmt.Errorf("%s exists (%v): %w", path, err, os.ErrExist)
+		}
+	}
 	if err != nil && !how.exclusive && errors.Is(err, os.ErrExist) {
 		return s.createExisting(path, how.size)
 	}
