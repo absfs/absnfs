@@ -438,12 +438,20 @@ func TestHandleGenerationAcrossRestarts(t *testing.T) {
 	cfs := &ioCountingFS{SymlinkFileSystem: newMemFS(t)}
 	mustMkdir(t, cfs, "/w1")
 	writeFile(t, cfs, "/w1/x", 10)
+	// A name too long for an inline handle: its handle is a tail handle,
+	// which resolves by a directory walk before its tag is checked.
+	long := "w1/" + strings.Repeat("Q7#zK9!vX2@pW4$", 6)
+	writeFile(t, cfs, "/"+long, 30)
 	r := &restartEnv{t: t, fs: cfs, dir: filepath.Join(t.TempDir(), "state")}
 	keyPath, genPath := filepath.Join(r.dir, handleKeyFile), filepath.Join(r.dir, handleGenFile)
 
 	e := r.start(ExportOptions{HandleGeneration: "A"})
 	root := e.mount("/")
 	x := e.walk(root, "w1/x")
+	tail := e.walk(root, long)
+	if ph, ok := parseHandle(tail); !ok || ph.kind != fhKindTail {
+		t.Fatalf("the handle of %s is not a tail handle", long)
+	}
 	e.nfs.Close()
 	if g, err := os.ReadFile(genPath); err != nil || string(g) != "A" {
 		t.Fatalf("handle.gen %q, %v; want \"A\"", g, err)
@@ -452,6 +460,7 @@ func TestHandleGenerationAcrossRestarts(t *testing.T) {
 
 	e = r.start(ExportOptions{HandleGeneration: "A"})
 	e.size(x, 10, "a handle after a restart with the same generation")
+	e.size(tail, 30, "a tail handle after a restart with the same generation")
 	if again := e.mount("/"); !bytes.Equal(again, root) {
 		t.Error("the root's handle changed across a restart with the same generation")
 	}
@@ -463,6 +472,7 @@ func TestHandleGenerationAcrossRestarts(t *testing.T) {
 	// The namespace is rebuilt while the server is down: /w1/x is another
 	// object now.
 	writeFile(t, cfs, "/w1/x", 20)
+	writeFile(t, cfs, "/"+long, 40)
 	e = r.start(ExportOptions{HandleGeneration: "B"})
 	before := cfs.calls.Load()
 	e.stale(x, "a handle from generation A under B")
@@ -470,6 +480,14 @@ func TestHandleGenerationAcrossRestarts(t *testing.T) {
 	if n := cfs.calls.Load() - before; n != 0 {
 		t.Errorf("handles from another generation cost %d filesystem calls", n)
 	}
+	// A tail handle costs at most its capped walk (every listing is an
+	// Open, with a few stats) before its tag fails.
+	before = cfs.calls.Load()
+	e.stale(tail, "a tail handle from generation A under B")
+	if n, limit := cfs.calls.Load()-before, int64(3*tailMaxListings); n > limit {
+		t.Errorf("a tail handle from another generation cost %d filesystem calls, want at most %d", n, limit)
+	}
+	e.size(e.walk(e.mount("/"), long), 40, "a tail handle issued under B")
 	if again := e.mount("/"); bytes.Equal(again, root) {
 		t.Error("the root's handle is the same under a new generation")
 	}
@@ -481,6 +499,7 @@ func TestHandleGenerationAcrossRestarts(t *testing.T) {
 
 	e = r.start(ExportOptions{HandleGeneration: "A"})
 	e.stale(x, "a handle from generation A after B, then A again")
+	e.stale(tail, "a tail handle from generation A after B, then A again")
 	e.nfs.Close()
 
 	// The empty generation leaves no handle.gen, as before generations.

@@ -26,13 +26,19 @@ takes effect atomically.
 
 ### Policy Fields
 
-`ReadOnly`, `Secure`, `AllowedIPs`, `AllowedUIDs`, `Squash` (immutable after
-creation), `MaxFileSize`, `EnableRateLimiting`, `RateLimitConfig`, `TLS`,
+`ReadOnly`, `Secure`, `AllowedIPs`, `AllowedUIDs`, `Squash` (fixed at `New`),
+`MaxFileSize`, `EnableRateLimiting`, `RateLimitConfig`, `TLS`,
 `AllowAnySymlinkTarget`.
 
-### Immutable Fields
+### Fixed at New
 
-`Squash` cannot be changed at runtime. Attempting to change it returns an error.
+`Squash`, `DefaultOwner`, `ForceOwner`, `HandleStateDir` and `HandleGeneration`
+are fixed when the server is created by `New`. `UpdateExportOptions` returns an
+error, and applies nothing, if any of them differs from the current value;
+changing one requires a restart. An empty `Squash`, `HandleStateDir` or
+`HandleGeneration` and a nil `DefaultOwner` mean "unchanged", so the result of
+`GetExportOptions` can always be passed back. `ForceOwner` is a plain bool and
+must match.
 
 ## UpdateExportOptions (Simple Path)
 
