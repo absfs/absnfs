@@ -460,6 +460,7 @@ func TestMacOSWriterHelper(t *testing.T) {
 }
 
 func TestMacOSUndescribedEntry(t *testing.T) {
+	requireFaultInjectionVM(t)
 	if os.Getenv(macOSMountEnv) != "1" {
 		t.Skipf("set %s=1 on macOS to run the mount test", macOSMountEnv)
 	}

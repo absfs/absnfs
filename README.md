@@ -416,6 +416,24 @@ directory with `soft` options, and unmount before stopping their server on
 every path. The
 older `integration` build tag tests use `sudo` and `/Volumes`.
 
+### Fault-injection tests: in a disposable macOS VM only
+
+**Never run these on a development machine.** On 2026-11-09 at 16:52, a
+fault-injection mount test panicked the macOS kernel ("corrupt list around
+element" in `com.apple.filesystems.nfs`, in the `umount` after a case that
+failed WRITEs) and restarted the machine.
+
+Here the only such test is `TestMacOSUndescribedEntry`, whose backend fails
+Lstat with EIO. It skips unless both of these hold (`requireFaultInjectionVM`,
+which fails closed):
+
+- `ABSNFS_FAULT_INJECTION_VM=1` is set.
+- The machine is a macOS virtual machine: `kern.hv_vmm_present` is 1, and
+  `hw.model` is `VirtualMac…` and not `Mac15,9`.
+
+Run it only in a VM approved for it, with `ABSNFS_MACOS_MOUNT=1` and
+`-timeout 0`.
+
 ## License
 
 Apache License, Version 2.0 -- see [LICENSE](LICENSE).
