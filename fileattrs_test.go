@@ -141,7 +141,8 @@ type faEntry struct {
 	FileId uint64
 	Name   string
 	Cookie uint64
-	Attr   *faFattr
+	Attr   *faFattr // READDIRPLUS: nil when sent without attributes
+	Handle []byte   // READDIRPLUS: nil when sent without a handle
 }
 
 func (f *faReader) entries(plus bool) []faEntry {
@@ -149,10 +150,12 @@ func (f *faReader) entries(plus bool) []faEntry {
 	for f.u32() == 1 {
 		e := faEntry{FileId: f.u64(), Name: f.str(), Cookie: f.u64()}
 		if plus {
-			a := f.postOpAttr()
-			e.Attr = &a
 			if f.u32() == 1 {
-				f.fh()
+				a := f.fattr()
+				e.Attr = &a
+			}
+			if f.u32() == 1 {
+				e.Handle = f.fh()
 			}
 		}
 		out = append(out, e)

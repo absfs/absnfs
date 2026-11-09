@@ -35,6 +35,7 @@ type ExportOptions struct {
     SendBufferSize       int
     ReceiveBufferSize    int
     MaxHandles           int
+    WriteVerifier        [8]byte
 
     // Logging and Timeouts
     Log      *LogConfig
@@ -132,6 +133,41 @@ process, another server over the same files) are seen once the relevant
 timeout has passed: `AttrCacheTimeout` for attributes, `NegativeCacheTimeout`
 for a name that did not exist, `DirCacheTimeout` for listings. A changed
 timeout applies to entries already cached.
+
+## Write Durability Fields
+
+| Field           | Type      | Default                   | Description                                                              |
+| --------------- | --------- | ------------------------- | ------------------------------------------------------------------------ |
+| `WriteVerifier` | `[8]byte` | random at `New` (if zero) | The write verifier WRITE and COMMIT replies carry; changeable at runtime |
+
+WRITE replies `UNSTABLE` to a client that asks for UNSTABLE, and syncs the
+file (`File.Sync`) before replying `FILE_SYNC` to one that asks for
+`FILE_SYNC` or `DATA_SYNC`. COMMIT calls `File.Sync` and answers its
+error, never `NFS3_OK`, when it fails. The data of UNSTABLE WRITEs goes to
+one file the server holds open for the path across WRITEs and READs (closed
+after 5 seconds idle, when more than 64 are open, before the server removes
+or renames the path, and at `Unexport` and `Close`), so a backend sees one
+open and one close per burst of writes, and `Sync` on the file it wrote. A
+backend whose `Sync` does nothing still works; its data is then as durable
+as its `Close` makes it.
+
+A client keeps the data of its UNSTABLE WRITEs until a COMMIT returns the
+verifier those WRITEs returned; **when the verifier has changed, it sends
+that data again.** The verifier must therefore change whenever data
+written UNSTABLE but not yet committed may have been lost:
+
+- The default, a random verifier per server instance, covers a restart.
+- An owner that discards uncommitted data while the server runs (garbage
+  collection of a backend's unsynced writes) sets a new verifier with
+  `UpdateExportOptions` or `UpdateTuningOptions` first, then discards
+  only data written before the change. A WRITE reads the verifier before
+  writing and a COMMIT after syncing, so this order never lets a COMMIT
+  vouch for discarded data.
+- The server sets a new one itself when a `Sync` fails, or the `Close` of a
+  file written since its last `Sync` fails, as Linux knfsd does.
+
+Reuse a value across restarts only when every byte written under it
+survives them. Zero in an update means unchanged.
 
 ## File Handle Fields
 

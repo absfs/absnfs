@@ -44,3 +44,10 @@ const (
 	ACCESS3_DELETE  = 0x0010
 	ACCESS3_EXECUTE = 0x0020
 )
+
+// stable_how (RFC 1813, Section 3.3.7)
+const (
+	stableUnstable = 0
+	stableDataSync = 1
+	stableFileSync = 2
+)

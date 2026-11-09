@@ -452,17 +452,23 @@ func TestDirCookie(t *testing.T) {
 	nodes := []*NFSNode{
 		{path: "/d/b", attrs: &NFSAttrs{}},
 		{path: "/d/none"},
-		{path: "/d/a", attrs: &NFSAttrs{}},
+		{path: "/d/a", attrs: &NFSAttrs{FileId: 7}},
 	}
 	all := entriesAfter(nodes, 0)
-	if len(all) != 2 {
-		t.Fatalf("entriesAfter returned %d entries, want 2 (nil attrs skipped)", len(all))
+	if len(all) != 3 {
+		t.Fatalf("entriesAfter returned %d entries, want 3 (nil attrs kept)", len(all))
 	}
-	if all[0].cookie > all[1].cookie {
-		t.Error("entries not in cookie order")
+	want := map[string]uint64{"b": 0, "none": fileID("/d/none"), "a": 7}
+	for i, e := range all {
+		if i > 0 && all[i-1].cookie > e.cookie {
+			t.Error("entries not in cookie order")
+		}
+		if e.described == (e.name == "none") || e.fileid != want[e.name] {
+			t.Errorf("entry %s: described %v, fileid %d, want fileid %d", e.name, e.described, e.fileid, want[e.name])
+		}
 	}
 	rest := entriesAfter(nodes, all[0].cookie)
-	if len(rest) != 1 || rest[0].name != all[1].name {
+	if len(rest) != 2 || rest[0].name != all[1].name {
 		t.Errorf("entriesAfter(first cookie) = %v", rest)
 	}
 }

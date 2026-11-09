@@ -29,7 +29,7 @@ type Server struct {
 }
 ```
 
-Holds the listener, handler reference, connection state, and shutdown coordination. The server generates a unique write verifier per boot as required by RFC 1813.
+Holds the listener, handler reference, connection state, and shutdown coordination. WRITE and COMMIT replies carry the handler's write verifier, `ExportOptions.WriteVerifier` (random per `AbsfsNFS` by default).
 
 ## Functions
 

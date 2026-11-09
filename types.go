@@ -91,6 +91,10 @@ type AbsfsNFS struct {
 	// ownerWriteMu serializes owner-override opens (see openForOwnerWrite).
 	ownerWriteMu sync.Mutex
 
+	// files holds the backend files READ, WRITE and COMMIT use open
+	// between requests (see openfiles.go).
+	files *openFiles
+
 	// Options are stored as immutable snapshots behind atomic pointers.
 	// Readers load the pointer -- no lock needed.
 	tuning atomic.Pointer[TuningOptions]

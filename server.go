@@ -12,7 +12,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -61,7 +60,6 @@ type Server struct {
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	acceptErrs    atomic.Int32 // Counter for accept errors to prevent excessive logging
-	writeVerf     [8]byte      // Write verifier unique per server boot (RFC 1813)
 
 	// Connection management
 	connMutex   sync.Mutex
@@ -89,8 +87,6 @@ func NewServer(options ServerOptions) (*Server, error) {
 		cancel:      cancel,
 		activeConns: make(map[net.Conn]*connectionState),
 	}
-	// Initialize write verifier unique to this server boot (RFC 1813)
-	binary.BigEndian.PutUint64(s.writeVerf[:], uint64(time.Now().UnixNano()))
 	return s, nil
 }
 

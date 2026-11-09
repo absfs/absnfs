@@ -12,8 +12,13 @@ package absnfs
 //
 // Safety: it refuses to run as root, mounts only into a directory it creates
 // under a fresh temporary directory, always uses a soft mount with short
-// timeouts, and unmounts (umount, umount -f, diskutil unmount force) before
-// stopping the server on every exit path.
+// timeouts, bounds every command it runs on the mount, and unmounts before
+// stopping the server on every exit path. A mount that does not unmount
+// after one umount is reported, not retried, and its server keeps serving
+// it until it is gone (see serveUntilUnmounted): a mount whose server has
+// stopped hangs its clients, and has wedged the kernel for hours. Run the
+// tests with -timeout 0 so the test binary is not killed under such a
+// mount; every command on the mount has its own bound.
 
 import (
 	"bytes"
@@ -170,12 +175,11 @@ func runMacOSMount(t *testing.T, backend, extraOpts string, viaExport bool, expo
 	// server stops: a server gone under a live mount hangs its clients.
 	mounted := false
 	defer func() {
+		if mounted {
+			serveUntilUnmounted(t, mnt)
+		}
 		srv.Stop()
 		nfs.Close()
-		if mounted {
-			t.Errorf("left %s mounted; not removing %s", mnt, scratch)
-			return
-		}
 		os.RemoveAll(scratch)
 	}()
 
@@ -579,34 +583,43 @@ func runWithTimeout(d time.Duration, dir string, env []string, name string, args
 	return cmd.CombinedOutput()
 }
 
-// isMountedAt reports whether mount(8) lists something mounted on dir.
+// isMountedAt reports whether mount(8) lists something mounted on dir. When
+// mount(8) cannot be run it answers true: an unknown mount is treated as
+// live, so its server is not stopped under it.
 func isMountedAt(dir string) bool {
 	out, err := runWithTimeout(10*time.Second, "", nil, "/sbin/mount")
 	if err != nil {
-		return false
+		return true
 	}
 	return strings.Contains(string(out), " on "+dir+" (")
 }
 
-// unmountMacOS unmounts dir as the current user, escalating from umount to
-// umount -f to diskutil unmount force.
+// unmountMacOS unmounts dir as the current user with one umount (bounded).
+// A mount that is still there afterwards is reported, not retried: forcing
+// it while clients wait on it has wedged the kernel.
 func unmountMacOS(dir string) error {
-	attempts := [][]string{
-		{"/sbin/umount", dir},
-		{"/sbin/umount", "-f", dir},
-		{"/usr/sbin/diskutil", "unmount", "force", dir},
+	if !isMountedAt(dir) {
+		return nil
 	}
-	var last []byte
-	for _, a := range attempts {
-		if !isMountedAt(dir) {
-			return nil
-		}
-		last, _ = runWithTimeout(30*time.Second, "", nil, a[0], a[1:]...)
-	}
+	out, err := runWithTimeout(30*time.Second, "", nil, "/sbin/umount", dir)
 	if isMountedAt(dir) {
-		return fmt.Errorf("still mounted: %s", last)
+		return fmt.Errorf("still mounted after umount (%v): %s", err, out)
 	}
 	return nil
+}
+
+// serveUntilUnmounted is what a test does with a mount that would not
+// unmount: it reports the mount and returns only once mount(8) no longer
+// lists it, so the caller keeps the server running until then. It never
+// unmounts anything itself.
+func serveUntilUnmounted(t *testing.T, mnt string) {
+	msg := fmt.Sprintf("absnfs: %s would not unmount; the test process (pid %d) keeps serving it until it is unmounted (umount %s)", mnt, os.Getpid(), mnt)
+	t.Error(msg)
+	fmt.Fprintln(os.Stderr, msg)
+	for isMountedAt(mnt) {
+		time.Sleep(10 * time.Second)
+	}
+	fmt.Fprintf(os.Stderr, "absnfs: %s is unmounted; stopping its server\n", mnt)
 }
 
 func readDirNames(t *testing.T, dir string) []string {

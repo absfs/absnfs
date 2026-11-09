@@ -186,14 +186,14 @@ func mountMacOS(t *testing.T, fs absfs.SymlinkFileSystem, exportOpts ExportOptio
 		t.Fatal(err)
 	}
 	mounted := false
-	// Cleanups run last first: this one after the unmount below.
+	// Cleanups run last first: this one after the unmount below. The
+	// server stops only once the mount is gone (see serveUntilUnmounted).
 	t.Cleanup(func() {
+		if mounted {
+			serveUntilUnmounted(t, mnt)
+		}
 		srv.Stop()
 		nfs.Close()
-		if mounted {
-			t.Errorf("left %s mounted; not removing %s", mnt, scratch)
-			return
-		}
 		os.RemoveAll(scratch)
 	})
 

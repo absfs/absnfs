@@ -1113,20 +1113,6 @@ func TestR3_WriteVerifierNonZero(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Ensure writeVerf is initialized (it should be from server creation)
-	allZero := true
-	for _, b := range server.writeVerf {
-		if b != 0 {
-			allZero = false
-			break
-		}
-	}
-
-	// If writeVerf was not initialized (shouldn't happen), initialize it
-	if allZero {
-		binary.BigEndian.PutUint64(server.writeVerf[:], uint64(time.Now().UnixNano()))
-	}
-
 	fileHandle := getFileHandle(server, "/testfile.txt")
 
 	t.Run("WriteVerifier", func(t *testing.T) {
@@ -1396,15 +1382,12 @@ func TestR3_RenameErrorDoubleWccReadOnly(t *testing.T) {
 }
 
 // TestR3_WriteVerifierConsistency verifies that the write verifier from WRITE
-// matches the one from COMMIT (both come from server.writeVerf).
+// matches the one from COMMIT (both are ExportOptions.WriteVerifier).
 func TestR3_WriteVerifierConsistency(t *testing.T) {
 	server, handler, authCtx, err := newTestServerForBugfixes()
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Make sure writeVerf is set
-	binary.BigEndian.PutUint64(server.writeVerf[:], uint64(time.Now().UnixNano()))
 
 	fileHandle := getFileHandle(server, "/testfile.txt")
 

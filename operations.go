@@ -62,16 +62,23 @@ var (
 // swap in the instant between them is not caught; only a backend that
 // refuses to follow links on its own could close that.
 func (s *AbsfsNFS) freshAttrs(node *NFSNode) (*NFSAttrs, error) {
+	_, attrs, err := s.freshInfo(node)
+	return attrs, err
+}
+
+// freshInfo is freshAttrs with the FileInfo the attributes came from.
+func (s *AbsfsNFS) freshInfo(node *NFSNode) (os.FileInfo, *NFSAttrs, error) {
 	if err := s.checkAncestors(node.path); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	gen := s.attrCache.generation()
-	attrs, err := s.statAttrs(node.path)
+	info, err := s.fs.Lstat(node.path)
 	if err != nil {
-		return nil, goneIsStale(node.path, err)
+		return nil, nil, goneIsStale(node.path, fmt.Errorf("failed to stat %s: %w", node.path, err))
 	}
+	attrs := s.attrsFromInfo(node.path, info)
 	s.attrCache.putAt(node.path, attrs, gen)
-	return attrs, nil
+	return info, attrs, nil
 }
 
 // goneIsStale turns the error of a stat of a handle's own object into a
@@ -130,16 +137,23 @@ func (s *AbsfsNFS) requireDir(dir *NFSNode) (*NFSAttrs, error) {
 // answers) for anything else, a symbolic link above all: READ and WRITE
 // open the path, which a host follows.
 func (s *AbsfsNFS) requireRegular(node *NFSNode) error {
-	attrs, err := s.freshAttrs(node)
+	_, err := s.regularInfo(node)
+	return err
+}
+
+// regularInfo is requireRegular returning the file's FileInfo, which a
+// held file is checked against (see openFiles.use).
+func (s *AbsfsNFS) regularInfo(node *NFSNode) (os.FileInfo, error) {
+	info, attrs, err := s.freshInfo(node)
 	switch {
 	case err != nil:
-		return err
+		return nil, err
 	case attrs.Mode.IsDir():
-		return errIsDir
+		return nil, errIsDir
 	case !attrs.Mode.IsRegular():
-		return errNotRegular
+		return nil, errNotRegular
 	}
-	return nil
+	return info, nil
 }
 
 // mapError converts absfs errors to NFS status codes
@@ -469,21 +483,24 @@ func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset in
 		count = int64(tuning.TransferSize)
 	}
 
-	if err := s.requireRegular(node); err != nil {
+	current, err := s.regularInfo(node)
+	if err != nil {
 		return nil, fmt.Errorf("read: %w", err)
 	}
 
-	// Standard read path
-	f, err := s.fs.OpenFile(node.path, os.O_RDONLY, 0)
-	if err != nil {
-		return nil, fmt.Errorf("read: failed to open %s: %w", node.path, err)
-	}
-	defer f.Close()
+	var data []byte
+	err = s.files.use(node.path, accessRead, current, s.openReadable(node.path), func(h *heldFile) error {
+		data, err = readFrom(h.f, node.path, offset, count)
+		return err
+	})
+	return data, err
+}
 
-	// Get file size
+// readFrom reads up to count bytes of f at offset, fewer at its end.
+func readFrom(f absfs.File, p string, offset, count int64) ([]byte, error) {
 	info, err := f.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("read: failed to stat %s: %w", node.path, err)
+		return nil, fmt.Errorf("read: failed to stat %s: %w", p, err)
 	}
 
 	// Adjust count if it would read beyond EOF
@@ -495,14 +512,45 @@ func (s *AbsfsNFS) ReadWithContext(ctx context.Context, node *NFSNode, offset in
 		count = remaining
 	}
 
-	// Read the adjusted amount
 	buf := make([]byte, count)
 	n, err := f.ReadAt(buf, offset)
 	if err != nil && err != io.EOF {
-		return nil, fmt.Errorf("read: failed to read from %s at offset %d: %w", node.path, offset, err)
+		return nil, fmt.Errorf("read: failed to read from %s at offset %d: %w", p, offset, err)
 	}
-
 	return buf[:n], nil
+}
+
+// openReadable opens p for READ.
+func (s *AbsfsNFS) openReadable(p string) openFunc {
+	return func() (absfs.File, fileAccess, error) {
+		f, err := s.fs.OpenFile(p, os.O_RDONLY, 0)
+		if err != nil {
+			return nil, 0, fmt.Errorf("read: failed to open %s: %w", p, err)
+		}
+		return f, accessRead, nil
+	}
+}
+
+// openWritable opens p for WRITE: read-write, so READs can use the file
+// too, else write-only, else, when clientUID owns the file, with the owner
+// override (see openForOwnerWrite).
+func (s *AbsfsNFS) openWritable(p string, clientUID *uint32) openFunc {
+	return func() (absfs.File, fileAccess, error) {
+		f, err := s.fs.OpenFile(p, os.O_RDWR, 0)
+		if err == nil {
+			return f, accessRead | accessWrite, nil
+		}
+		if errors.Is(err, os.ErrPermission) {
+			f, err = s.fs.OpenFile(p, os.O_WRONLY, 0)
+		}
+		if err != nil && clientUID != nil && errors.Is(err, os.ErrPermission) {
+			f, err = s.openForOwnerWrite(p, *clientUID, err)
+		}
+		if err != nil {
+			return nil, 0, fmt.Errorf("write: failed to open %s: %w", p, err)
+		}
+		return f, accessWrite, nil
+	}
 }
 
 func min(a, b int) int {
@@ -517,15 +565,18 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 	return s.WriteWithContext(context.Background(), node, offset, data)
 }
 
-// WriteWithContext implements the WRITE operation with timeout support
+// WriteWithContext implements the WRITE operation with timeout support. The
+// data is written as an UNSTABLE WRITE writes it, to the file the server
+// holds open for the path, and is not synced.
 func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset int64, data []byte) (int64, error) {
-	return s.writeWithContext(ctx, node, offset, data, nil)
+	return s.writeWithContext(ctx, node, offset, data, nil, false)
 }
 
-// writeWithContext writes data at offset. When clientUID is not nil and
-// that user owns the file, it may write even when the file's mode denies
-// writing (see openForOwnerWrite).
-func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset int64, data []byte, clientUID *uint32) (int64, error) {
+// writeWithContext writes data at offset, to the file held for node's path
+// (see openFiles), and when sync is set syncs the file before returning.
+// When clientUID is not nil and that user owns the file, it may write even
+// when the file's mode denies writing (see openForOwnerWrite).
+func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset int64, data []byte, clientUID *uint32, sync bool) (int64, error) {
 	if node == nil {
 		return 0, fmt.Errorf("nil node")
 	}
@@ -581,29 +632,27 @@ func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset i
 		data = data[:tuning.TransferSize]
 	}
 
-	// Forget the cached attributes once the file is written and closed (or
-	// the attempt failed, perhaps after an owner override changed the mode).
+	// Forget the cached attributes once the file is written (or the attempt
+	// failed, perhaps after an owner override changed the mode).
 	defer s.attrCache.Invalidate(node.path)
 
-	if err := s.requireRegular(node); err != nil {
+	current, err := s.regularInfo(node)
+	if err != nil {
 		return 0, fmt.Errorf("write: %w", err)
 	}
 
-	// Standard write path
-	f, err := s.fs.OpenFile(node.path, os.O_WRONLY, 0)
-	if err != nil && clientUID != nil && errors.Is(err, os.ErrPermission) {
-		f, err = s.openForOwnerWrite(node.path, *clientUID, err)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("write: failed to open %s: %w", node.path, err)
-	}
-	defer func() {
-		if closeErr := f.Close(); closeErr != nil && err == nil {
-			err = closeErr
+	var n int
+	err = s.files.use(node.path, accessWrite, current, s.openWritable(node.path, clientUID), func(h *heldFile) error {
+		var err error
+		n, err = h.f.WriteAt(data, offset)
+		if n > 0 {
+			h.dirty = true
 		}
-	}()
-
-	n, err := f.WriteAt(data, offset)
+		if err != nil || !sync {
+			return err
+		}
+		return s.files.sync(h)
+	})
 	if err == nil {
 		// Update modification time explicitly
 		now := time.Now()
@@ -624,6 +673,36 @@ func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset i
 		}
 	}
 	return int64(n), err
+}
+
+// commit implements COMMIT: it syncs the file held for node's path, or
+// opens the file and syncs it when none is held (the file a WRITE used may
+// have been closed since). Sync covers the whole file, as RFC 1813
+// allows. clientUID is as for writeWithContext.
+func (s *AbsfsNFS) commit(node *NFSNode, clientUID *uint32) error {
+	if s.policy.Load().ReadOnly {
+		return os.ErrPermission
+	}
+	current, err := s.regularInfo(node)
+	if err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	writable := s.openWritable(node.path, clientUID)
+	open := func() (absfs.File, fileAccess, error) {
+		f, access, err := writable()
+		if err == nil {
+			return f, access, nil
+		}
+		// A file no one may write can still be synced on most hosts.
+		if f, rerr := s.fs.OpenFile(node.path, os.O_RDONLY, 0); rerr == nil {
+			return f, accessRead, nil
+		}
+		return nil, 0, err
+	}
+	if err := s.files.use(node.path, accessWrite, current, open, s.files.sync); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
 }
 
 // openForOwnerWrite opens a regular file for writing on behalf of its owner
@@ -897,6 +976,8 @@ func (s *AbsfsNFS) RemoveWithContext(ctx context.Context, dir *NFSNode, name str
 	// Handles of path wait while it is removed, then are stale.
 	canon, _ := canonicalPath(path)
 	op := s.fileMap.log.begin(canon)
+	// Windows refuses to remove an open file.
+	s.files.release(path)
 	err = s.fs.Remove(path)
 	s.fileMap.log.commitRemove(op, err == nil, canon)
 	if err != nil {
@@ -980,6 +1061,9 @@ func (s *AbsfsNFS) RenameWithContext(ctx context.Context, oldDir *NFSNode, oldNa
 	src, _ := canonicalPath(oldPath)
 	dst, _ := canonicalPath(newPath)
 	op := s.fileMap.log.begin(src, dst)
+	// Windows refuses to rename an open file, or a directory holding one,
+	// and a file held for a name must not be used for another name's object.
+	s.files.release(oldPath, newPath)
 	err = s.fs.Rename(oldPath, newPath)
 	// Go's os.Rename refuses an existing directory target on every host
 	// (EEXIST on unix, ERROR_ACCESS_DENIED on Windows), so a directory over
@@ -1144,27 +1228,7 @@ func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFS
 					LogField{Key: "path", Value: dir.path})
 			}
 
-			// Convert cached entries to nodes
-			var nodes []*NFSNode
-			for _, entry := range entries {
-				name := entry.Name()
-				// Skip "." and ".." entries
-				if name == "." || name == ".." {
-					continue
-				}
-				// Sanitize the path to prevent directory traversal attacks
-				entryPath, err := sanitizePath(dir.path, name)
-				if err != nil {
-					// Skip entries with invalid names
-					continue
-				}
-				node, err := s.Lookup(entryPath)
-				if err != nil {
-					continue
-				}
-				nodes = append(nodes, node)
-			}
-			return nodes, nil
+			return s.entryNodes(dir.path, entries), nil
 		}
 
 		// Record cache miss in metrics
@@ -1202,27 +1266,45 @@ func (s *AbsfsNFS) ReadDirWithContext(ctx context.Context, dir *NFSNode) ([]*NFS
 		s.dirCache.putAt(dir.path, entries, gen)
 	}
 
-	var nodes []*NFSNode
+	return s.entryNodes(dir.path, entries), nil
+}
+
+// entryNodes returns a node for each entry of the directory at dir, but
+// ".", ".." and names that cannot be a path component, and entries that
+// are gone: Lookup answers os.ErrNotExist for a name removed since it was
+// listed, or since a cached listing was read. An entry whose Lookup fails
+// otherwise (the backend lists a name it cannot describe: EIO, EACCES, a
+// missing blob) keeps its name, with nil attributes: READDIR lists it and
+// READDIRPLUS sends it without attributes or handle, so it stays visible
+// and LOOKUP of it fails with the error the backend gave, rather than
+// vanishing from listings.
+func (s *AbsfsNFS) entryNodes(dir string, entries []os.FileInfo) []*NFSNode {
+	nodes := make([]*NFSNode, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
-		// Skip "." and ".." entries
 		if name == "." || name == ".." {
 			continue
 		}
 		// Sanitize the path to prevent directory traversal attacks
-		entryPath, err := sanitizePath(dir.path, name)
+		entryPath, err := sanitizePath(dir, name)
 		if err != nil {
-			// Skip entries with invalid names
 			continue
 		}
 		node, err := s.Lookup(entryPath)
-		if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			continue
+		}
+		if err != nil {
+			if slog := s.getStructuredLogger(); slog != nil {
+				slog.Debug("READDIR: entry listed without attributes",
+					LogField{Key: "path", Value: entryPath},
+					LogField{Key: "error", Value: err})
+			}
+			node = &NFSNode{SymlinkFileSystem: s.fs, path: entryPath, server: s}
 		}
 		nodes = append(nodes, node)
 	}
-
-	return nodes, nil
+	return nodes
 }
 
 // ReadDirPlus implements the READDIRPLUS operation
@@ -1239,8 +1321,12 @@ func (s *AbsfsNFS) ReadDirPlus(dir *NFSNode) ([]*NFSNode, error) {
 	// Re-read every entry's attributes: ReadDir's lookups may have been
 	// answered from the attribute cache, and READDIRPLUS replaces the
 	// client's GETATTRs, so it reports what the filesystem holds now. An
-	// entry that vanished in between keeps the attributes LOOKUP gave it.
+	// entry that vanished in between keeps the attributes LOOKUP gave it,
+	// and one LOOKUP could not describe stays without (see entryNodes).
 	for _, node := range nodes {
+		if node.attrs == nil {
+			continue // set only by entryNodes, before nodes are shared
+		}
 		gen := s.attrCache.generation()
 		attrs, err := s.statAttrs(node.path)
 		if err != nil {
@@ -1376,6 +1462,8 @@ func (s *AbsfsNFS) Unexport() error {
 		s.exportServer.Stop()
 		s.exportServer = nil
 	}
+	// Close the files held open between requests
+	s.files.release("/")
 	// Cleanup all open file handles
 	s.fileMap.ReleaseAll()
 	// Clear caches

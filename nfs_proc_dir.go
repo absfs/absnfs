@@ -21,10 +21,12 @@ const fattr3Size = 84
 
 // dirEntry is one directory entry as READDIR and READDIRPLUS report it.
 type dirEntry struct {
-	node   *NFSNode
-	name   string
-	attrs  NFSAttrs // copied under the node's lock
-	cookie uint64
+	node      *NFSNode
+	name      string
+	fileid    uint64
+	attrs     NFSAttrs // copied under the node's lock
+	described bool     // attrs are set; false for a name LOOKUP failed on
+	cookie    uint64
 }
 
 // dirCookie returns the READDIR cookie for the entry at p.
@@ -41,17 +43,24 @@ func dirCookie(p string) uint64 {
 }
 
 // entriesAfter returns the entries of a listing whose cookie is greater than
-// cookie, in cookie order. Entries without attributes are left out.
+// cookie, in cookie order. An entry without attributes (see entryNodes) is
+// kept, with the fileid of its path.
 func entriesAfter(nodes []*NFSNode, cookie uint64) []dirEntry {
 	out := make([]dirEntry, 0, len(nodes))
 	for _, n := range nodes {
+		e := dirEntry{node: n, name: path.Base(n.path), cookie: dirCookie(n.path)}
 		n.mu.RLock()
-		if n.attrs == nil {
-			n.mu.RUnlock()
-			continue
+		if n.attrs != nil {
+			e.attrs, e.described = *n.attrs, true
+			e.fileid = n.attrs.FileId
 		}
-		e := dirEntry{node: n, name: path.Base(n.path), attrs: *n.attrs, cookie: dirCookie(n.path)}
 		n.mu.RUnlock()
+		if !e.described {
+			e.fileid = fileID(n.path)
+			if n.server != nil {
+				e.fileid = n.server.objectID(n.path)
+			}
+		}
 		if e.cookie > cookie {
 			out = append(out, e)
 		}
@@ -133,7 +142,7 @@ func (h *NFSProcedureHandler) handleReaddir(body io.Reader, reply *RPCReply, aut
 		}
 
 		xdrEncodeUint32(&buf, 1)
-		if err := xdrEncodeUint64(&buf, entry.attrs.FileId); err != nil {
+		if err := xdrEncodeUint64(&buf, entry.fileid); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 		}
 		if err := xdrEncodeString(&buf, entry.name); err != nil {
@@ -226,16 +235,23 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 
 	for _, entry := range entriesAfter(entries, cookie) {
 		// Handles are up to 64 bytes and names up to 255, so an entry's
-		// size is counted before it is added, not after.
-		entryHandle := h.server.handler.fileMap.issue(entry.node)
-		entrySize := 4 + 8 + 4 + (len(entry.name)+3)&^3 + 8 + 4 + fattr3Size + 4 + xdrFileHandleSize(entryHandle)
+		// size is counted before it is added, not after. An entry LOOKUP
+		// could not describe is sent with neither attributes nor handle
+		// (post_op_attr and post_op_fh3 FALSE), so the client sees the
+		// name and its LOOKUP gets the backend's error.
+		var entryHandle []byte
+		entrySize := 4 + 8 + 4 + (len(entry.name)+3)&^3 + 8 + 4 + 4
+		if entry.described {
+			entryHandle = h.server.handler.fileMap.issue(entry.node)
+			entrySize += fattr3Size + xdrFileHandleSize(entryHandle)
+		}
 		if buf.Len()+entrySize > maxReplySize && entryCount > 0 {
 			reachedLimit = true
 			break
 		}
 
 		xdrEncodeUint32(&buf, 1)
-		if err := xdrEncodeUint64(&buf, entry.attrs.FileId); err != nil {
+		if err := xdrEncodeUint64(&buf, entry.fileid); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
 		}
 		if err := xdrEncodeString(&buf, entry.name); err != nil {
@@ -243,6 +259,13 @@ func (h *NFSProcedureHandler) handleReaddirplus(body io.Reader, reply *RPCReply,
 		}
 		if err := xdrEncodeUint64(&buf, entry.cookie); err != nil {
 			return nfsErrorWithPostOp(reply, NFSERR_IO), nil
+		}
+
+		if !entry.described {
+			xdrEncodeUint32(&buf, 0) // name_attributes: no attributes
+			xdrEncodeUint32(&buf, 0) // name_handle: no handle
+			entryCount++
+			continue
 		}
 
 		xdrEncodeUint32(&buf, 1)

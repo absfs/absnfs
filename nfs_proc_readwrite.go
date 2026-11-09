@@ -164,9 +164,22 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 		return nfsErrorWithWcc(reply, mapError(err)), nil
 	}
 
+	// The verifier is read before writing (see writeVerifier).
+	verf := h.server.handler.writeVerifier()
+
+	// An UNSTABLE WRITE is answered UNSTABLE: its data reaches the file the
+	// server holds open, not stable storage, until a COMMIT syncs it. A
+	// client asking for FILE_SYNC or DATA_SYNC gets the file synced before
+	// the reply, and FILE_SYNC, the only level File.Sync gives.
+	syncNow := stable != stableUnstable
+	committed := uint32(stableUnstable)
+	if syncNow {
+		committed = stableFileSync
+	}
+
 	// The owner may write a file whose mode denies it (owner override).
 	clientUID := authCtx.EffectiveUID
-	n, err := h.server.handler.writeWithContext(context.Background(), node, int64(offset), data, &clientUID)
+	n, err := h.server.handler.writeWithContext(context.Background(), node, int64(offset), data, &clientUID, syncNow)
 	if err != nil {
 		if h.server.options.Debug {
 			h.server.logger.Printf("WRITE: Failed to write to '%s': %v", node.path, err)
@@ -200,14 +213,17 @@ func (h *NFSProcedureHandler) handleWrite(body io.Reader, reply *RPCReply, authC
 		return nfsErrorWithWcc(reply, NFSERR_IO), nil
 	}
 	xdrEncodeUint32(&buf, uint32(n))
-	xdrEncodeUint32(&buf, 2)         // FILE_SYNC: server does synchronous writes
-	buf.Write(h.server.writeVerf[:]) // writeverf unique per server boot
+	xdrEncodeUint32(&buf, committed)
+	buf.Write(verf[:])
 
 	reply.Data = buf.Bytes()
 	return reply, nil
 }
 
-// handleCommit handles NFSPROC3_COMMIT - commit cached data
+// handleCommit handles NFSPROC3_COMMIT: it syncs the file (the whole file,
+// whatever the range) and replies the write verifier, read after syncing
+// (see writeVerifier). A failed Sync is answered with its error, never
+// NFS3_OK.
 func (h *NFSProcedureHandler) handleCommit(body io.Reader, reply *RPCReply, authCtx *AuthContext) (*RPCReply, error) {
 	if h.server.handler.policy.Load().ReadOnly {
 		return nfsErrorWithWcc(reply, NFSERR_ROFS), nil
@@ -232,19 +248,38 @@ func (h *NFSProcedureHandler) handleCommit(body io.Reader, reply *RPCReply, auth
 		return nfsErrorWithWcc(reply, st), nil
 	}
 
-	// R23: Return NFS error instead of nil,err
-	attrs, err := h.server.handler.GetAttr(node)
+	preAttrs, err := h.server.handler.GetAttr(node)
 	if err != nil {
 		return nfsErrorWithWcc(reply, mapError(err)), nil
+	}
+
+	clientUID := authCtx.EffectiveUID
+	if err := h.server.handler.commit(node, &clientUID); err != nil {
+		if h.server.options.Debug {
+			h.server.logger.Printf("COMMIT: '%s': %v", node.path, err)
+		}
+		var buf bytes.Buffer
+		xdrEncodeUint32(&buf, mapError(err))
+		if err := encodeWccData(&buf, preAttrs, preAttrs); err != nil {
+			return nfsErrorWithWcc(reply, NFSERR_IO), nil
+		}
+		reply.Data = buf.Bytes()
+		return reply, nil
+	}
+	verf := h.server.handler.writeVerifier()
+
+	attrs, err := h.server.handler.GetAttr(node)
+	if err != nil {
+		attrs = preAttrs
 	}
 
 	var buf bytes.Buffer
 	xdrEncodeUint32(&buf, NFS_OK)
 	// wcc_data (RFC 1813 section 3.3.21)
-	if err := encodeWccData(&buf, attrs, attrs); err != nil {
+	if err := encodeWccData(&buf, preAttrs, attrs); err != nil {
 		return nfsErrorWithWcc(reply, NFSERR_IO), nil
 	}
-	buf.Write(h.server.writeVerf[:]) // writeverf unique per server boot
+	buf.Write(verf[:])
 
 	reply.Data = buf.Bytes()
 	return reply, nil

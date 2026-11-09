@@ -6,11 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Planned as v1.2.0: it adds exported API (below) and changes three behaviours
+Planned as v1.2.0: it adds exported API (below) and changes behaviours
 existing deployments can see (see "Changed"). Fixes found serving workspaces
 to the macOS NFS client, which is stricter than Linux's.
 
 ### Added
+
+- `ExportOptions.WriteVerifier` (and `TuningOptions.WriteVerifier`): the
+  write verifier WRITE and COMMIT replies carry. Random per server instance
+  by default (zero), so clients resend uncommitted data after a restart.
+  Changeable at runtime: an owner that discards uncommitted data sets a new
+  one first, then discards only data written before the change, and clients
+  send that data again. The server sets a new one itself when a `Sync`, or
+  the `Close` of a file written since its last `Sync`, fails. Zero in an
+  update means unchanged. (absfs/absnfs#91)
 
 - `ExportOptions.CaseInsensitive` (`CaseInsensitivity`: `CaseInsensitiveAuto`,
   the default, `CaseInsensitiveTrue`, `CaseInsensitiveFalse`): what PATHCONF
@@ -113,6 +122,33 @@ to the macOS NFS client, which is stricter than Linux's.
   time of every file read through mmap, which makes a union copy it up).
 
 ### Fixed
+
+- **WRITE replied FILE_SYNC without syncing, and COMMIT never reached the
+  filesystem** (absfs/absnfs#91). Measured with the macOS client on a c4fs
+  backend: 1 MiB written then fsync sent 32 WRITEs and no COMMIT, and
+  WRITE opened and closed the file on each call, so a backend that commits
+  on close committed 32 times and nothing ever called `File.Sync`. WRITE now
+  replies UNSTABLE to an UNSTABLE WRITE, and syncs the file before replying
+  FILE_SYNC to a client asking for FILE_SYNC or DATA_SYNC; COMMIT calls
+  `File.Sync` and answers a failed sync with its error (NFS3ERR_IO for EIO,
+  NFS3ERR_NOSPC for ENOSPC), never NFS3_OK. READ, WRITE and COMMIT use one
+  backend file held open per path across requests (parallel WRITEs share
+  it): closed after 5 seconds idle, when more than 64 are open (least
+  recently used first), before the server removes or renames the path or
+  anything below it (Windows refuses either on an open file), and at
+  `Unexport` and `Close`. A held file found to be another object than the
+  path names now (replaced on the host, where the backend can tell) is
+  closed and the path opened again. A backend whose `Sync` does nothing
+  still works. COMMIT of a directory now answers NFS3ERR_ISDIR.
+- **READDIR and READDIRPLUS dropped an entry whose lookup failed**
+  (absfs/absnfs#92). A name the backend lists but cannot describe (Lstat
+  fails with EIO, EACCES, a missing blob) vanished from `ls` and from tree
+  scans while opening it failed loudly. It is now listed: READDIR with the
+  fileid of its path, READDIRPLUS without attributes or handle (the FALSE
+  arms of post_op_attr and post_op_fh3), and LOOKUP and GETATTR of it fail
+  with the status the backend's error maps to. A name whose Lstat says it
+  does not exist (removed since the listing, or since a cached listing was
+  read) is still left out.
 
 - **Spellings of one object reported different fileids where names fold.**
   The fileid was a hash of the path as spelled, so on a case-insensitive
@@ -325,6 +361,13 @@ to the macOS NFS client, which is stricter than Linux's.
   next major version.
 
 ### Changed
+
+- **WRITE replies UNSTABLE to UNSTABLE WRITEs, so clients send COMMIT**
+  (absfs/absnfs#91). Clients now keep written data until a COMMIT, and send
+  it again when the write verifier changes. The server keeps up to 64
+  backend files open between requests; on Windows a file the server holds
+  open (for at most 5 seconds after its last READ or WRITE) cannot be
+  removed or renamed by other processes.
 
 - **Requires basefs with absfs/basefs#9 (a7e0a24, on master 79e9a01), osfs
   master (26d9c50) and unionfs with absfs/unionfs#11 (d70ffdc).** basefs

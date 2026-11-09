@@ -941,48 +941,6 @@ func TestM2_AccessExecuteOnReadOnly(t *testing.T) {
 	}
 }
 
-// TestM8_WriteReturnsFileSync verifies WRITE always returns FILE_SYNC
-func TestM8_WriteReturnsFileSync(t *testing.T) {
-	server, handler, authCtx, err := newTestServerForBugfixes()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	fileHandle := getFileHandle(server, "/testfile.txt")
-
-	// Build WRITE request with stable=0 (UNSTABLE)
-	var buf bytes.Buffer
-	xdrEncodeFileHandle(&buf, fileHandle)
-	binary.Write(&buf, binary.BigEndian, uint64(0)) // offset
-	binary.Write(&buf, binary.BigEndian, uint32(5)) // count
-	binary.Write(&buf, binary.BigEndian, uint32(0)) // stable = UNSTABLE
-	binary.Write(&buf, binary.BigEndian, uint32(5)) // data length
-	buf.Write([]byte("hello"))                      // data
-	// Pad to 4 bytes
-	buf.Write([]byte{0, 0, 0})
-
-	result, err := handler.handleWrite(bytes.NewReader(buf.Bytes()), &RPCReply{}, authCtx)
-	if err != nil {
-		t.Fatalf("handleWrite returned error: %v", err)
-	}
-
-	status := readStatusFromReply(result)
-	if status != NFS_OK {
-		t.Fatalf("Expected NFS_OK, got %d", status)
-	}
-
-	// Parse: status(4) + wcc_data(varies) + count(4) + committed(4) + writeverf(8)
-	// committed is the second-to-last uint32 before the 8-byte verifier
-	writeData := getReplyData(result)
-	if len(writeData) < 16 {
-		t.Fatalf("Response too short: %d bytes", len(writeData))
-	}
-	committed := binary.BigEndian.Uint32(writeData[len(writeData)-12 : len(writeData)-8])
-	if committed != 2 { // FILE_SYNC = 2
-		t.Errorf("Expected committed=2 (FILE_SYNC), got %d", committed)
-	}
-}
-
 // TestM13_SetattrGuardErrorCheck verifies SETATTR guard reads check errors
 func TestM13_SetattrGuardErrorCheck(t *testing.T) {
 	_, handler, authCtx, err := newTestServerForBugfixes()

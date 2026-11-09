@@ -170,6 +170,10 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		structuredLogger: structuredLogger,
 		attrCache:        NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
 	}
+	server.files = newOpenFiles(server.unstableDataLost)
+	if options.WriteVerifier == ([8]byte{}) {
+		options.WriteVerifier = newWriteVerifier(options.WriteVerifier)
+	}
 
 	if options.HandleStateDir != "" {
 		fm, err := newFileHandleMapWithState(options.MaxHandles, options.HandleStateDir, options.HandleGeneration, func(err error) {
@@ -275,6 +279,11 @@ func (n *AbsfsNFS) Close() error {
 	// Stop worker pool
 	if n.workerPool != nil {
 		n.workerPool.Stop()
+	}
+
+	// Close the files held open between requests
+	if n.files != nil {
+		n.files.release("/")
 	}
 
 	// Empty the handle cache, and sync and unlock the handle journal
