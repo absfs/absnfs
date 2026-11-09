@@ -123,6 +123,13 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Fixed
 
+- **A handle issued for a new object at a RENAME's source name could reach
+  the renamed object.** RENAME updates the handle cache after its commit;
+  if a new object was made under the source name in between and looked up,
+  the cache moved that new handle to the destination, so it resolved to the
+  object that moved. Only a handle issued before the rename is moved now.
+  `TestHandleStress` failed this way in about 1 run in 100 (main and
+  branches alike); `TestRenamedLeavesNewSourceHandle` replays it.
 - **WRITE replied FILE_SYNC without syncing, and COMMIT never reached the
   filesystem** (absfs/absnfs#91). Measured with the macOS client on a c4fs
   backend: 1 MiB written then fsync sent 32 WRITEs and no COMMIT, and

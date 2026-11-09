@@ -280,11 +280,14 @@ func (fm *FileHandleMap) renamed(src, dst string, e uint64) {
 	if !ok {
 		return
 	}
-	delete(fm.paths, src)
 	ent := fm.handles[key]
-	if ent == nil || ent.path != src {
+	// Only a handle issued before the rename names the object that moved.
+	// This runs after the commit, so src may already name a new object
+	// with a handle of its own, issued at the rename's epoch or later.
+	if ent == nil || ent.path != src || ent.g >= e {
 		return
 	}
+	delete(fm.paths, src)
 	ent.node = ent.node.movedTo(nodePath(dst))
 	ent.path, ent.g = dst, e
 	fm.paths[dst] = key
