@@ -566,17 +566,19 @@ func (s *AbsfsNFS) Write(node *NFSNode, offset int64, data []byte) (int64, error
 }
 
 // WriteWithContext implements the WRITE operation with timeout support. The
-// data is written as an UNSTABLE WRITE writes it, to the file the server
-// holds open for the path, and is not synced.
+// data is written to the file the server holds open for the path and
+// synced before it returns, as every WRITE is (see writeVerf).
 func (s *AbsfsNFS) WriteWithContext(ctx context.Context, node *NFSNode, offset int64, data []byte) (int64, error) {
-	return s.writeWithContext(ctx, node, offset, data, nil, false)
+	return s.writeWithContext(ctx, node, offset, data, nil)
 }
 
 // writeWithContext writes data at offset, to the file held for node's path
-// (see openFiles), and when sync is set syncs the file before returning.
-// When clientUID is not nil and that user owns the file, it may write even
-// when the file's mode denies writing (see openForOwnerWrite).
-func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset int64, data []byte, clientUID *uint32, sync bool) (int64, error) {
+// (see openFiles), and syncs the file before returning: every WRITE is
+// stable before its reply, whatever the client asked, so no client holds
+// data for a COMMIT (see writeVerf). A failed write or sync is returned as
+// it is. When clientUID is not nil and that user owns the file, it may
+// write even when the file's mode denies writing (see openForOwnerWrite).
+func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset int64, data []byte, clientUID *uint32) (int64, error) {
 	if node == nil {
 		return 0, fmt.Errorf("nil node")
 	}
@@ -644,11 +646,7 @@ func (s *AbsfsNFS) writeWithContext(ctx context.Context, node *NFSNode, offset i
 	var n int
 	err = s.files.use(node.path, accessWrite, current, s.openWritable(node.path, clientUID), func(h *heldFile) error {
 		var err error
-		n, err = h.f.WriteAt(data, offset)
-		if n > 0 {
-			h.dirty = true
-		}
-		if err != nil || !sync {
+		if n, err = h.f.WriteAt(data, offset); err != nil {
 			return err
 		}
 		return s.files.sync(h)

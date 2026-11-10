@@ -1382,7 +1382,7 @@ func TestR3_RenameErrorDoubleWccReadOnly(t *testing.T) {
 }
 
 // TestR3_WriteVerifierConsistency verifies that the write verifier from WRITE
-// matches the one from COMMIT (both are ExportOptions.WriteVerifier).
+// matches the one from COMMIT (both are writeVerf).
 func TestR3_WriteVerifierConsistency(t *testing.T) {
 	server, handler, authCtx, err := newTestServerForBugfixes()
 	if err != nil {

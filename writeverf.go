@@ -1,42 +1,22 @@
 // writeverf.go: the write verifier WRITE and COMMIT replies carry.
 package absnfs
 
-import "crypto/rand"
-
-// newWriteVerifier returns a random verifier, neither zero nor old.
-func newWriteVerifier(old [8]byte) [8]byte {
-	for {
-		var v [8]byte
-		rand.Read(v[:])
-		if v != ([8]byte{}) && v != old {
-			return v
-		}
-	}
-}
-
-// writeVerifier returns the verifier replies carry now.
+// writeVerf is the write verifier (RFC 1813 writeverf3) of every WRITE and
+// COMMIT reply, from every server, across restarts. It never changes.
 //
-// A WRITE reads it before writing, and a COMMIT after syncing. An owner
-// that discards uncommitted data changes the verifier first and then
-// discards only what was written before the change (see
-// ExportOptions.WriteVerifier). A WRITE whose data may be discarded then
-// read the old verifier, and a COMMIT that replies the old one synced
-// before the change, so nothing it covers could be discarded.
-func (s *AbsfsNFS) writeVerifier() [8]byte {
-	return s.tuning.Load().WriteVerifier
-}
+// A verifier that changes between an UNSTABLE WRITE and its COMMIT makes
+// the client resend what it wrote, which RFC 1813 intends. The macOS
+// client mishandles it: after a COMMIT answered NFS3_OK with another
+// verifier it leaves a dirty buffer on its delayed-write queue without the
+// flag saying so, and a later unmount, of any NFS mount, panics the kernel
+// removing it from the wrong global queue ("corrupt list around element"
+// in nfs_buf_remfree; seen on 2026-11-09). So absnfs never asks a client to
+// hold data for a COMMIT: every WRITE is synced before its reply and
+// answered FILE_SYNC, a failed sync is answered with its error, and the
+// verifier has nothing to signal.
+var writeVerf = [8]byte{'a', 'b', 's', 'n', 'f', 's', 0, 1}
 
-// unstableDataLost changes the write verifier after a Sync or Close that
-// failed on a file written since its last Sync, as Linux knfsd does on a
-// writeback error: data replied UNSTABLE may be gone, and clients send
-// again what they have not seen committed.
-func (s *AbsfsNFS) unstableDataLost(p string, err error) {
-	s.UpdateTuningOptions(func(t *TuningOptions) {
-		t.WriteVerifier = newWriteVerifier(t.WriteVerifier)
-	})
-	if slog := s.getStructuredLogger(); slog != nil {
-		slog.Warn("unstable writes may be lost, write verifier changed",
-			LogField{Key: "path", Value: p},
-			LogField{Key: "error", Value: err})
-	}
+// writeVerifier returns writeVerf.
+func (s *AbsfsNFS) writeVerifier() [8]byte {
+	return writeVerf
 }

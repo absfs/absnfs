@@ -166,38 +166,32 @@ func readBack(t *testing.T, fs absfs.SymlinkFileSystem, p string) string {
 	return buf.String()
 }
 
-// TestUnstableWritesThenCommit: UNSTABLE WRITEs are answered UNSTABLE,
-// share one open file and sync nothing; COMMIT syncs that file once and
-// replies the verifier the WRITEs did.
-func TestUnstableWritesThenCommit(t *testing.T) {
+// TestEveryWriteIsFileSync: whatever stability a WRITE asks for, it is
+// synced before the reply and answered FILE_SYNC, with the one constant
+// verifier; the WRITEs share one open file. COMMIT, which clients then
+// have no need to send, still syncs and answers that verifier.
+func TestEveryWriteIsFileSync(t *testing.T) {
 	e, sfs := newSyncEnv(t, ExportOptions{})
 	fh := e.walk(e.mount("/"), "f")
 
-	var first [8]byte
+	stables := []uint32{stableUnstable, stableDataSync, stableFileSync}
 	for i := 0; i < 32; i++ {
-		st, committed, verf := e.write(fh, uint64(i*4), []byte("abcd"), stableUnstable)
-		if st != NFS_OK || committed != stableUnstable {
-			t.Fatalf("WRITE %d: status %d committed %d, want NFS_OK and UNSTABLE", i, st, committed)
-		}
-		if i == 0 {
-			first = verf
-		} else if verf != first {
-			t.Fatalf("WRITE %d: verifier changed", i)
+		stable := stables[i%len(stables)]
+		st, committed, verf := e.write(fh, uint64(i*4), []byte("abcd"), stable)
+		if st != NFS_OK || committed != stableFileSync || verf != writeVerf {
+			t.Fatalf("WRITE %d (stable %d): status %d committed %d verifier %x, want NFS_OK, FILE_SYNC and %x", i, stable, st, committed, verf, writeVerf)
 		}
 	}
-	if first == ([8]byte{}) {
-		t.Error("zero write verifier")
-	}
-	if o, s, c := sfs.opens.Load(), sfs.syncs.Load(), sfs.closes.Load(); o != 1 || s != 0 || c != 0 {
-		t.Errorf("32 UNSTABLE WRITEs: %d opens, %d syncs, %d closes, want 1, 0, 0", o, s, c)
+	if o, s, c := sfs.opens.Load(), sfs.syncs.Load(), sfs.closes.Load(); o != 1 || s != 32 || c != 0 {
+		t.Errorf("32 WRITEs: %d opens, %d syncs, %d closes, want 1, 32, 0", o, s, c)
 	}
 
 	st, verf := e.commit(fh)
-	if st != NFS_OK || verf != first {
-		t.Errorf("COMMIT: status %d verifier %x, want NFS_OK and %x", st, verf, first)
+	if st != NFS_OK || verf != writeVerf {
+		t.Errorf("COMMIT: status %d verifier %x, want NFS_OK and %x", st, verf, writeVerf)
 	}
-	if o, s := sfs.opens.Load(), sfs.syncs.Load(); o != 1 || s != 1 {
-		t.Errorf("COMMIT: %d opens, %d syncs, want 1 and 1", o, s)
+	if s := sfs.syncs.Load(); s != 33 {
+		t.Errorf("COMMIT: %d syncs in all, want 33", s)
 	}
 	if got := readBack(t, sfs, "/f"); len(got) != 128 {
 		t.Errorf("file holds %d bytes, want 128", len(got))
@@ -212,52 +206,50 @@ func TestUnstableWritesThenCommit(t *testing.T) {
 	}
 }
 
-// TestStableWritesSync: FILE_SYNC and DATA_SYNC WRITEs sync before the
-// reply and are answered FILE_SYNC.
-func TestStableWritesSync(t *testing.T) {
-	for _, stable := range []uint32{stableDataSync, stableFileSync} {
-		e, sfs := newSyncEnv(t, ExportOptions{})
-		fh := e.walk(e.mount("/"), "f")
-		st, committed, _ := e.write(fh, 0, []byte("data"), stable)
-		if st != NFS_OK || committed != stableFileSync {
-			t.Errorf("stable %d: status %d committed %d, want NFS_OK and FILE_SYNC", stable, st, committed)
+// TestWriteSyncFailure: a WRITE whose Sync fails, whatever it asked for,
+// gets the error, and the verifier does not change: the next WRITE and a
+// COMMIT reply the same one.
+func TestWriteSyncFailure(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want uint32
+	}{{syscall.ENOSPC, NFSERR_NOSPC}, {syscall.EIO, NFSERR_IO}} {
+		for _, stable := range []uint32{stableUnstable, stableFileSync} {
+			e, sfs := newSyncEnv(t, ExportOptions{})
+			fh := e.walk(e.mount("/"), "f")
+			sfs.syncErr = c.err
+			if st, _, _ := e.write(fh, 0, []byte("data"), stable); st != c.want {
+				t.Errorf("%v, stable %d: WRITE status %d, want %d", c.err, stable, st, c.want)
+			}
+			sfs.syncErr = nil
+			if st, committed, verf := e.write(fh, 0, []byte("data"), stable); st != NFS_OK || committed != stableFileSync || verf != writeVerf {
+				t.Errorf("%v, stable %d: next WRITE status %d committed %d verifier %x, want NFS_OK, FILE_SYNC and %x", c.err, stable, st, committed, verf, writeVerf)
+			}
+			if st, verf := e.commit(fh); st != NFS_OK || verf != writeVerf {
+				t.Errorf("%v, stable %d: COMMIT status %d verifier %x, want NFS_OK and %x", c.err, stable, st, verf, writeVerf)
+			}
 		}
-		if s := sfs.syncs.Load(); s != 1 {
-			t.Errorf("stable %d: %d syncs, want 1", stable, s)
-		}
-	}
-}
-
-// TestStableWriteSyncFailure: a FILE_SYNC WRITE whose Sync fails gets the
-// error, and the verifier changes.
-func TestStableWriteSyncFailure(t *testing.T) {
-	e, sfs := newSyncEnv(t, ExportOptions{})
-	fh := e.walk(e.mount("/"), "f")
-	before := e.nfs.writeVerifier()
-	sfs.syncErr = syscall.ENOSPC
-	if st, _, _ := e.write(fh, 0, []byte("data"), stableFileSync); st != NFSERR_NOSPC {
-		t.Errorf("WRITE status %d, want NFSERR_NOSPC", st)
-	}
-	if e.nfs.writeVerifier() == before {
-		t.Error("verifier unchanged after a failed sync")
 	}
 }
 
 // TestCommitSyncFailure: COMMIT never answers NFS3_OK without syncing. A
-// failed Sync is answered with its error, and the verifier changes, so the
-// client sends its unstable data again.
+// failed Sync is answered with its error, and the verifier stays as it is.
 func TestCommitSyncFailure(t *testing.T) {
 	e, sfs := newSyncEnv(t, ExportOptions{})
 	fh := e.walk(e.mount("/"), "f")
-	_, _, verf := e.write(fh, 0, []byte("data"), stableUnstable)
+	if _, _, verf := e.write(fh, 0, []byte("data"), stableUnstable); verf != writeVerf {
+		t.Fatalf("WRITE verifier %x", verf)
+	}
 	sfs.syncErr = syscall.EIO
 	if st, _ := e.commit(fh); st != NFSERR_IO {
 		t.Errorf("COMMIT status %d, want NFSERR_IO", st)
 	}
 	sfs.syncErr = nil
-	st, after := e.commit(fh)
-	if st != NFS_OK || after == verf {
-		t.Errorf("COMMIT after a failed one: status %d, verifier %x (was %x), want NFS_OK and a new verifier", st, after, verf)
+	if st, verf := e.commit(fh); st != NFS_OK || verf != writeVerf {
+		t.Errorf("COMMIT after a failed one: status %d, verifier %x, want NFS_OK and the same verifier %x", st, verf, writeVerf)
+	}
+	if _, _, verf := e.write(fh, 0, []byte("data"), stableUnstable); verf != writeVerf {
+		t.Errorf("WRITE after a failed COMMIT: verifier %x, want %x", verf, writeVerf)
 	}
 }
 
@@ -274,8 +266,8 @@ func TestCommitOpensWhenNoneHeld(t *testing.T) {
 	if st, _ := e.commit(fh); st != NFS_OK {
 		t.Errorf("COMMIT status %d", st)
 	}
-	if o, s := sfs.opens.Load(), sfs.syncs.Load(); o != 2 || s != 1 {
-		t.Errorf("COMMIT: %d opens, %d syncs, want 2 and 1", o, s)
+	if o, s := sfs.opens.Load(), sfs.syncs.Load(); o != 2 || s != 2 {
+		t.Errorf("WRITE and COMMIT: %d opens, %d syncs, want 2 and 2", o, s)
 	}
 }
 
@@ -298,8 +290,8 @@ func TestNoopSyncBackend(t *testing.T) {
 	if st, c, _ := e.write(fh, 0, []byte("data"), stableFileSync); st != NFS_OK || c != stableFileSync {
 		t.Errorf("FILE_SYNC WRITE: status %d committed %d", st, c)
 	}
-	if st, _, _ := e.write(fh, 4, []byte("more"), stableUnstable); st != NFS_OK {
-		t.Errorf("UNSTABLE WRITE: status %d", st)
+	if st, c, _ := e.write(fh, 4, []byte("more"), stableUnstable); st != NFS_OK || c != stableFileSync {
+		t.Errorf("UNSTABLE WRITE: status %d committed %d", st, c)
 	}
 	if st, _ := e.commit(fh); st != NFS_OK {
 		t.Errorf("COMMIT: status %d", st)
@@ -309,38 +301,40 @@ func TestNoopSyncBackend(t *testing.T) {
 	}
 }
 
-// TestWriteVerifierOption: the verifier is ExportOptions.WriteVerifier,
-// changeable at runtime, and each server picks its own by default.
-func TestWriteVerifierOption(t *testing.T) {
-	v1 := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
-	e, _ := newSyncEnv(t, ExportOptions{WriteVerifier: v1})
-	fh := e.walk(e.mount("/"), "f")
-	if _, _, verf := e.write(fh, 0, []byte("x"), stableUnstable); verf != v1 {
-		t.Errorf("WRITE verifier %x, want %x", verf, v1)
+// TestWriteVerifierConstant: every server replies the same verifier, so a
+// restart (a new server over the same files, after Close) does not change
+// it, nor do Unexport, Export or an UpdateExportOptions. It is not zero.
+func TestWriteVerifierConstant(t *testing.T) {
+	if writeVerf == ([8]byte{}) {
+		t.Fatal("zero write verifier")
 	}
-	if got := e.nfs.GetExportOptions().WriteVerifier; got != v1 {
-		t.Errorf("GetExportOptions().WriteVerifier = %x", got)
+	inner := newMemFS(t)
+	writeFile(t, inner, "/f", 0)
+	verifiers := func(e *fhEnv) (w, c [8]byte) {
+		fh := e.walk(e.mount("/"), "f")
+		_, _, w = e.write(fh, 0, []byte("x"), stableUnstable)
+		_, c = e.commit(fh)
+		return w, c
 	}
-
-	v2 := [8]byte{9, 9, 9, 9, 9, 9, 9, 9}
-	opts := e.nfs.GetExportOptions()
-	opts.WriteVerifier = v2
-	if err := e.nfs.UpdateExportOptions(opts); err != nil {
+	before := newFhEnv(t, &syncFS{SymlinkFileSystem: inner}, ExportOptions{})
+	w1, c1 := verifiers(before)
+	if err := before.nfs.UpdateExportOptions(before.nfs.GetExportOptions()); err != nil {
 		t.Fatal(err)
 	}
-	if _, verf := e.commit(fh); verf != v2 {
-		t.Errorf("COMMIT verifier after update %x, want %x", verf, v2)
+	if err := before.nfs.Unexport(); err != nil {
+		t.Fatal(err)
 	}
-	// Zero in an update leaves it as it is.
-	e.nfs.UpdateTuningOptions(func(t *TuningOptions) { t.WriteVerifier = [8]byte{} })
-	if got := e.nfs.writeVerifier(); got != v2 {
-		t.Errorf("a zero update changed the verifier to %x", got)
+	w2, c2 := verifiers(before)
+	if err := before.nfs.Close(); err != nil {
+		t.Fatal(err)
 	}
-
-	a, _ := newSyncEnv(t, ExportOptions{})
-	b, _ := newSyncEnv(t, ExportOptions{})
-	if a.nfs.writeVerifier() == b.nfs.writeVerifier() || a.nfs.writeVerifier() == ([8]byte{}) {
-		t.Error("two servers share a default verifier, or it is zero")
+	// The restart: a new server for the same filesystem.
+	after := newFhEnv(t, &syncFS{SymlinkFileSystem: inner}, ExportOptions{})
+	w3, c3 := verifiers(after)
+	for i, v := range [][8]byte{w1, c1, w2, c2, w3, c3} {
+		if v != writeVerf {
+			t.Errorf("reply %d: verifier %x, want %x", i, v, writeVerf)
+		}
 	}
 }
 
@@ -476,27 +470,23 @@ func TestHeldFileReplacedBehindServer(t *testing.T) {
 	}
 }
 
-// TestFailedCloseOfDirtyFileChangesVerifier: a held file written since its
-// last Sync whose Close fails may have lost data, so the verifier changes.
-func TestFailedCloseOfDirtyFileChangesVerifier(t *testing.T) {
+// TestFailedCloseKeepsVerifier: a held file whose Close fails changes
+// nothing a client sees; every WRITE was synced before its reply.
+func TestFailedCloseKeepsVerifier(t *testing.T) {
 	e, sfs := newSyncEnv(t, ExportOptions{})
 	fh := e.walk(e.mount("/"), "f")
-	_, _, verf := e.write(fh, 0, []byte("x"), stableUnstable)
-	sfs.closeErr = syscall.EIO
-	e.nfs.files.release("/")
-	if e.nfs.writeVerifier() == verf {
-		t.Error("verifier unchanged after a failed close of unsynced data")
-	}
-
-	// A clean file's failed close loses nothing.
-	sfs.closeErr = nil
 	e.write(fh, 0, []byte("x"), stableUnstable)
-	e.commit(fh)
-	v := e.nfs.writeVerifier()
 	sfs.closeErr = syscall.EIO
 	e.nfs.files.release("/")
-	if e.nfs.writeVerifier() != v {
-		t.Error("verifier changed after a failed close of synced data")
+	if c := sfs.closes.Load(); c != 1 {
+		t.Fatalf("%d closes, want 1", c)
+	}
+	sfs.closeErr = nil
+	if st, c, verf := e.write(fh, 1, []byte("y"), stableUnstable); st != NFS_OK || c != stableFileSync || verf != writeVerf {
+		t.Errorf("WRITE after a failed close: status %d committed %d verifier %x", st, c, verf)
+	}
+	if got := readBack(t, sfs, "/f"); got != "xy" {
+		t.Errorf("file holds %q, want xy", got)
 	}
 }
 

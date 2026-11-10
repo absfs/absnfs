@@ -29,7 +29,7 @@ type Server struct {
 }
 ```
 
-Holds the listener, handler reference, connection state, and shutdown coordination. WRITE and COMMIT replies carry the handler's write verifier, `ExportOptions.WriteVerifier` (random per `AbsfsNFS` by default).
+Holds the listener, handler reference, connection state, and shutdown coordination. WRITE and COMMIT replies carry one constant write verifier, the same for every server and across restarts (see `writeVerf`).
 
 ## Functions
 

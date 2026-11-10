@@ -412,14 +412,14 @@ func TestMacOSDurability(t *testing.T) {
 		if writes[0]+writes[1]+writes[2] == 0 {
 			t.Errorf("%s: no WRITE seen", c.name)
 		}
-		if want := [3]int{writes[0], 0, writes[1] + writes[2]}; replied != want {
+		// Every WRITE is answered FILE_SYNC after a backend Sync (see
+		// writeVerf), so the client has nothing to COMMIT.
+		total := writes[0] + writes[1] + writes[2]
+		if want := [3]int{0, 0, total}; replied != want {
 			t.Errorf("%s: replied %v to WRITEs asking %v, want %v", c.name, replied, writes, want)
 		}
-		if writes[0] > 0 && commits == 0 {
-			t.Errorf("%s: UNSTABLE WRITEs and no COMMIT", c.name)
-		}
-		if commits > 0 && sfs.syncs.Load() == syncs {
-			t.Errorf("%s: COMMIT without a backend Sync", c.name)
+		if got := sfs.syncs.Load() - syncs; got < int64(total) {
+			t.Errorf("%s: %d backend Syncs for %d WRITEs", c.name, got, total)
 		}
 	}
 	t.Logf("files held at the end: %d", nfs.files.count())

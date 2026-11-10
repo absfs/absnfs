@@ -48,7 +48,6 @@ type heldFile struct {
 	f      absfs.File
 	path   string
 	access fileAccess
-	dirty  bool // written since its last successful Sync
 	closed bool
 
 	// Guarded by openFiles.mu.
@@ -69,16 +68,16 @@ type openFiles struct {
 	// than each opening one.
 	opening map[string]chan struct{}
 
-	// lost is called when a file written since its last Sync fails to
-	// close or to Sync: data a client was told is unstable may be gone.
-	lost func(path string, err error)
+	// closeFailed is told of a Close that failed. Every WRITE was synced
+	// before its reply, so no client is waiting on what the file held.
+	closeFailed func(path string, err error)
 }
 
-func newOpenFiles(lost func(string, error)) *openFiles {
+func newOpenFiles(closeFailed func(string, error)) *openFiles {
 	return &openFiles{
-		files:   make(map[string]*heldFile),
-		opening: make(map[string]chan struct{}),
-		lost:    lost,
+		files:       make(map[string]*heldFile),
+		opening:     make(map[string]chan struct{}),
+		closeFailed: closeFailed,
 	}
 }
 
@@ -125,17 +124,13 @@ func (t *openFiles) use(p string, need fileAccess, current os.FileInfo, open ope
 	return errFileBusy
 }
 
-// sync syncs h, which the caller has locked. A failed Sync of a file
-// written since its last Sync is reported to lost: the backend may have
-// dropped what it had not written out.
+// sync syncs h, which the caller has locked. A failed Sync is the
+// caller's error to answer; it never changes the write verifier (see
+// writeVerf).
 func (t *openFiles) sync(h *heldFile) error {
 	if err := h.f.Sync(); err != nil {
-		if h.dirty && t.lost != nil {
-			t.lost(h.path, err)
-		}
 		return fmt.Errorf("sync %s: %w", h.path, err)
 	}
-	h.dirty = false
 	return nil
 }
 
@@ -243,8 +238,8 @@ func (t *openFiles) drop(h *heldFile) {
 	t.close(h)
 }
 
-// close closes h once any request using it is done. A failed Close of a
-// file written since its last Sync is reported to lost.
+// close closes h once any request using it is done. A failed Close is
+// reported to closeFailed.
 func (t *openFiles) close(h *heldFile) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -252,8 +247,8 @@ func (t *openFiles) close(h *heldFile) {
 		return
 	}
 	h.closed = true
-	if err := h.f.Close(); err != nil && h.dirty && t.lost != nil {
-		t.lost(h.path, err)
+	if err := h.f.Close(); err != nil && t.closeFailed != nil {
+		t.closeFailed(h.path, err)
 	}
 }
 

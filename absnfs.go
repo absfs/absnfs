@@ -170,10 +170,9 @@ func New(fs absfs.SymlinkFileSystem, options ExportOptions) (*AbsfsNFS, error) {
 		structuredLogger: structuredLogger,
 		attrCache:        NewAttrCache(options.AttrCacheTimeout, options.AttrCacheSize),
 	}
-	server.files = newOpenFiles(server.unstableDataLost)
-	if options.WriteVerifier == ([8]byte{}) {
-		options.WriteVerifier = newWriteVerifier(options.WriteVerifier)
-	}
+	server.files = newOpenFiles(func(p string, err error) {
+		server.logger.Printf("closing %s failed: %v", p, err)
+	})
 
 	if options.HandleStateDir != "" {
 		fm, err := newFileHandleMapWithState(options.MaxHandles, options.HandleStateDir, options.HandleGeneration, func(err error) {

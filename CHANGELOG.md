@@ -12,15 +12,6 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Added
 
-- `ExportOptions.WriteVerifier` (and `TuningOptions.WriteVerifier`): the
-  write verifier WRITE and COMMIT replies carry. Random per server instance
-  by default (zero), so clients resend uncommitted data after a restart.
-  Changeable at runtime: an owner that discards uncommitted data sets a new
-  one first, then discards only data written before the change, and clients
-  send that data again. The server sets a new one itself when a `Sync`, or
-  the `Close` of a file written since its last `Sync`, fails. Zero in an
-  update means unchanged. (absfs/absnfs#91)
-
 - `ExportOptions.CaseInsensitive` (`CaseInsensitivity`: `CaseInsensitiveAuto`,
   the default, `CaseInsensitiveTrue`, `CaseInsensitiveFalse`): what PATHCONF
   reports as `case_insensitive`. Auto probes, read-only, the directory of
@@ -134,11 +125,20 @@ to the macOS NFS client, which is stricter than Linux's.
   filesystem** (absfs/absnfs#91). Measured with the macOS client on a c4fs
   backend: 1 MiB written then fsync sent 32 WRITEs and no COMMIT, and
   WRITE opened and closed the file on each call, so a backend that commits
-  on close committed 32 times and nothing ever called `File.Sync`. WRITE now
-  replies UNSTABLE to an UNSTABLE WRITE, and syncs the file before replying
-  FILE_SYNC to a client asking for FILE_SYNC or DATA_SYNC; COMMIT calls
-  `File.Sync` and answers a failed sync with its error (NFS3ERR_IO for EIO,
-  NFS3ERR_NOSPC for ENOSPC), never NFS3_OK. READ, WRITE and COMMIT use one
+  on close committed 32 times and nothing ever called `File.Sync`. Every
+  WRITE is now synced (`File.Sync`) before its reply and answered
+  FILE_SYNC, whatever stability the client asked for, so clients hold
+  nothing to COMMIT; a failed write or sync is answered with its error
+  (NFS3ERR_IO for EIO, NFS3ERR_NOSPC for ENOSPC). COMMIT, should a client
+  send one, calls `File.Sync` the same way and never answers NFS3_OK
+  without syncing. The write verifier is one constant, the same for every
+  server and across restarts, and never changes: after a COMMIT answered
+  NFS3_OK with a changed verifier, the macOS client leaves a dirty buffer
+  on the wrong queue, and a later unmount of any NFS mount panics the
+  kernel ("corrupt list around element" in `nfs_buf_remfree`; seen on
+  2026-11-09). An earlier version of this fix replied UNSTABLE and changed
+  the verifier after a failed sync and at each start; it was never
+  released. READ, WRITE and COMMIT use one
   backend file held open per path across requests (parallel WRITEs share
   it): closed after 5 seconds idle, when more than 64 are open (least
   recently used first), before the server removes or renames the path or
@@ -369,9 +369,10 @@ to the macOS NFS client, which is stricter than Linux's.
 
 ### Changed
 
-- **WRITE replies UNSTABLE to UNSTABLE WRITEs, so clients send COMMIT**
-  (absfs/absnfs#91). Clients now keep written data until a COMMIT, and send
-  it again when the write verifier changes. The server keeps up to 64
+- **Every WRITE is synced before its reply and answered FILE_SYNC**
+  (absfs/absnfs#91): each WRITE now costs a `File.Sync` (32 for 1 MiB from
+  the macOS client), and a failed sync fails that WRITE. The write verifier
+  is a constant. The server keeps up to 64
   backend files open between requests; on Windows a file the server holds
   open (for at most 5 seconds after its last READ or WRITE) cannot be
   removed or renamed by other processes.

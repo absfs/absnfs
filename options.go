@@ -32,8 +32,7 @@ type TuningOptions struct {
 	SendBufferSize       int
 	ReceiveBufferSize    int
 	Async                bool
-	MaxHandles           int     // file handle cache capacity (see ExportOptions.MaxHandles)
-	WriteVerifier        [8]byte // see ExportOptions.WriteVerifier; zero in an update means unchanged
+	MaxHandles           int // file handle cache capacity (see ExportOptions.MaxHandles)
 	Log                  *LogConfig
 	Timeouts             *TimeoutConfig
 }
@@ -93,7 +92,6 @@ func tuningFromExportOptions(opts *ExportOptions) *TuningOptions {
 		ReceiveBufferSize:    opts.ReceiveBufferSize,
 		Async:                opts.Async,
 		MaxHandles:           opts.MaxHandles,
-		WriteVerifier:        opts.WriteVerifier,
 	}
 	if opts.Log != nil {
 		logCopy := *opts.Log
@@ -159,7 +157,6 @@ func exportOptionsFromSnapshots(t *TuningOptions, p *PolicyOptions) ExportOption
 		SendBufferSize:        t.SendBufferSize,
 		ReceiveBufferSize:     t.ReceiveBufferSize,
 		MaxHandles:            t.MaxHandles,
-		WriteVerifier:         t.WriteVerifier,
 	}
 	if len(p.AllowedIPs) > 0 {
 		opts.AllowedIPs = make([]string, len(p.AllowedIPs))
@@ -205,9 +202,6 @@ func (n *AbsfsNFS) UpdateTuningOptions(fn func(*TuningOptions)) {
 	fn(&updated)
 	if updated.MaxHandles <= 0 {
 		updated.MaxHandles = DefaultMaxHandles
-	}
-	if updated.WriteVerifier == ([8]byte{}) {
-		updated.WriteVerifier = old.WriteVerifier
 	}
 	n.tuning.Store(&updated)
 	n.applyTuningSideEffects(old, &updated)
@@ -501,29 +495,6 @@ type ExportOptions struct {
 	// smaller value evicts at once.
 	// Default (<= 0): DefaultMaxHandles (100000)
 	MaxHandles int
-
-	// WriteVerifier is the write verifier (RFC 1813 writeverf3) WRITE and
-	// COMMIT replies carry. WRITE replies UNSTABLE unless the client asked
-	// for FILE_SYNC or DATA_SYNC, and COMMIT calls File.Sync; a client
-	// keeps the data of its unstable WRITEs until a COMMIT returns the
-	// verifier those WRITEs returned, and when the verifier has changed it
-	// sends that data again. So the verifier must change whenever data
-	// written UNSTABLE but not yet committed may have been lost.
-	//
-	// The zero value (the default) picks a random verifier at New, so each
-	// server instance has its own and clients resend uncommitted data
-	// after a restart. An owner that discards uncommitted data while the
-	// server runs (garbage collection of a backend's unsynced writes)
-	// changes it, with UpdateExportOptions or UpdateTuningOptions, first,
-	// and then discards only data written before the change: a WRITE reads
-	// the verifier before writing and a COMMIT after syncing, so data
-	// written after the change, under the new verifier, must survive until
-	// its COMMIT. Reuse a value across
-	// restarts only when every byte written under it survives them. The
-	// server picks a new one itself when a Sync, or the Close of a file
-	// written since its last Sync, fails. Changeable at runtime; zero in an
-	// update means unchanged.
-	WriteVerifier [8]byte
 
 	// HandleStateDir keeps file handles valid across a server restart. The
 	// server keeps its handle key and a journal of its REMOVEs, RMDIRs and
